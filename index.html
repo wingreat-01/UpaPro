@@ -191,9 +191,15 @@
     background:var(--paper); width:100%; max-width:480px;
     border-radius:20px 20px 0 0; padding:8px 20px calc(20px + var(--safe-b));
     max-height:88vh; overflow-y:auto; animation:sheetup .22s ease;
+    position:relative;
   }
   @keyframes sheetup{from{transform:translateY(24px); opacity:.4;} to{transform:translateY(0); opacity:1;}}
   .sheet-grab{width:36px; height:4px; background:var(--line); border-radius:99px; margin:8px auto 14px;}
+  .sheet-close{
+    position:absolute; top:14px; left:16px; width:32px; height:32px; border-radius:50%;
+    background:var(--paper-2); border:1px solid var(--line); color:var(--ink);
+    font-size:15px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
   .sheet h2{font-size:1.05rem; margin:0 0 14px;}
   .field{margin-bottom:13px;}
   .field label{display:block; font-size:.75rem; font-weight:600; color:var(--slate); margin-bottom:5px; text-transform:uppercase; letter-spacing:.03em;}
@@ -525,27 +531,72 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
-/* ------------------------------ SHEET (modal) ------------------------------ */
+/* ------------------------------ SHEET (modal) ------------------------------
+   Closing is only ever explicit: the ✕ button, Escape, Android/back button,
+   or a completed Save/Delete action. Tapping the backdrop does nothing —
+   that's the whole point of this section.
+------------------------------------------------------------------------- */
 let sheetDirty = false;
+let sheetHistoryPushed = false;
+let ignoreNextPopstate = false;
+
 function openSheet(html, onMount) {
   sheetDirty = false;
-  document.getElementById('sheetBody').innerHTML = `<div class="sheet-grab"></div>${html}`;
+  document.getElementById('sheetBody').innerHTML =
+    `<button class="sheet-close" id="sheetCloseBtn" aria-label="Close">✕</button>
+     <div class="sheet-grab"></div>${html}`;
   document.getElementById('sheetBackdrop').classList.add('show');
+  document.getElementById('sheetCloseBtn').addEventListener('click', requestCloseSheet);
+  // Push a history entry so the Android/browser back button closes the
+  // sheet instead of leaving the app or the underlying screen.
+  history.pushState({ modal: true }, '');
+  sheetHistoryPushed = true;
   if (onMount) onMount();
 }
+
+// Used by the ✕ button and Escape — asks first if there are unsaved edits.
+function requestCloseSheet() {
+  if (sheetDirty && !confirm('Discard unsaved changes?')) return;
+  closeSheet();
+}
+
+// Used after a completed Save/Delete, and internally by requestCloseSheet —
+// no confirmation here since the caller has already decided it's safe.
 function closeSheet() {
   sheetDirty = false;
   document.getElementById('sheetBackdrop').classList.remove('show');
+  if (sheetHistoryPushed) {
+    sheetHistoryPushed = false;
+    ignoreNextPopstate = true;
+    history.back(); // pop the history entry we pushed when opening
+  }
 }
+
 // Any edit inside a form field marks the sheet dirty — except the search box,
 // which isn't something a person "saves" or would expect to be warned about.
 document.getElementById('sheetBody').addEventListener('input', (e) => {
   if (e.target.id !== 'f-search') sheetDirty = true;
 });
-document.getElementById('sheetBackdrop').addEventListener('click', (e) => {
-  if (e.target.id !== 'sheetBackdrop') return;
-  if (sheetDirty && !confirm('Discard unsaved changes?')) return;
-  closeSheet();
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('sheetBackdrop').classList.contains('show')) {
+    requestCloseSheet();
+  }
+});
+
+window.addEventListener('popstate', () => {
+  if (ignoreNextPopstate) { ignoreNextPopstate = false; return; }
+  if (!document.getElementById('sheetBackdrop').classList.contains('show')) return;
+  // The back button already consumed our pushed history entry.
+  sheetHistoryPushed = false;
+  if (sheetDirty && !confirm('Discard unsaved changes?')) {
+    // Keep the sheet open — re-push a history entry so back still works next time.
+    history.pushState({ modal: true }, '');
+    sheetHistoryPushed = true;
+    return;
+  }
+  sheetDirty = false;
+  document.getElementById('sheetBackdrop').classList.remove('show');
 });
 
 /* --------------------------------- ROUTER ---------------------------------- */
