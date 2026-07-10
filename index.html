@@ -331,7 +331,7 @@
       <input type="file" id="importFile" accept="application/json" style="display:none;">
 
       <div class="section-label">Cloud sync</div>
-      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Firebase sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
+      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
 
       <div class="section-label">About</div>
       <div class="muted">UpaPro v1 (M1–M3) · Single admin · Local-first (IndexedDB)<br>3 locations · manual rent tracking · overdue-first workflow.</div>
@@ -616,7 +616,7 @@ function cloudAuthErrorMessage(err) {
 }
 
 function openCloudSyncSheet() {
-  if (!firebaseEnabled) return showToast('Add a firebaseConfig first (see Firebase Setup Checklist)');
+  if (!firebaseEnabled) return showToast('Cloud sync isn\'t set up yet — see the Firebase Setup Checklist');
   openSheet(`
     <h2>Cloud sync</h2>
     <div id="cs-signed-out">
