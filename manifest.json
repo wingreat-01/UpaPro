@@ -1,15 +1,19 @@
 {
-  "name": "UpaPro — Admin",
+  "name": "UpaPro — Tenant Admin",
   "short_name": "UpaPro",
-  "description": "Track tenants, units, and rent payments across your paupahan locations.",
+  "description": "Local-first tenant & rent management for small paupahan operators.",
+  "id": "/",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#F7F3EC",
   "theme_color": "#1C2B33",
+  "categories": ["business", "finance", "productivity"],
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

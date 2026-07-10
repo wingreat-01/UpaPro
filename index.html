@@ -6,9 +6,17 @@
 <title>UpaPro — Admin</title>
 <meta name="theme-color" content="#1C2B33">
 <link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<!-- Cloud sync (M4) — Firebase Auth + Firestore, same compat SDK as Pautang Pro.
+     Pautang Pro self-hosts these under vendor/; CDN works identically if you'd
+     rather not vendor them locally. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --ink:#1C2B33;
@@ -240,6 +248,18 @@
   }
   .toast.show{opacity:1; bottom:calc(112px + var(--safe-b));}
 
+  .update-banner{
+    position:fixed; left:12px; right:12px; top:calc(12px + var(--safe-t));
+    background:var(--ink); color:var(--paper); border-radius:12px;
+    padding:12px 14px; display:none; align-items:center; justify-content:space-between;
+    gap:12px; font-size:.82rem; z-index:70; box-shadow:0 6px 20px rgba(0,0,0,.2);
+  }
+  .update-banner.show{display:flex;}
+  .update-banner button{
+    background:var(--paper); color:var(--ink); border:none; border-radius:8px;
+    padding:6px 12px; font-weight:600; font-size:.78rem; flex-shrink:0;
+  }
+
   .divider{height:1px; background:var(--line); margin:16px 0;}
   .muted{color:var(--slate); font-size:.82rem;}
   a.settings-link, .settings-item{
@@ -311,7 +331,7 @@
       <input type="file" id="importFile" accept="application/json" style="display:none;">
 
       <div class="section-label">Cloud sync</div>
-      <div class="settings-item"><div><div class="si-title">Firebase sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
+      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Firebase sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
 
       <div class="section-label">About</div>
       <div class="muted">UpaPro v1 (M1–M3) · Single admin · Local-first (IndexedDB)<br>3 locations · manual rent tracking · overdue-first workflow.</div>
@@ -330,6 +350,11 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div class="update-banner" id="updateBanner">
+  <span>A new version is ready.</span>
+  <button id="updateBannerBtn">Refresh</button>
+</div>
 
 <!-- SHEET BACKDROP (all forms render inside here) -->
 <div class="sheet-backdrop" id="sheetBackdrop">
@@ -439,21 +464,214 @@ function dbByIndex(store, indexName, value) {
   });
 }
 
-/* ------------------------------- FIREBASE --------------------------------
-   M4 hook point. Fill in firebaseConfig with a real project to turn on
-   cloud sync (Auth + Firestore, last-write-wins — same pattern as
-   Pautang Pro). Until then the app runs fully local-first on IndexedDB
-   and this block silently no-ops.
---------------------------------------------------------------------------- */
+/* =========================================================
+   CLOUD SYNC (Firebase Auth + Firestore) — M4
+   Ported from Pautang Pro's sync module. Local-first: every write
+   lands in IndexedDB first, same as before. If a user signs in,
+   records are additionally mirrored to Firestore under
+   users/{uid}/{store}/{id}, and pulled/merged back using a simple
+   last-write-wins rule on `updatedAt`. Signing out simply stops the
+   mirroring — local data is untouched.
+   Fill in firebaseConfig with a real project (see Firebase Setup
+   Checklist) to turn this on. Until then firebaseEnabled is false
+   and the whole module quietly no-ops, exactly as before.
+   ========================================================= */
 const firebaseConfig = {
-  apiKey: "", authDomain: "", projectId: "", storageBucket: "",
-  messagingSenderId: "", appId: ""
+  apiKey: "AIzaSyDfTRK5oagnmhuyXwrqSAy7nUe9PVrzjLY",
+  authDomain: "upapro-e5763.firebaseapp.com",
+  projectId: "upapro-e5763",
+  storageBucket: "upapro-e5763.firebasestorage.app",
+  messagingSenderId: "177340239376",
+  appId: "1:177340239376:web:80806c92272103f4770495"
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
-// TODO (M4): import firebase modular SDK, init Auth (email/password),
-// init Firestore, mirror every dbPut/dbDelete above to Firestore, and
-// pull remote changes on reconnect using updatedAt last-write-wins,
-// exactly like Pautang Pro's sync module.
+const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments'];
+let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
+
+function initFirebase() {
+  if (!firebaseEnabled) return;
+  try {
+    if (typeof firebase === 'undefined') return;
+    firebase.initializeApp(firebaseConfig);
+    fbAuth = firebase.auth();
+    fbStore = firebase.firestore();
+    fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+    fbAuth.onAuthStateChanged(onCloudAuthStateChanged);
+  } catch (err) {
+    console.warn('Firebase init failed', err);
+  }
+}
+
+async function onCloudAuthStateChanged(user) {
+  fbUser = user;
+  updateCloudSyncUI();
+  if (cloudAutoTimer) { clearInterval(cloudAutoTimer); cloudAutoTimer = null; }
+  if (user) {
+    runFullCloudSync(false);
+    cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
+  }
+}
+
+window.addEventListener('online', () => { if (fbUser) runFullCloudSync(false); });
+
+function updateCloudSyncUI() {
+  const statusEl = document.getElementById('firebaseStatus');
+  const dotEl = document.getElementById('firebaseDot');
+  if (statusEl) {
+    statusEl.textContent = !firebaseEnabled
+      ? 'Not configured — running local-only'
+      : (fbUser ? `Signed in as ${fbUser.email}` : 'Not signed in — data stays on this device');
+  }
+  if (dotEl) dotEl.classList.toggle('on', !!fbUser);
+  const signedOut = document.getElementById('cs-signed-out');
+  const signedIn = document.getElementById('cs-signed-in');
+  if (!signedOut || !signedIn) return;
+  if (fbUser) {
+    signedOut.style.display = 'none';
+    signedIn.style.display = 'block';
+    document.getElementById('cs-account-email').textContent = fbUser.email;
+  } else {
+    signedOut.style.display = 'block';
+    signedIn.style.display = 'none';
+  }
+}
+
+/* Fire-and-forget push of a single record right after a local write.
+   Firestore's own offline cache (enablePersistence above) queues this
+   write if there's no connection, and sends it once back online. */
+function queueRecordSync(storeName, record) {
+  if (!fbUser || !fbStore) return;
+  fbStore.collection('users').doc(fbUser.uid).collection(storeName)
+    .doc(String(record.id)).set(record).catch(() => {});
+}
+
+async function pullAndMergeCollection(storeName) {
+  const col = fbStore.collection('users').doc(fbUser.uid).collection(storeName);
+  const snap = await col.get();
+  const remoteRecords = [];
+  snap.forEach(doc => remoteRecords.push(doc.data()));
+  const localRecords = await dbGetAll(storeName);
+  const localById = new Map(localRecords.map(r => [String(r.id), r]));
+  const toPush = [];
+
+  for (const remote of remoteRecords) {
+    const key = String(remote.id);
+    const local = localById.get(key);
+    if (!local) {
+      await dbPut(storeName, remote);
+    } else {
+      const remoteTs = remote.updatedAt || 0;
+      const localTs = local.updatedAt || 0;
+      if (remoteTs > localTs) {
+        await dbPut(storeName, remote);
+      } else if (localTs > remoteTs) {
+        toPush.push(local);
+      }
+      localById.delete(key);
+    }
+  }
+  // Whatever's left in localById exists locally but not in the cloud yet.
+  for (const local of localById.values()) {
+    if (!local.updatedAt) { local.updatedAt = Date.now(); await dbPut(storeName, local); }
+    toPush.push(local);
+  }
+
+  const batchSize = 400;
+  for (let i = 0; i < toPush.length; i += batchSize) {
+    const batch = fbStore.batch();
+    toPush.slice(i, i + batchSize).forEach(r => batch.set(col.doc(String(r.id)), r));
+    await batch.commit();
+  }
+}
+
+async function runFullCloudSync(showUi) {
+  if (!fbUser || !fbStore || cloudSyncBusy) return;
+  cloudSyncBusy = true;
+  const statusEl = document.getElementById('cs-sync-status');
+  if (showUi && statusEl) statusEl.textContent = 'Syncing…';
+  try {
+    for (const store of SYNCED_STORES) await pullAndMergeCollection(store);
+    if (statusEl) statusEl.textContent = 'Last synced ' + new Date().toLocaleString('en-PH');
+    await refreshCache();
+    render();
+    if (showUi) showToast('Cloud sync complete');
+  } catch (err) {
+    console.warn('Cloud sync failed', err);
+    if (statusEl) statusEl.textContent = 'Sync failed — check your connection';
+    if (showUi) showToast('Sync failed — will retry automatically');
+  } finally {
+    cloudSyncBusy = false;
+  }
+}
+
+function cloudAuthErrorMessage(err) {
+  switch (err && err.code) {
+    case 'auth/invalid-email': return 'That email address looks invalid.';
+    case 'auth/user-not-found': return 'No account found with that email.';
+    case 'auth/wrong-password': case 'auth/invalid-credential': return 'Incorrect email or password.';
+    case 'auth/email-already-in-use': return 'That email already has an account — try Sign In instead.';
+    case 'auth/weak-password': return 'Password should be at least 6 characters.';
+    default: return (err && err.message) || 'Something went wrong. Please try again.';
+  }
+}
+
+function openCloudSyncSheet() {
+  if (!firebaseEnabled) return showToast('Add a firebaseConfig first (see Firebase Setup Checklist)');
+  openSheet(`
+    <h2>Cloud sync</h2>
+    <div id="cs-signed-out">
+      <p style="color:var(--slate); font-size:.85rem; margin:0 0 14px;">Sign in to back up your data and keep it in sync across devices. Your data is private to your account.</p>
+      <div class="field"><label>Email</label><input id="cs-email" type="email" autocomplete="email" inputmode="email"></div>
+      <div class="field"><label>Password</label><input id="cs-password" type="password" autocomplete="current-password"></div>
+      <div id="cs-auth-error" style="color:var(--red,#B3261E); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
+      <div class="sheet-actions">
+        <button class="btn btn-outline" id="cs-signup-btn">Create account</button>
+        <button class="btn btn-primary" id="cs-signin-btn">Sign in</button>
+      </div>
+    </div>
+    <div id="cs-signed-in" style="display:none;">
+      <div style="font-weight:600; margin-bottom:8px;" id="cs-account-email">—</div>
+      <div style="font-size:.82rem; color:var(--slate); margin-bottom:14px;" id="cs-sync-status">Not synced yet</div>
+      <div class="sheet-actions">
+        <button class="btn btn-outline" id="cs-signout-btn">Sign out</button>
+        <button class="btn btn-primary" id="cs-sync-now-btn">Sync now</button>
+      </div>
+    </div>
+  `, () => {
+    updateCloudSyncUI();
+    document.getElementById('cs-signup-btn').addEventListener('click', async () => {
+      const email = document.getElementById('cs-email').value.trim();
+      const password = document.getElementById('cs-password').value;
+      const errEl = document.getElementById('cs-auth-error');
+      errEl.textContent = '';
+      if (!email || !password) { errEl.textContent = 'Enter an email and password.'; return; }
+      try {
+        await fbAuth.createUserWithEmailAndPassword(email, password);
+        showToast('Account created — syncing your data');
+        updateCloudSyncUI();
+      } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
+    });
+    document.getElementById('cs-signin-btn').addEventListener('click', async () => {
+      const email = document.getElementById('cs-email').value.trim();
+      const password = document.getElementById('cs-password').value;
+      const errEl = document.getElementById('cs-auth-error');
+      errEl.textContent = '';
+      if (!email || !password) { errEl.textContent = 'Enter your email and password.'; return; }
+      try {
+        await fbAuth.signInWithEmailAndPassword(email, password);
+        showToast('Signed in — syncing your data');
+        updateCloudSyncUI();
+      } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
+    });
+    document.getElementById('cs-signout-btn').addEventListener('click', async () => {
+      await fbAuth.signOut();
+      updateCloudSyncUI();
+      showToast('Signed out — data stays on this device');
+      closeSheet();
+    });
+    document.getElementById('cs-sync-now-btn').addEventListener('click', () => runFullCloudSync(true));
+  });
+}
 
 /* ------------------------------- APP STATE -------------------------------- */
 const state = {
@@ -741,7 +959,9 @@ function openLocationForm(existing) {
       obj.name = name;
       obj.address = document.getElementById('f-address').value.trim();
       obj.notes = document.getElementById('f-notes').value.trim();
+      obj.updatedAt = Date.now();
       await dbPut('locations', obj);
+      queueRecordSync('locations', obj);
       await refreshCache();
       closeSheet();
       showToast(isEdit ? 'Location updated' : 'Location added');
@@ -828,7 +1048,9 @@ function openUnitForm(existing, locationId) {
       obj.dueDay = Math.min(Math.max(Number(document.getElementById('f-dueday').value) || 1, 1), 28);
       obj.status = document.getElementById('f-status').value;
       obj.notes = document.getElementById('f-notes').value.trim();
+      obj.updatedAt = Date.now();
       await dbPut('units', obj);
+      queueRecordSync('units', obj);
       await refreshCache();
       closeSheet();
       showToast(isEdit ? 'Unit updated' : 'Unit added');
@@ -947,10 +1169,14 @@ function openTenantForm(existing, unitId) {
       obj.moveInDate = document.getElementById('f-movein').value;
       obj.depositAmount = Number(document.getElementById('f-deposit').value) || 0;
       obj.notes = document.getElementById('f-notes').value.trim();
+      obj.updatedAt = Date.now();
       await dbPut('tenants', obj);
+      queueRecordSync('tenants', obj);
       if (!isEdit) {
         const unit = state.cache.units.find(u => u.id === unitId);
-        await dbPut('units', { ...unit, status: 'occupied' });
+        const updatedUnit = { ...unit, status: 'occupied', updatedAt: Date.now() };
+        await dbPut('units', updatedUnit);
+        queueRecordSync('units', updatedUnit);
       }
       await refreshCache();
       closeSheet();
@@ -993,8 +1219,10 @@ function openPaymentForm(tenant, unit) {
         method: document.getElementById('f-method').value,
         coveredPeriod: period, status,
         notes: document.getElementById('f-notes').value.trim(),
+        updatedAt: Date.now(),
       };
       await dbPut('payments', obj);
+      queueRecordSync('payments', obj);
       await refreshCache();
       closeSheet();
       showToast('Payment logged');
@@ -1005,8 +1233,12 @@ function openPaymentForm(tenant, unit) {
 
 async function moveOutFlow(tenant, unit) {
   if (!confirm(`Mark ${tenant.fullName} as moved out? The unit will become vacant and this tenant record will be archived.`)) return;
-  await dbPut('tenants', { ...tenant, active: false, moveOutDate: todayISO() });
-  await dbPut('units', { ...unit, status: 'vacant' });
+  const updatedTenant = { ...tenant, active: false, moveOutDate: todayISO(), updatedAt: Date.now() };
+  const updatedUnit = { ...unit, status: 'vacant', updatedAt: Date.now() };
+  await dbPut('tenants', updatedTenant);
+  queueRecordSync('tenants', updatedTenant);
+  await dbPut('units', updatedUnit);
+  queueRecordSync('units', updatedUnit);
   await refreshCache();
   showToast('Tenant moved out');
   render();
@@ -1025,10 +1257,9 @@ function renderOverdueFull() {
 async function renderSettings() {
   const meta = await dbGet('meta', 'adminName');
   document.getElementById('adminNameDisplay').textContent = meta ? meta.value : 'Owner';
-  document.getElementById('firebaseStatus').textContent = firebaseEnabled
-    ? 'Connected — syncing across devices' : 'Not configured — running local-only';
-  document.getElementById('firebaseDot').classList.toggle('on', firebaseEnabled);
+  updateCloudSyncUI();
 }
+document.getElementById('btnCloudSync').addEventListener('click', openCloudSyncSheet);
 document.getElementById('btnExport').addEventListener('click', async () => {
   const data = {
     exportedAt: new Date().toISOString(), app: APP_ID,
@@ -1051,7 +1282,11 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
     const data = JSON.parse(text);
     if (!confirm('Restoring will merge this backup into your current data. Continue?')) return;
     for (const store of ['locations', 'units', 'tenants', 'payments']) {
-      for (const obj of (data[store] || [])) await dbPut(store, obj);
+      for (const obj of (data[store] || [])) {
+        if (!obj.updatedAt) obj.updatedAt = Date.now();
+        await dbPut(store, obj);
+        queueRecordSync(store, obj);
+      }
     }
     await refreshCache();
     showToast('Backup restored');
@@ -1105,9 +1340,9 @@ function emptyHTML(icon, title, sub) {
 async function seedIfEmpty() {
   const existing = await dbGetAll('locations');
   if (existing.length) return;
-  const loc1 = { id: uid(), name: 'Paupahan A', address: '', notes: '' };
+  const loc1 = { id: uid(), name: 'Paupahan A', address: '', notes: '', updatedAt: Date.now() };
   await dbPut('locations', loc1);
-  const unit1 = { id: uid(), locationId: loc1.id, unitLabel: 'Room 1', monthlyRent: 3500, dueDay: 1, status: 'vacant', notes: '' };
+  const unit1 = { id: uid(), locationId: loc1.id, unitLabel: 'Room 1', monthlyRent: 3500, dueDay: 1, status: 'vacant', notes: '', updatedAt: Date.now() };
   await dbPut('units', unit1);
 }
 
@@ -1117,11 +1352,54 @@ async function seedIfEmpty() {
   await seedIfEmpty();
   await refreshCache();
   render();
+  initFirebase();
 })();
 
+/* ---------------------------- PWA UPDATE FLOW ------------------------------
+   Detects a new service worker version, shows the update banner instead of
+   silently swapping the app underneath an open session, and reloads once
+   the person taps Refresh. Pairs with sw.js's versioned CACHE_NAME. */
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+  window.addEventListener('load', async () => {
+    try {
+      const reg = await navigator.serviceWorker.register('sw.js');
+
+      const showUpdateBanner = (worker) => {
+        const banner = document.getElementById('updateBanner');
+        banner.classList.add('show');
+        document.getElementById('updateBannerBtn').onclick = () => {
+          worker.postMessage('SKIP_WAITING');
+        };
+      };
+
+      // A worker was already waiting when we registered (e.g. this tab was
+      // open when the update finished installing in another tab).
+      if (reg.waiting) showUpdateBanner(reg.waiting);
+
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          // "installed" + an existing controller means this is an update,
+          // not the very first install — only then is there anything to
+          // prompt about.
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            showUpdateBanner(newWorker);
+          }
+        });
+      });
+
+      // Once the new worker takes control, reload so the person actually
+      // gets the new version instead of just dismissing the banner.
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    } catch (err) {
+      console.warn('Service worker registration failed', err);
+    }
   });
 }
 </script>
