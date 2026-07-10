@@ -685,7 +685,16 @@ async function refreshCache() {
   const [locations, units, tenants, payments] = await Promise.all([
     dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments')
   ]);
-  state.cache = { locations, units, tenants, payments };
+  // Filter out soft-deleted (tombstoned) records here — the single place
+  // all rendering reads from state.cache. Raw dbGetAll() calls elsewhere
+  // (cloud sync's merge logic) intentionally still see tombstones, since
+  // they need the `deleted` flag to propagate correctly.
+  state.cache = {
+    locations: locations.filter(r => !r.deleted),
+    units: units.filter(r => !r.deleted),
+    tenants: tenants.filter(r => !r.deleted),
+    payments: payments.filter(r => !r.deleted),
+  };
 }
 
 /* ------------------------------ DOMAIN LOGIC ------------------------------ */
@@ -970,7 +979,9 @@ function openLocationForm(existing) {
     if (isEdit) document.getElementById('btnDelete').addEventListener('click', async () => {
       if (unitsForLocation(existing.id).length) return showToast('Remove or move its units first');
       if (!confirm('Delete this location?')) return;
-      await dbDelete('locations', existing.id);
+      const tombstone = { ...existing, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+      await dbPut('locations', tombstone);
+      queueRecordSync('locations', tombstone);
       await refreshCache();
       closeSheet();
       goBack();
@@ -1060,7 +1071,9 @@ function openUnitForm(existing, locationId) {
       const tenant = activeTenantForUnit(existing.id);
       if (tenant) return showToast('Move out the current tenant first');
       if (!confirm('Delete this unit?')) return;
-      await dbDelete('units', existing.id);
+      const tombstone = { ...existing, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+      await dbPut('units', tombstone);
+      queueRecordSync('units', tombstone);
       await refreshCache();
       closeSheet();
       goBack();
