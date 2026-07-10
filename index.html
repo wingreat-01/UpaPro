@@ -526,16 +526,26 @@ function showToast(msg) {
 }
 
 /* ------------------------------ SHEET (modal) ------------------------------ */
+let sheetDirty = false;
 function openSheet(html, onMount) {
+  sheetDirty = false;
   document.getElementById('sheetBody').innerHTML = `<div class="sheet-grab"></div>${html}`;
   document.getElementById('sheetBackdrop').classList.add('show');
   if (onMount) onMount();
 }
 function closeSheet() {
+  sheetDirty = false;
   document.getElementById('sheetBackdrop').classList.remove('show');
 }
+// Any edit inside a form field marks the sheet dirty — except the search box,
+// which isn't something a person "saves" or would expect to be warned about.
+document.getElementById('sheetBody').addEventListener('input', (e) => {
+  if (e.target.id !== 'f-search') sheetDirty = true;
+});
 document.getElementById('sheetBackdrop').addEventListener('click', (e) => {
-  if (e.target.id === 'sheetBackdrop') closeSheet();
+  if (e.target.id !== 'sheetBackdrop') return;
+  if (sheetDirty && !confirm('Discard unsaved changes?')) return;
+  closeSheet();
 });
 
 /* --------------------------------- ROUTER ---------------------------------- */
