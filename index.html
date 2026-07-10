@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>UpaPro — Admin</title>
+<meta name="theme-color" content="#1C2B33">
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1C2B33;
+    --ink-2:#2B3D46;
+    --paper:#F7F3EC;
+    --paper-2:#EFE9DD;
+    --card:#FFFDF9;
+    --peso:#2F6F4E;
+    --peso-soft:#E4EFE7;
+    --amber:#C97A2B;
+    --amber-soft:#F6E9D8;
+    --rust:#B23A2E;
+    --rust-soft:#F5DEDB;
+    --slate:#7C8B90;
+    --line:#DCD4C2;
+    --radius:14px;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-t: env(safe-area-inset-top, 0px);
+    font-size:16px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; height:100%;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Inter',system-ui,sans-serif;
+    overscroll-behavior-y:contain;
+    -webkit-font-smoothing:antialiased;
+  }
+  .num, .peso-amt{font-family:'JetBrains Mono',monospace;}
+  h1,h2,h3,.display{font-family:'Space Grotesk',system-ui,sans-serif;}
+  button{font-family:inherit;}
+  #app{
+    max-width:480px;
+    margin:0 auto;
+    min-height:100vh;
+    background:var(--paper);
+    display:flex;
+    flex-direction:column;
+    position:relative;
+  }
+
+  /* ---------- HEADER ---------- */
+  header.topbar{
+    position:sticky; top:0; z-index:20;
+    background:var(--ink);
+    color:var(--paper);
+    padding:calc(14px + var(--safe-t)) 16px 14px;
+    display:flex; align-items:center; gap:10px;
+    border-bottom:3px solid var(--amber);
+  }
+  header.topbar .back-btn{
+    background:none; border:none; color:var(--paper);
+    font-size:22px; padding:4px 6px 4px 0; cursor:pointer; line-height:1;
+    visibility:hidden;
+  }
+  header.topbar .back-btn.show{visibility:visible;}
+  header.topbar h1{
+    font-size:1.05rem; margin:0; font-weight:600; flex:1;
+    letter-spacing:.2px;
+  }
+  header.topbar .icon-btn{
+    background:none; border:1px solid rgba(247,243,236,.35); color:var(--paper);
+    border-radius:10px; width:36px; height:36px; font-size:16px;
+    cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+
+  /* ---------- MAIN / VIEWS ---------- */
+  main{flex:1; padding:16px 16px calc(96px + var(--safe-b));}
+  .view{display:none;}
+  .view.active{display:block; animation:fadein .18s ease;}
+  @keyframes fadein{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);}}
+
+  .section-label{
+    font-size:.72rem; text-transform:uppercase; letter-spacing:.09em;
+    color:var(--slate); font-weight:600; margin:22px 0 10px;
+  }
+  .section-label:first-child{margin-top:0;}
+
+  /* ---------- STAT CARDS (dashboard) ---------- */
+  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .stat-card{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px;
+  }
+  .stat-card .val{font-size:1.5rem; font-weight:700; font-family:'JetBrains Mono',monospace;}
+  .stat-card .lbl{font-size:.75rem; color:var(--slate); margin-top:2px;}
+  .stat-card.wide{grid-column:1/-1; display:flex; justify-content:space-between; align-items:center;}
+  .stat-card.warn .val{color:var(--rust);}
+  .stat-card.ok .val{color:var(--peso);}
+
+  /* ---------- LIST CARDS ---------- */
+  .card-list{display:flex; flex-direction:column; gap:8px;}
+  .row-card{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:13px 14px; display:flex; align-items:center; gap:12px; cursor:pointer;
+    transition:transform .1s ease;
+  }
+  .row-card:active{transform:scale(.985);}
+  .row-card .rc-main{flex:1; min-width:0;}
+  .row-card .rc-title{font-weight:600; font-size:.96rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .row-card .rc-sub{font-size:.78rem; color:var(--slate); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .row-card .rc-amt{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.9rem; text-align:right; white-space:nowrap;}
+  .row-card .rc-chevron{color:var(--slate); font-size:1.1rem;}
+
+  .chip{
+    display:inline-block; font-size:.66rem; font-weight:700; text-transform:uppercase;
+    letter-spacing:.04em; padding:3px 8px; border-radius:99px; white-space:nowrap;
+  }
+  .chip.occupied{background:var(--peso-soft); color:var(--peso);}
+  .chip.vacant{background:var(--paper-2); color:var(--slate);}
+  .chip.maintenance{background:var(--amber-soft); color:var(--amber);}
+
+  /* ---------- STAMP (signature element) ---------- */
+  .stamp{
+    --c:var(--peso);
+    display:inline-flex; align-items:center; justify-content:center;
+    width:54px; height:54px; border-radius:50%;
+    border:2px dashed var(--c); color:var(--c);
+    font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:.6rem;
+    letter-spacing:.03em; text-transform:uppercase; text-align:center;
+    transform:rotate(-8deg); flex-shrink:0; line-height:1.05;
+    background:color-mix(in srgb, var(--c) 6%, transparent);
+  }
+  .stamp.overdue{--c:var(--rust);}
+  .stamp.due{--c:var(--amber);}
+  .stamp.small{width:38px; height:38px; font-size:.5rem; border-width:1.5px;}
+
+  /* ---------- EMPTY STATE ---------- */
+  .empty{
+    text-align:center; padding:36px 20px; color:var(--slate);
+    border:1.5px dashed var(--line); border-radius:var(--radius);
+  }
+  .empty .e-icon{font-size:1.8rem; margin-bottom:6px;}
+  .empty p{margin:4px 0; font-size:.86rem;}
+
+  /* ---------- BUTTONS ---------- */
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    border:none; border-radius:11px; padding:12px 16px; font-weight:600;
+    font-size:.9rem; cursor:pointer; width:100%;
+  }
+  .btn-primary{background:var(--ink); color:var(--paper);}
+  .btn-accent{background:var(--peso); color:#fff;}
+  .btn-outline{background:transparent; color:var(--ink); border:1.5px solid var(--line);}
+  .btn-danger{background:transparent; color:var(--rust); border:1.5px solid var(--rust-soft);}
+  .btn-sm{padding:9px 12px; font-size:.8rem; width:auto;}
+  .fab{
+    position:fixed; right:calc(50% - 240px + 18px); bottom:calc(84px + var(--safe-b));
+    z-index:25; width:54px; height:54px; border-radius:50%;
+    background:var(--amber); color:#fff; border:none; font-size:1.6rem;
+    box-shadow:0 6px 16px rgba(28,43,51,.28); cursor:pointer;
+  }
+  @media (max-width:480px){ .fab{ right:18px; } }
+
+  /* ---------- BOTTOM NAV ---------- */
+  nav.bottomnav{
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    max-width:480px; margin:0 auto;
+    background:var(--ink); display:flex;
+    padding-bottom:var(--safe-b);
+    border-top:3px solid var(--amber);
+  }
+  nav.bottomnav button{
+    flex:1; background:none; border:none; color:rgba(247,243,236,.55);
+    padding:10px 4px 9px; display:flex; flex-direction:column; align-items:center; gap:3px;
+    font-size:.66rem; font-weight:600; letter-spacing:.02em; cursor:pointer;
+  }
+  nav.bottomnav button .ic{font-size:1.15rem;}
+  nav.bottomnav button.active{color:var(--paper);}
+  nav.bottomnav button.active .ic{color:var(--amber);}
+
+  /* ---------- SHEET / MODAL ---------- */
+  .sheet-backdrop{
+    position:fixed; inset:0; background:rgba(28,43,51,.5); z-index:40;
+    display:none; align-items:flex-end; justify-content:center;
+  }
+  .sheet-backdrop.show{display:flex;}
+  .sheet{
+    background:var(--paper); width:100%; max-width:480px;
+    border-radius:20px 20px 0 0; padding:8px 20px calc(20px + var(--safe-b));
+    max-height:88vh; overflow-y:auto; animation:sheetup .22s ease;
+  }
+  @keyframes sheetup{from{transform:translateY(24px); opacity:.4;} to{transform:translateY(0); opacity:1;}}
+  .sheet-grab{width:36px; height:4px; background:var(--line); border-radius:99px; margin:8px auto 14px;}
+  .sheet h2{font-size:1.05rem; margin:0 0 14px;}
+  .field{margin-bottom:13px;}
+  .field label{display:block; font-size:.75rem; font-weight:600; color:var(--slate); margin-bottom:5px; text-transform:uppercase; letter-spacing:.03em;}
+  .field input, .field select, .field textarea{
+    width:100%; border:1.5px solid var(--line); border-radius:10px; padding:11px 12px;
+    font-size:.95rem; font-family:inherit; background:var(--card); color:var(--ink);
+  }
+  .field textarea{resize:vertical; min-height:60px;}
+  .field-row{display:flex; gap:10px;}
+  .field-row .field{flex:1;}
+  .sheet-actions{display:flex; gap:10px; margin-top:18px;}
+  .sheet-actions .btn{flex:1;}
+
+  /* ---------- SEARCH SHEET ---------- */
+  .search-input-wrap{
+    display:flex; align-items:center; gap:8px; background:var(--card);
+    border:1.5px solid var(--line); border-radius:12px; padding:10px 12px; margin-bottom:14px;
+  }
+  .search-input-wrap input{border:none; outline:none; background:none; flex:1; font-size:.95rem; color:var(--ink);}
+
+  /* ---------- DETAIL HEADER ---------- */
+  .detail-hero{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px; margin-bottom:18px;
+  }
+  .detail-hero .dh-title{font-size:1.1rem; font-weight:700;}
+  .detail-hero .dh-sub{font-size:.82rem; color:var(--slate); margin-top:3px;}
+  .kv-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px;}
+  .kv{background:var(--paper-2); border-radius:9px; padding:8px 10px;}
+  .kv .k{font-size:.66rem; text-transform:uppercase; color:var(--slate); letter-spacing:.03em;}
+  .kv .v{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.86rem; margin-top:2px;}
+
+  .toast{
+    position:fixed; left:50%; bottom:calc(100px + var(--safe-b)); transform:translateX(-50%);
+    background:var(--ink); color:var(--paper); padding:10px 18px; border-radius:99px;
+    font-size:.82rem; font-weight:500; z-index:60; opacity:0; pointer-events:none;
+    transition:opacity .2s ease, bottom .2s ease;
+  }
+  .toast.show{opacity:1; bottom:calc(112px + var(--safe-b));}
+
+  .divider{height:1px; background:var(--line); margin:16px 0;}
+  .muted{color:var(--slate); font-size:.82rem;}
+  a.settings-link, .settings-item{
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:13px 14px; margin-bottom:8px; cursor:pointer;
+  }
+  .settings-item .si-title{font-weight:600; font-size:.88rem;}
+  .settings-item .si-sub{font-size:.75rem; color:var(--slate); margin-top:2px;}
+  .badge-dot{width:8px; height:8px; border-radius:50%; background:var(--slate); flex-shrink:0;}
+  .badge-dot.on{background:var(--peso);}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <button class="back-btn" id="backBtn" aria-label="Back">←</button>
+    <h1 id="pageTitle">UpaPro</h1>
+    <button class="icon-btn" id="searchBtn" aria-label="Search">🔍</button>
+  </header>
+
+  <main>
+
+    <!-- DASHBOARD -->
+    <section class="view" id="view-dashboard">
+      <div class="section-label">Overview</div>
+      <div class="stat-grid" id="dashStats"></div>
+
+      <div class="section-label">Due soon &amp; overdue</div>
+      <div class="card-list" id="dashOverdue"></div>
+    </section>
+
+    <!-- LOCATIONS LIST -->
+    <section class="view" id="view-locations">
+      <div class="section-label">Your paupahan</div>
+      <div class="card-list" id="locList"></div>
+    </section>
+
+    <!-- LOCATION DETAIL (units) -->
+    <section class="view" id="view-location-detail">
+      <div class="detail-hero" id="locHero"></div>
+      <div class="section-label">Units</div>
+      <div class="card-list" id="unitList"></div>
+    </section>
+
+    <!-- UNIT DETAIL -->
+    <section class="view" id="view-unit-detail">
+      <div class="detail-hero" id="unitHero"></div>
+      <div id="unitTenantBlock"></div>
+      <div class="section-label">Payment history</div>
+      <div class="card-list" id="unitPayments"></div>
+    </section>
+
+    <!-- OVERDUE (cross-location) -->
+    <section class="view" id="view-overdue">
+      <div class="section-label">All locations · current period</div>
+      <div class="card-list" id="overdueFull"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <div class="section-label">Admin</div>
+      <div class="settings-item"><div><div class="si-title" id="adminNameDisplay">Owner</div><div class="si-sub">Single admin · v1</div></div><span>✏️</span></div>
+
+      <div class="section-label">Data</div>
+      <div class="settings-item" id="btnExport"><div><div class="si-title">Export backup (JSON)</div><div class="si-sub">Save a copy of all your data</div></div><span>⬇️</span></div>
+      <div class="settings-item" id="btnImport"><div><div class="si-title">Restore from backup</div><div class="si-sub">Load a previously exported JSON file</div></div><span>⬆️</span></div>
+      <input type="file" id="importFile" accept="application/json" style="display:none;">
+
+      <div class="section-label">Cloud sync</div>
+      <div class="settings-item"><div><div class="si-title">Firebase sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
+
+      <div class="section-label">About</div>
+      <div class="muted">UpaPro v1 (M1–M3) · Single admin · Local-first (IndexedDB)<br>3 locations · manual rent tracking · overdue-first workflow.</div>
+    </section>
+
+  </main>
+
+  <button class="fab" id="fabAdd" title="Quick add">+</button>
+
+  <nav class="bottomnav">
+    <button data-nav="dashboard" class="active"><span class="ic">🏠</span>Dashboard</button>
+    <button data-nav="locations"><span class="ic">🏘️</span>Locations</button>
+    <button data-nav="overdue"><span class="ic">⏰</span>Overdue</button>
+    <button data-nav="settings"><span class="ic">⚙️</span>Settings</button>
+  </nav>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- SHEET BACKDROP (all forms render inside here) -->
+<div class="sheet-backdrop" id="sheetBackdrop">
+  <div class="sheet" id="sheetBody"></div>
+</div>
+
+<script>
+/* =========================================================================
+   PAUPAHAN LEDGER — single-file admin app
+   Milestones covered here: M1 (data layer), M2 (core screens),
+   M3 (overdue/reporting). Firebase (M4), full PWA polish (M5) and
+   Play Store packaging (M6) are separate later phases — see FIREBASE
+   section below for the hook point.
+
+   Locked-in design decisions for v1 (see project plan §2):
+   - Single admin only (multi-user deferred to v2)
+   - Rent cycle: FIXED monthly due date PER UNIT (unit.dueDay, 1-28),
+     not per-tenant. Simplest to reason about across many units.
+   - Partial payments ARE allowed (payment.status: paid/partial/late)
+   - Deposit is a single field on the tenant record, not a ledger line
+   ========================================================================= */
+
+const APP_ID = 'upaPro';
+const DB_NAME = 'upapro_db';
+const DB_VERSION = 1;
+let db;
+
+const uid = () => 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const peso = n => '₱' + (Number(n) || 0).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const monthKey = (d = new Date()) => d.toISOString().slice(0, 7); // "2026-07"
+const monthLabel = (key) => {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+};
+
+/* ---------------------------- INDEXEDDB LAYER ---------------------------- */
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains('locations')) {
+        d.createObjectStore('locations', { keyPath: 'id' });
+      }
+      if (!d.objectStoreNames.contains('units')) {
+        const s = d.createObjectStore('units', { keyPath: 'id' });
+        s.createIndex('locationId', 'locationId');
+      }
+      if (!d.objectStoreNames.contains('tenants')) {
+        const s = d.createObjectStore('tenants', { keyPath: 'id' });
+        s.createIndex('unitId', 'unitId');
+        s.createIndex('fullName', 'fullName');
+        s.createIndex('active', 'active');
+      }
+      if (!d.objectStoreNames.contains('payments')) {
+        const s = d.createObjectStore('payments', { keyPath: 'id' });
+        s.createIndex('tenantId', 'tenantId');
+        s.createIndex('unitId', 'unitId');
+        s.createIndex('coveredPeriod', 'coveredPeriod');
+      }
+      if (!d.objectStoreNames.contains('meta')) {
+        d.createObjectStore('meta', { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+function tx(store, mode = 'readonly') {
+  return db.transaction(store, mode).objectStore(store);
+}
+function dbGetAll(store) {
+  return new Promise((res, rej) => {
+    const r = tx(store).getAll();
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbGet(store, id) {
+  return new Promise((res, rej) => {
+    const r = tx(store).get(id);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbPut(store, obj) {
+  return new Promise((res, rej) => {
+    const r = tx(store, 'readwrite').put(obj);
+    r.onsuccess = () => res(obj);
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbDelete(store, id) {
+  return new Promise((res, rej) => {
+    const r = tx(store, 'readwrite').delete(id);
+    r.onsuccess = () => res(true);
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbByIndex(store, indexName, value) {
+  return new Promise((res, rej) => {
+    const r = tx(store).index(indexName).getAll(value);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+/* ------------------------------- FIREBASE --------------------------------
+   M4 hook point. Fill in firebaseConfig with a real project to turn on
+   cloud sync (Auth + Firestore, last-write-wins — same pattern as
+   Pautang Pro). Until then the app runs fully local-first on IndexedDB
+   and this block silently no-ops.
+--------------------------------------------------------------------------- */
+const firebaseConfig = {
+  apiKey: "", authDomain: "", projectId: "", storageBucket: "",
+  messagingSenderId: "", appId: ""
+};
+const firebaseEnabled = !!firebaseConfig.apiKey;
+// TODO (M4): import firebase modular SDK, init Auth (email/password),
+// init Firestore, mirror every dbPut/dbDelete above to Firestore, and
+// pull remote changes on reconnect using updatedAt last-write-wins,
+// exactly like Pautang Pro's sync module.
+
+/* ------------------------------- APP STATE -------------------------------- */
+const state = {
+  navStack: [{ view: 'dashboard' }],
+  cache: { locations: [], units: [], tenants: [], payments: [] },
+};
+
+function currentRoute() { return state.navStack[state.navStack.length - 1]; }
+
+async function refreshCache() {
+  const [locations, units, tenants, payments] = await Promise.all([
+    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments')
+  ]);
+  state.cache = { locations, units, tenants, payments };
+}
+
+/* ------------------------------ DOMAIN LOGIC ------------------------------ */
+function unitsForLocation(locId) {
+  return state.cache.units.filter(u => u.locationId === locId);
+}
+function activeTenantForUnit(unitId) {
+  return state.cache.tenants.find(t => t.unitId === unitId && t.active);
+}
+function paymentsForTenant(tenantId) {
+  return state.cache.payments.filter(p => p.tenantId === tenantId)
+    .sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
+}
+function amountPaidThisPeriod(tenantId, period) {
+  return state.cache.payments
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period)
+    .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
+}
+
+/** Computes current-period rent status for every occupied unit.
+ *  Returns array of { location, unit, tenant, paid, expected, balance,
+ *  dueDate, daysOverdue, status: 'paid'|'due-soon'|'overdue' } */
+function computeRentStatus() {
+  const period = monthKey();
+  const today = new Date();
+  const rows = [];
+  for (const unit of state.cache.units) {
+    if (unit.status !== 'occupied') continue;
+    const tenant = activeTenantForUnit(unit.id);
+    if (!tenant) continue;
+    const location = state.cache.locations.find(l => l.id === unit.locationId);
+    const expected = Number(unit.monthlyRent) || 0;
+    const paid = amountPaidThisPeriod(tenant.id, period);
+    const balance = Math.max(0, expected - paid);
+    const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
+    const dueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+    const daysDiff = Math.floor((today - dueDate) / 86400000);
+    let status = 'paid';
+    if (balance > 0) {
+      if (daysDiff > 0) status = 'overdue';
+      else if (daysDiff >= -3) status = 'due-soon';
+      else status = 'upcoming';
+    }
+    rows.push({
+      location, unit, tenant, paid, expected, balance,
+      dueDate, daysOverdue: Math.max(0, daysDiff), status
+    });
+  }
+  const order = { overdue: 0, 'due-soon': 1, upcoming: 2, paid: 3 };
+  rows.sort((a, b) => (order[a.status] - order[b.status]) || (b.daysOverdue - a.daysOverdue));
+  return rows;
+}
+
+/* --------------------------------- TOAST ---------------------------------- */
+let toastTimer;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+/* ------------------------------ SHEET (modal) ------------------------------ */
+function openSheet(html, onMount) {
+  document.getElementById('sheetBody').innerHTML = `<div class="sheet-grab"></div>${html}`;
+  document.getElementById('sheetBackdrop').classList.add('show');
+  if (onMount) onMount();
+}
+function closeSheet() {
+  document.getElementById('sheetBackdrop').classList.remove('show');
+}
+document.getElementById('sheetBackdrop').addEventListener('click', (e) => {
+  if (e.target.id === 'sheetBackdrop') closeSheet();
+});
+
+/* --------------------------------- ROUTER ---------------------------------- */
+const TITLES = {
+  dashboard: 'UpaPro', locations: 'Locations', 'location-detail': 'Location',
+  'unit-detail': 'Unit', overdue: 'Overdue &amp; due soon', settings: 'Settings'
+};
+function navigateTo(view, params = {}, replace = false) {
+  const entry = { view, params };
+  if (replace) state.navStack[state.navStack.length - 1] = entry;
+  else state.navStack.push(entry);
+  render();
+}
+function goBack() {
+  if (state.navStack.length > 1) {
+    state.navStack.pop();
+    render();
+  }
+}
+document.getElementById('backBtn').addEventListener('click', goBack);
+
+document.querySelectorAll('.bottomnav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.navStack = [{ view: btn.dataset.nav }];
+    render();
+  });
+});
+
+function render() {
+  const { view, params } = currentRoute();
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + view).classList.add('active');
+  document.getElementById('pageTitle').innerHTML = TITLES[view] || 'UpaPro';
+  document.getElementById('backBtn').classList.toggle('show', state.navStack.length > 1);
+
+  document.querySelectorAll('.bottomnav button').forEach(b => {
+    b.classList.toggle('active', b.dataset.nav === view || (view.startsWith(b.dataset.nav) ));
+  });
+  // top-level tabs stay highlighted correctly even on drill-down views
+  document.querySelectorAll('.bottomnav button').forEach(b => b.classList.remove('active'));
+  const topView = state.navStack[0].view;
+  const activeTab = document.querySelector(`.bottomnav button[data-nav="${topView}"]`);
+  if (activeTab) activeTab.classList.add('active');
+
+  const fab = document.getElementById('fabAdd');
+  fab.style.display = ['dashboard', 'overdue', 'settings'].includes(view) ? 'none' : 'flex';
+
+  if (view === 'dashboard') renderDashboard();
+  else if (view === 'locations') renderLocations();
+  else if (view === 'location-detail') renderLocationDetail(params.locationId);
+  else if (view === 'unit-detail') renderUnitDetail(params.unitId);
+  else if (view === 'overdue') renderOverdueFull();
+  else if (view === 'settings') renderSettings();
+}
+
+/* -------------------------------- DASHBOARD --------------------------------- */
+function renderDashboard() {
+  const { locations, units } = state.cache;
+  const occupied = units.filter(u => u.status === 'occupied').length;
+  const vacant = units.filter(u => u.status === 'vacant').length;
+  const rows = computeRentStatus();
+  const collected = rows.reduce((s, r) => s + r.paid, 0);
+  const expected = rows.reduce((s, r) => s + r.expected, 0);
+  const overdueCount = rows.filter(r => r.status === 'overdue').length;
+
+  document.getElementById('dashStats').innerHTML = `
+    <div class="stat-card"><div class="val">${units.length}</div><div class="lbl">Total units · ${locations.length} locations</div></div>
+    <div class="stat-card ${vacant ? '' : 'ok'}"><div class="val">${occupied}/${units.length}</div><div class="lbl">Occupied</div></div>
+    <div class="stat-card ok"><div class="val">${peso(collected)}</div><div class="lbl">Collected · ${monthLabel(monthKey())}</div></div>
+    <div class="stat-card"><div class="val">${peso(expected)}</div><div class="lbl">Expected this month</div></div>
+    <div class="stat-card wide ${overdueCount ? 'warn' : 'ok'}">
+      <div><div class="lbl" style="margin-bottom:2px;">Overdue right now</div><div class="val">${overdueCount} tenant${overdueCount === 1 ? '' : 's'}</div></div>
+      <div class="stamp ${overdueCount ? 'overdue' : ''} small">${overdueCount ? 'ALERT' : 'CLEAR'}</div>
+    </div>
+  `;
+
+  const flagged = rows.filter(r => r.status === 'overdue' || r.status === 'due-soon').slice(0, 6);
+  document.getElementById('dashOverdue').innerHTML = flagged.length
+    ? flagged.map(rentRowHTML).join('')
+    : emptyHTML('✅', 'Nothing due soon', 'Every occupied unit is settled for now.');
+  bindRentRowClicks('#dashOverdue');
+}
+
+function rentRowHTML(r) {
+  const stampClass = r.status === 'overdue' ? 'overdue' : (r.status === 'due-soon' ? 'due' : '');
+  const stampText = r.status === 'overdue' ? `${r.daysOverdue}D LATE` : (r.status === 'due-soon' ? 'DUE SOON' : 'OK');
+  return `
+    <div class="row-card" data-unit-id="${r.unit.id}">
+      <div class="stamp small ${stampClass}">${stampText}</div>
+      <div class="rc-main">
+        <div class="rc-title">${escapeHTML(r.tenant.fullName)}</div>
+        <div class="rc-sub">${escapeHTML(r.location ? r.location.name : '')} · ${escapeHTML(r.unit.unitLabel)}</div>
+      </div>
+      <div class="rc-amt">${r.balance > 0 ? peso(r.balance) + ' due' : peso(r.expected)}</div>
+    </div>`;
+}
+function bindRentRowClicks(scopeSelector) {
+  document.querySelectorAll(scopeSelector + ' .row-card').forEach(el => {
+    el.addEventListener('click', () => navigateTo('unit-detail', { unitId: el.dataset.unitId }));
+  });
+}
+
+/* -------------------------------- LOCATIONS --------------------------------- */
+function renderLocations() {
+  const { locations } = state.cache;
+  document.getElementById('locList').innerHTML = locations.length
+    ? locations.map(loc => {
+        const us = unitsForLocation(loc.id);
+        const occ = us.filter(u => u.status === 'occupied').length;
+        return `<div class="row-card" data-loc-id="${loc.id}">
+          <div class="stamp small">${us.length ? Math.round(occ / us.length * 100) + '%' : '—'}</div>
+          <div class="rc-main">
+            <div class="rc-title">${escapeHTML(loc.name)}</div>
+            <div class="rc-sub">${escapeHTML(loc.address || 'No address on file')}</div>
+          </div>
+          <div class="rc-amt"><span class="chip occupied">${occ}</span> <span class="chip vacant">${us.length - occ}</span></div>
+        </div>`;
+      }).join('')
+    : emptyHTML('🏘️', 'No paupahan yet', 'Tap the + button to add your first location.');
+  document.querySelectorAll('#locList .row-card').forEach(el => {
+    el.addEventListener('click', () => navigateTo('location-detail', { locationId: el.dataset.locId }));
+  });
+  document.getElementById('fabAdd').onclick = () => openLocationForm(null);
+}
+
+function openLocationForm(existing) {
+  const isEdit = !!existing;
+  openSheet(`
+    <h2>${isEdit ? 'Edit location' : 'Add location'}</h2>
+    <div class="field"><label>Name</label><input id="f-name" value="${isEdit ? escapeAttr(existing.name) : ''}" placeholder="e.g. Paupahan sa Maligaya St."></div>
+    <div class="field"><label>Address</label><input id="f-address" value="${isEdit ? escapeAttr(existing.address || '') : ''}" placeholder="Street, barangay, city"></div>
+    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
+    <div class="sheet-actions">
+      ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
+      <button class="btn btn-primary" id="btnSave">${isEdit ? 'Save changes' : 'Add location'}</button>
+    </div>
+  `, () => {
+    document.getElementById('btnSave').addEventListener('click', async () => {
+      const name = document.getElementById('f-name').value.trim();
+      if (!name) return showToast('Location name is required');
+      const obj = existing ? { ...existing } : { id: uid() };
+      obj.name = name;
+      obj.address = document.getElementById('f-address').value.trim();
+      obj.notes = document.getElementById('f-notes').value.trim();
+      await dbPut('locations', obj);
+      await refreshCache();
+      closeSheet();
+      showToast(isEdit ? 'Location updated' : 'Location added');
+      render();
+    });
+    if (isEdit) document.getElementById('btnDelete').addEventListener('click', async () => {
+      if (unitsForLocation(existing.id).length) return showToast('Remove or move its units first');
+      if (!confirm('Delete this location?')) return;
+      await dbDelete('locations', existing.id);
+      await refreshCache();
+      closeSheet();
+      goBack();
+      showToast('Location deleted');
+    });
+  });
+}
+
+/* ------------------------------ LOCATION DETAIL ------------------------------ */
+function renderLocationDetail(locationId) {
+  const loc = state.cache.locations.find(l => l.id === locationId);
+  if (!loc) return goBack();
+  const units = unitsForLocation(locationId);
+  const occ = units.filter(u => u.status === 'occupied').length;
+
+  document.getElementById('locHero').innerHTML = `
+    <div class="dh-title">${escapeHTML(loc.name)}</div>
+    <div class="dh-sub">${escapeHTML(loc.address || 'No address on file')}</div>
+    <div class="kv-grid">
+      <div class="kv"><div class="k">Units</div><div class="v">${units.length}</div></div>
+      <div class="kv"><div class="k">Occupied</div><div class="v">${occ} / ${units.length}</div></div>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-outline btn-sm" id="editLocBtn">Edit location</button></div>
+  `;
+  document.getElementById('editLocBtn').addEventListener('click', () => openLocationForm(loc));
+
+  document.getElementById('unitList').innerHTML = units.length
+    ? units.map(u => {
+        const tenant = activeTenantForUnit(u.id);
+        return `<div class="row-card" data-unit-id="${u.id}">
+          <div class="stamp small ${u.status === 'occupied' ? '' : 'due'}" style="--c:${u.status === 'occupied' ? 'var(--peso)' : 'var(--slate)'};">${u.status === 'occupied' ? 'RENTED' : (u.status === 'maintenance' ? 'FIX' : 'OPEN')}</div>
+          <div class="rc-main">
+            <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
+            <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Vacant'}</div>
+          </div>
+          <div class="rc-amt">${peso(u.monthlyRent)}</div>
+        </div>`;
+      }).join('')
+    : emptyHTML('🚪', 'No units yet', 'Tap + to add the first unit for this location.');
+  document.querySelectorAll('#unitList .row-card').forEach(el => {
+    el.addEventListener('click', () => navigateTo('unit-detail', { unitId: el.dataset.unitId }));
+  });
+
+  document.getElementById('fabAdd').onclick = () => openUnitForm(null, locationId);
+}
+
+function openUnitForm(existing, locationId) {
+  const isEdit = !!existing;
+  openSheet(`
+    <h2>${isEdit ? 'Edit unit' : 'Add unit'}</h2>
+    <div class="field"><label>Unit label</label><input id="f-label" value="${isEdit ? escapeAttr(existing.unitLabel) : ''}" placeholder="e.g. Room 3"></div>
+    <div class="field-row">
+      <div class="field"><label>Monthly rent</label><input id="f-rent" type="number" inputmode="decimal" value="${isEdit ? existing.monthlyRent : ''}" placeholder="3500"></div>
+      <div class="field"><label>Due day</label><input id="f-dueday" type="number" inputmode="numeric" min="1" max="28" value="${isEdit ? existing.dueDay || 1 : 1}"></div>
+    </div>
+    <div class="field"><label>Status</label>
+      <select id="f-status">
+        <option value="vacant" ${isEdit && existing.status === 'vacant' ? 'selected' : ''}>Vacant</option>
+        <option value="occupied" ${isEdit && existing.status === 'occupied' ? 'selected' : ''}>Occupied</option>
+        <option value="maintenance" ${isEdit && existing.status === 'maintenance' ? 'selected' : ''}>Maintenance</option>
+      </select>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
+    <div class="sheet-actions">
+      ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
+      <button class="btn btn-primary" id="btnSave">${isEdit ? 'Save changes' : 'Add unit'}</button>
+    </div>
+  `, () => {
+    document.getElementById('btnSave').addEventListener('click', async () => {
+      const label = document.getElementById('f-label').value.trim();
+      if (!label) return showToast('Unit label is required');
+      const obj = existing ? { ...existing } : { id: uid(), locationId };
+      obj.unitLabel = label;
+      obj.monthlyRent = Number(document.getElementById('f-rent').value) || 0;
+      obj.dueDay = Math.min(Math.max(Number(document.getElementById('f-dueday').value) || 1, 1), 28);
+      obj.status = document.getElementById('f-status').value;
+      obj.notes = document.getElementById('f-notes').value.trim();
+      await dbPut('units', obj);
+      await refreshCache();
+      closeSheet();
+      showToast(isEdit ? 'Unit updated' : 'Unit added');
+      render();
+    });
+    if (isEdit) document.getElementById('btnDelete').addEventListener('click', async () => {
+      const tenant = activeTenantForUnit(existing.id);
+      if (tenant) return showToast('Move out the current tenant first');
+      if (!confirm('Delete this unit?')) return;
+      await dbDelete('units', existing.id);
+      await refreshCache();
+      closeSheet();
+      goBack();
+      showToast('Unit deleted');
+    });
+  });
+}
+
+/* -------------------------------- UNIT DETAIL -------------------------------- */
+function renderUnitDetail(unitId) {
+  const unit = state.cache.units.find(u => u.id === unitId);
+  if (!unit) return goBack();
+  const loc = state.cache.locations.find(l => l.id === unit.locationId);
+  const tenant = activeTenantForUnit(unit.id);
+
+  document.getElementById('unitHero').innerHTML = `
+    <div class="dh-title">${escapeHTML(unit.unitLabel)}</div>
+    <div class="dh-sub">${escapeHTML(loc ? loc.name : '')}</div>
+    <div class="kv-grid">
+      <div class="kv"><div class="k">Rent</div><div class="v">${peso(unit.monthlyRent)}/mo</div></div>
+      <div class="kv"><div class="k">Due day</div><div class="v">${unit.dueDay || 1}${nth(unit.dueDay || 1)}</div></div>
+      <div class="kv"><div class="k">Status</div><div class="v"><span class="chip ${unit.status}">${unit.status}</span></div></div>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-outline btn-sm" id="editUnitBtn">Edit unit</button></div>
+  `;
+  document.getElementById('editUnitBtn').addEventListener('click', () => openUnitForm(unit, unit.locationId));
+
+  if (tenant) {
+    const period = monthKey();
+    const paid = amountPaidThisPeriod(tenant.id, period);
+    const balance = Math.max(0, (Number(unit.monthlyRent) || 0) - paid);
+    document.getElementById('unitTenantBlock').innerHTML = `
+      <div class="section-label">Current tenant</div>
+      <div class="detail-hero">
+        <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
+        <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
+        <div class="kv-grid">
+          <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
+          <div class="kv"><div class="k">Deposit</div><div class="v">${peso(tenant.depositAmount)}</div></div>
+          <div class="kv"><div class="k">${monthLabel(period)} paid</div><div class="v">${peso(paid)}</div></div>
+          <div class="kv"><div class="k">Balance</div><div class="v" style="color:${balance > 0 ? 'var(--rust)' : 'var(--peso)'}">${peso(balance)}</div></div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:14px;">
+          <button class="btn btn-accent" id="logPaymentBtn">Log payment</button>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button class="btn btn-outline btn-sm" id="editTenantBtn">Edit tenant</button>
+          <button class="btn btn-danger btn-sm" id="moveOutBtn">Move out</button>
+        </div>
+      </div>`;
+    document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
+    document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
+    document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
+  } else {
+    document.getElementById('unitTenantBlock').innerHTML = `
+      <div class="section-label">Tenant</div>
+      <div class="empty">
+        <div class="e-icon">🔑</div>
+        <p><strong>This unit is vacant.</strong></p>
+        <p>Assign a tenant to start tracking rent.</p>
+        <div style="margin-top:12px;"><button class="btn btn-primary" id="assignTenantBtn">Assign tenant</button></div>
+      </div>`;
+    document.getElementById('assignTenantBtn').addEventListener('click', () => openTenantForm(null, unit.id));
+  }
+
+  const payments = paymentsForTenant(tenant ? tenant.id : '__none__');
+  document.getElementById('unitPayments').innerHTML = payments.length
+    ? payments.map(p => `
+      <div class="row-card" style="cursor:default;">
+        <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
+        <div class="rc-main">
+          <div class="rc-title">${escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
+          <div class="rc-sub">Paid ${p.datePaid || '—'}</div>
+        </div>
+        <div class="rc-amt">${peso(p.amountPaid)}</div>
+      </div>`).join('')
+    : emptyHTML('🧾', 'No payments logged', tenant ? 'Log the first payment for this tenant.' : 'Assign a tenant first.');
+
+  document.getElementById('fabAdd').onclick = tenant
+    ? () => openPaymentForm(tenant, unit)
+    : () => openTenantForm(null, unit.id);
+}
+function nth(n) { return ['th', 'st', 'nd', 'rd'][(n % 10 > 3 || Math.floor(n / 10) === 1) ? 0 : n % 10]; }
+
+function openTenantForm(existing, unitId) {
+  const isEdit = !!existing;
+  openSheet(`
+    <h2>${isEdit ? 'Edit tenant' : 'Assign tenant'}</h2>
+    <div class="field"><label>Full name</label><input id="f-fullname" value="${isEdit ? escapeAttr(existing.fullName) : ''}" placeholder="Juan Dela Cruz"></div>
+    <div class="field"><label>Contact number</label><input id="f-contact" value="${isEdit ? escapeAttr(existing.contactNumber || '') : ''}" placeholder="09xx xxx xxxx" inputmode="tel"></div>
+    <div class="field-row">
+      <div class="field"><label>Move-in date</label><input id="f-movein" type="date" value="${isEdit ? existing.moveInDate || '' : todayISO()}"></div>
+      <div class="field"><label>Deposit</label><input id="f-deposit" type="number" inputmode="decimal" value="${isEdit ? existing.depositAmount || '' : ''}" placeholder="0"></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
+    <div class="sheet-actions">
+      <button class="btn btn-primary" id="btnSave">${isEdit ? 'Save changes' : 'Assign tenant'}</button>
+    </div>
+  `, () => {
+    document.getElementById('btnSave').addEventListener('click', async () => {
+      const fullName = document.getElementById('f-fullname').value.trim();
+      if (!fullName) return showToast('Tenant name is required');
+      const obj = existing ? { ...existing } : { id: uid(), unitId, active: true, moveOutDate: null };
+      obj.fullName = fullName;
+      obj.contactNumber = document.getElementById('f-contact').value.trim();
+      obj.moveInDate = document.getElementById('f-movein').value;
+      obj.depositAmount = Number(document.getElementById('f-deposit').value) || 0;
+      obj.notes = document.getElementById('f-notes').value.trim();
+      await dbPut('tenants', obj);
+      if (!isEdit) {
+        const unit = state.cache.units.find(u => u.id === unitId);
+        await dbPut('units', { ...unit, status: 'occupied' });
+      }
+      await refreshCache();
+      closeSheet();
+      showToast(isEdit ? 'Tenant updated' : 'Tenant assigned');
+      render();
+    });
+  });
+}
+
+function openPaymentForm(tenant, unit) {
+  openSheet(`
+    <h2>Log payment</h2>
+    <div class="field"><label>Amount paid</label><input id="f-amount" type="number" inputmode="decimal" value="${unit.monthlyRent}" placeholder="0"></div>
+    <div class="field-row">
+      <div class="field"><label>Date paid</label><input id="f-datepaid" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Method</label>
+        <select id="f-method">
+          <option value="cash">Cash</option>
+          <option value="gcash">GCash</option>
+          <option value="bank">Bank transfer</option>
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Period covered</label><input id="f-period" value="${monthKey()}" placeholder="2026-07"></div>
+    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional"></textarea></div>
+    <div class="sheet-actions">
+      <button class="btn btn-accent" id="btnSave">Save payment</button>
+    </div>
+  `, () => {
+    document.getElementById('btnSave').addEventListener('click', async () => {
+      const amountPaid = Number(document.getElementById('f-amount').value) || 0;
+      if (amountPaid <= 0) return showToast('Enter an amount greater than 0');
+      const period = document.getElementById('f-period').value.trim() || monthKey();
+      const already = amountPaidThisPeriod(tenant.id, period);
+      const status = (already + amountPaid) >= (Number(unit.monthlyRent) || 0) ? 'paid' : 'partial';
+      const obj = {
+        id: uid(), tenantId: tenant.id, unitId: unit.id,
+        amountPaid, dueDate: `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
+        datePaid: document.getElementById('f-datepaid').value || todayISO(),
+        method: document.getElementById('f-method').value,
+        coveredPeriod: period, status,
+        notes: document.getElementById('f-notes').value.trim(),
+      };
+      await dbPut('payments', obj);
+      await refreshCache();
+      closeSheet();
+      showToast('Payment logged');
+      render();
+    });
+  });
+}
+
+async function moveOutFlow(tenant, unit) {
+  if (!confirm(`Mark ${tenant.fullName} as moved out? The unit will become vacant and this tenant record will be archived.`)) return;
+  await dbPut('tenants', { ...tenant, active: false, moveOutDate: todayISO() });
+  await dbPut('units', { ...unit, status: 'vacant' });
+  await refreshCache();
+  showToast('Tenant moved out');
+  render();
+}
+
+/* --------------------------------- OVERDUE ---------------------------------- */
+function renderOverdueFull() {
+  const rows = computeRentStatus().filter(r => r.status !== 'paid');
+  document.getElementById('overdueFull').innerHTML = rows.length
+    ? rows.map(rentRowHTML).join('')
+    : emptyHTML('✅', 'All caught up', 'No tenant is due or overdue right now.');
+  bindRentRowClicks('#overdueFull');
+}
+
+/* -------------------------------- SETTINGS ---------------------------------- */
+async function renderSettings() {
+  const meta = await dbGet('meta', 'adminName');
+  document.getElementById('adminNameDisplay').textContent = meta ? meta.value : 'Owner';
+  document.getElementById('firebaseStatus').textContent = firebaseEnabled
+    ? 'Connected — syncing across devices' : 'Not configured — running local-only';
+  document.getElementById('firebaseDot').classList.toggle('on', firebaseEnabled);
+}
+document.getElementById('btnExport').addEventListener('click', async () => {
+  const data = {
+    exportedAt: new Date().toISOString(), app: APP_ID,
+    locations: state.cache.locations, units: state.cache.units,
+    tenants: state.cache.tenants, payments: state.cache.payments,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `paupahan-backup-${todayISO()}.json`;
+  a.click();
+  showToast('Backup downloaded');
+});
+document.getElementById('btnImport').addEventListener('click', () => document.getElementById('importFile').click());
+document.getElementById('importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!confirm('Restoring will merge this backup into your current data. Continue?')) return;
+    for (const store of ['locations', 'units', 'tenants', 'payments']) {
+      for (const obj of (data[store] || [])) await dbPut(store, obj);
+    }
+    await refreshCache();
+    showToast('Backup restored');
+    render();
+  } catch (err) {
+    showToast('Could not read that file');
+  }
+  e.target.value = '';
+});
+
+/* --------------------------------- SEARCH ------------------------------------ */
+document.getElementById('searchBtn').addEventListener('click', () => {
+  openSheet(`
+    <h2>Search tenants</h2>
+    <div class="search-input-wrap">🔍<input id="f-search" placeholder="Type a name…" autofocus></div>
+    <div class="card-list" id="searchResults"></div>
+  `, () => {
+    const input = document.getElementById('f-search');
+    input.addEventListener('input', () => {
+      const q = input.value.trim().toLowerCase();
+      const results = q.length < 1 ? [] : state.cache.tenants.filter(t => t.active && t.fullName.toLowerCase().includes(q));
+      document.getElementById('searchResults').innerHTML = results.length
+        ? results.map(t => {
+            const unit = state.cache.units.find(u => u.id === t.unitId);
+            const loc = unit ? state.cache.locations.find(l => l.id === unit.locationId) : null;
+            return `<div class="row-card" data-unit-id="${unit ? unit.id : ''}">
+              <div class="stamp small">${t.fullName.split(' ').map(w => w[0]).slice(0, 2).join('')}</div>
+              <div class="rc-main"><div class="rc-title">${escapeHTML(t.fullName)}</div>
+              <div class="rc-sub">${escapeHTML(loc ? loc.name : '')} · ${escapeHTML(unit ? unit.unitLabel : '')}</div></div>
+              <div class="rc-chevron">›</div>
+            </div>`;
+          }).join('')
+        : (q.length ? emptyHTML('🔍', 'No matches', 'Try a different name.') : '');
+      document.querySelectorAll('#searchResults .row-card').forEach(el => {
+        el.addEventListener('click', () => { closeSheet(); navigateTo('unit-detail', { unitId: el.dataset.unitId }); });
+      });
+    });
+  });
+});
+
+/* --------------------------------- UTILITIES ---------------------------------- */
+function escapeHTML(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeAttr(str) { return escapeHTML(str); }
+function emptyHTML(icon, title, sub) {
+  return `<div class="empty"><div class="e-icon">${icon}</div><p><strong>${title}</strong></p><p>${sub}</p></div>`;
+}
+
+/* ------------------------------ SEED (first run) ------------------------------- */
+async function seedIfEmpty() {
+  const existing = await dbGetAll('locations');
+  if (existing.length) return;
+  const loc1 = { id: uid(), name: 'Paupahan A', address: '', notes: '' };
+  await dbPut('locations', loc1);
+  const unit1 = { id: uid(), locationId: loc1.id, unitLabel: 'Room 1', monthlyRent: 3500, dueDay: 1, status: 'vacant', notes: '' };
+  await dbPut('units', unit1);
+}
+
+/* ----------------------------------- BOOT -------------------------------------- */
+(async function boot() {
+  db = await openDB();
+  await seedIfEmpty();
+  await refreshCache();
+  render();
+})();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
