@@ -10,7 +10,7 @@
 
 - ✅ **Locations** — `id, name, address, notes` (`unitCount` computed live, not stored)
 - ✅ **Units** — `id, locationId, unitLabel, monthlyRent, status, notes` + `dueDay` (added — needed for overdue calc)
-- 🟡 **Tenants** — `id, unitId, fullName, contactNumber, moveInDate, moveOutDate, depositAmount, notes` (all done except `idPhoto`)
+- ✅ **Tenants** — `id, unitId, fullName, contactNumber, moveInDate, moveOutDate, depositAmount, notes` + `documents` (ID photo + signed contract, Firebase Storage — replaces the old `idPhoto` placeholder field)
 - ✅ **Payments** — `id, tenantId, unitId, amountPaid, dueDate, datePaid, method, coveredPeriod, status, notes`
 - ✅ `updatedAt` timestamp added to every location/unit/tenant/payment write — required for last-write-wins cloud sync, same field Pautang Pro uses
 - ⬜ **Admin Users** — not built (single-admin for v1, confirmed)
@@ -41,7 +41,7 @@
 - ⬜ Simple receipt generator
 - ⬜ Export to Excel/PDF
 - ⬜ Due-date reminders (local notifications)
-- ⬜ Photo attachment for tenant ID/contract
+- 🟡 Photo attachment for tenant ID/contract — built (Documents block on tenant detail, upload/replace/remove, Firebase Storage), needs Storage enabled + `storage.rules` published in console before it actually works end to end
 - ⬜ Dark/light theme toggle
 
 ### Later (v2+)
@@ -71,6 +71,7 @@
 - ✅ Enable Authentication (email/password)
 - ✅ Publish Firestore security rules (`users/{uid}/{store}/{docId}`, owner-only read/write)
 - ✅ Drop the project's `firebaseConfig` values into `index.html` — done, `firebaseEnabled` is now `true`
+- 🟡 Enable Firebase Storage (for tenant ID photos + signed contracts) — code wired in `index.html`, `storage.rules` drafted, needs to be enabled and rules published in console
 - ⬜ Set up Firebase Hosting
 - ⬜ Connect custom domain (optional)
 - ⬜ Set up Firestore indexes
@@ -113,6 +114,7 @@
 
 ## Notes
 
+- **Tenant documents via Firebase Storage (this session):** added a "Documents" section to the tenant detail screen with two slots — ID photo and Signed contract. Add/Replace/Remove all wired to Firebase Storage (`users/{uid}/tenants/{tenantId}/{slot}-{timestamp}.ext`), with the download URL + storage path saved on the tenant record's new `documents` field so it rides along through the existing Firestore sync. 15MB upload cap enforced both client-side and in `storage.rules`. Requires being signed in (Settings → Cloud sync) — there's no local-only fallback for this one, since the whole point is an off-device copy. **Needs Firebase Storage enabled + `storage.rules` published** in console before uploads will actually succeed.
 - **PWA offline + versioning (this session):** rewrote `sw.js` with a versioned `CACHE_NAME` (bump `CACHE_VERSION` whenever the shell changes), cache-first app shell, offline navigation fallback, and old-cache cleanup on activate. `manifest.json` filled out properly (icons, standalone display, theme colors, categories). `index.html` now listens for `updatefound`/`controllerchange` and shows a dismissable "Refresh" banner instead of silently reloading a session mid-use. **Needs real `icon-192.png` and `icon-512.png` files** dropped next to `index.html` — the manifest and SW both reference them but no icon files exist yet (see section 7).
 - **Cloud sync ported from Pautang Pro (this session):** the full Auth + Firestore module — sign-in/sign-up/sign-out sheet, `queueRecordSync` fire-and-forget push on every write, `pullAndMergeCollection` + `runFullCloudSync` last-write-wins merge on sign-in, `online` event, and a 3-minute auto-sync timer — is now in `index.html`, gated behind `firebaseEnabled`. Same collection shape too: `users/{uid}/{store}/{id}`.
 - **Bug fix — deleted locations/units resurrecting after sync:** deleting only removed the record locally, so the next sync pulled the still-present cloud copy right back. Fixed with soft-delete tombstones (`deleted: true, updatedAt`) — `refreshCache()` now filters tombstones out of everything the UI reads, while the raw sync/merge logic still sees them so the delete itself propagates and won't bounce back. Note: any locations/units deleted *before* this fix may still be sitting in Firestore without a tombstone — deleting them again once will properly tombstone and clear them for good.
