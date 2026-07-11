@@ -486,7 +486,7 @@
 
 const APP_ID = 'upaPro';
 const DB_NAME = 'upapro_db';
-const DB_VERSION = 2; // v2: + pendingPayments store (tenant portal payment-proof queue)
+const DB_VERSION = 3; // v3: + _syncOutbox store (durable retry queue for cloud sync writes)
 let db;
 
 const uid = () => 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -532,6 +532,14 @@ function openDB() {
         const s = d.createObjectStore('pendingPayments', { keyPath: 'id' });
         s.createIndex('tenantId', 'tenantId');
         s.createIndex('status', 'status');
+      }
+      // v3 — durable outbox for cloud sync. Every record queued for Firestore
+      // is written here FIRST and only removed once the push actually
+      // succeeds, so a closed tab / dropped connection mid-write no longer
+      // silently loses the write (this is what let deleted locations
+      // resurrect — see checklist notes).
+      if (!d.objectStoreNames.contains('_syncOutbox')) {
+        d.createObjectStore('_syncOutbox', { keyPath: 'key' });
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
@@ -648,8 +656,24 @@ async function onCloudAuthStateChanged(user) {
   updateCloudSyncUI();
   if (cloudAutoTimer) { clearInterval(cloudAutoTimer); cloudAutoTimer = null; }
   if (user) {
-    runFullCloudSync(false);
+    // Pull/merge cloud data FIRST, then only seed a starter location if
+    // this account genuinely has nothing anywhere yet. Seeding before the
+    // pull (the old order) is exactly what caused deleted locations to
+    // reappear as duplicates: a fresh/empty local DB (e.g. a new Incognito
+    // session) would seed a brand-new "Paupahan A" immediately on boot,
+    // and then the pull would add the cloud's older copy right alongside
+    // it as a second, separate record.
+    await runFullCloudSync(false);
+    await seedIfEmpty();
+    await refreshCache();
+    render();
     cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
+  } else if (firebaseEnabled) {
+    // Signed out / never signed in — this device will never receive cloud
+    // data, so it's safe to seed a starter location right away.
+    await seedIfEmpty();
+    await refreshCache();
+    render();
   }
 }
 
@@ -677,13 +701,40 @@ function updateCloudSyncUI() {
   }
 }
 
-/* Fire-and-forget push of a single record right after a local write.
-   Firestore's own offline cache (enablePersistence above) queues this
-   write if there's no connection, and sends it once back online. */
-function queueRecordSync(storeName, record) {
+/* Push of a single record right after a local write. Unlike the old
+   fire-and-forget version, this writes the record to a durable IndexedDB
+   outbox BEFORE attempting the network call, and only clears it once
+   Firestore confirms the write. If the tab closes, the network drops, or
+   Firestore's own offline queue never flushes before the session ends
+   (all things that can happen mid-write in Incognito), the entry just sits
+   in the outbox and flushSyncOutbox() retries it on the next boot,
+   sign-in, reconnect, or 3-min sync tick — instead of the write being lost
+   for good, which is what let a deleted location's tombstone quietly never
+   reach the cloud and reappear later (see checklist notes). */
+async function queueRecordSync(storeName, record) {
+  if (!fbUser || !fbStore) return; // not signed in — stays local-only, unchanged
+  const key = storeName + ':' + record.id;
+  await dbPut('_syncOutbox', { key, storeName, id: record.id, record });
+  await pushOutboxEntry(key, storeName, record);
+}
+
+async function pushOutboxEntry(key, storeName, record) {
   if (!fbUser || !fbStore) return;
-  fbStore.collection('users').doc(fbUser.uid).collection(storeName)
-    .doc(String(record.id)).set(record).catch(() => {});
+  try {
+    await fbStore.collection('users').doc(fbUser.uid).collection(storeName)
+      .doc(String(record.id)).set(record);
+    await dbDelete('_syncOutbox', key);
+  } catch (err) {
+    // Left in the outbox on purpose — flushSyncOutbox() retries it later.
+  }
+}
+
+async function flushSyncOutbox() {
+  if (!fbUser || !fbStore) return;
+  const pending = await dbGetAll('_syncOutbox');
+  for (const entry of pending) {
+    await pushOutboxEntry(entry.key, entry.storeName, entry.record);
+  }
 }
 
 async function pullAndMergeCollection(storeName) {
@@ -731,6 +782,11 @@ async function runFullCloudSync(showUi) {
   const statusEl = document.getElementById('cs-sync-status');
   if (showUi && statusEl) statusEl.textContent = 'Syncing…';
   try {
+    // Retry anything left over from a previous interrupted session BEFORE
+    // pulling — otherwise a delete that finally gets a chance to go out
+    // could still lose to a stale (not-yet-deleted) remote copy in the
+    // merge below.
+    await flushSyncOutbox();
     for (const store of SYNCED_STORES) await pullAndMergeCollection(store);
     if (statusEl) statusEl.textContent = 'Last synced ' + new Date().toLocaleString('en-PH');
     await refreshCache();
@@ -1974,8 +2030,18 @@ async function portalRedeemInvite() {
     onPortalAuthChanged(newUser); // portalAccounts doc exists now — safe to load the dashboard.
   } catch (err) {
     console.warn('Invite redemption failed', err);
-    portalRedeeming = false;
+    // Delete the throwaway auth account BEFORE lowering the portalRedeeming
+    // guard, not after. newUser.delete() itself fires an auth-state change
+    // (signing the stray account back out) — if the guard drops first, that
+    // event slips through to the *unguarded* onPortalAuthChanged, which
+    // finds no portalAccounts doc (there never was one, since the invite
+    // was bad), shows "This account isn't linked to a tenant yet", and
+    // bounces back to the login screen — wiping out the signup form (and
+    // the real, useful invite error below) before the person ever sees it.
+    // Keeping the guard up through the delete, same as the success path
+    // does, lets the real error message actually stick.
     if (newUser) { try { await newUser.delete(); } catch (_) {} }
+    portalRedeeming = false;
     errEl.textContent = err.code === 'portal/bad-invite' ? err.message : cloudAuthErrorMessage(err);
   }
 }
@@ -2182,7 +2248,12 @@ async function seedIfEmpty() {
 /* ----------------------------------- BOOT -------------------------------------- */
 (async function boot() {
   db = await openDB();
-  await seedIfEmpty();
+  // Only seed a starter location here if cloud sync isn't in play at all.
+  // When Firebase is enabled, seeding is deferred to onCloudAuthStateChanged
+  // — either right away (if this device turns out to be signed out) or
+  // after the first pull/merge (if signed in) — so it never races a cloud
+  // pull. See onCloudAuthStateChanged for why that race caused duplicates.
+  if (!firebaseEnabled) await seedIfEmpty();
   await refreshCache();
   render();
   initFirebase();
