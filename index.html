@@ -2232,21 +2232,92 @@ function portalRenderHistory() {
     (b.datePaid || b.submittedAt || '').toString().localeCompare((a.datePaid || a.submittedAt || '').toString()));
   document.getElementById('portalMain').innerHTML = rows.length ? `<div class="card-list">${rows.map(r => {
     if (r._kind === 'approved') {
-      return `<div class="row-card" style="cursor:default;">
+      return `<div class="row-card" data-portal-payment="${r.id}">
         <div class="stamp small ${r.status === 'late' ? 'overdue' : (r.status === 'partial' ? 'due' : '')}">${(r.status || 'paid').toUpperCase()}</div>
-        <div class="rc-main"><div class="rc-title">${escapeHTML(r.coveredPeriod)} · ${escapeHTML(r.method)}</div><div class="rc-sub">Paid ${r.datePaid || '—'}</div></div>
+        <div class="rc-main"><div class="rc-title">${escapeHTML(r.coveredPeriod)} · ${escapeHTML(r.method)}</div><div class="rc-sub">Paid ${r.datePaid || '—'}${r.proof ? ' · 📎 proof attached' : ''}</div></div>
         <div class="rc-amt">${peso(r.amountPaid)}</div>
       </div>`;
     }
     const chip = r.status === 'pending' ? 'pending' : 'rejected';
-    return `<div class="row-card" style="cursor:default;">
+    return `<div class="row-card" data-portal-claim="${r.id}">
       <div class="rc-main">
         <div class="rc-title">${escapeHTML(r.coveredPeriod)} · ${escapeHTML(r.method)} <span class="portal-status-chip ${chip}">${chip}</span></div>
-        <div class="rc-sub">Submitted ${new Date(r.submittedAt).toLocaleDateString('en-PH')}${r.status === 'rejected' && r.reviewNote ? ' · ' + escapeHTML(r.reviewNote) : ''}</div>
+        <div class="rc-sub">Submitted ${new Date(r.submittedAt).toLocaleDateString('en-PH')}${r.status === 'rejected' && r.reviewNote ? ' · ' + escapeHTML(r.reviewNote) : ''}${r.proof ? ' · 📎 proof attached' : ''}</div>
       </div>
       <div class="rc-amt">${peso(r.amountClaimed)}</div>
     </div>`;
   }).join('')}</div>` : emptyHTML('🧾', 'No payments yet', 'Submit your first payment from the dashboard.');
+  document.querySelectorAll('#portalMain [data-portal-payment]').forEach(row =>
+    row.addEventListener('click', () => portalOpenPaymentDetailSheet(portal.payments.find(p => p.id === row.dataset.portalPayment))));
+  document.querySelectorAll('#portalMain [data-portal-claim]').forEach(row =>
+    row.addEventListener('click', () => portalOpenPaymentDetailSheet(portal.pendingPayments.find(p => p.id === row.dataset.portalClaim), true)));
+}
+
+/* Read-only detail view for the tenant's own payment/claim, mirroring the admin-side
+   openPaymentDetailSheet — shows the proof file they attached when they submitted it.
+   isClaim distinguishes a still-pending/rejected claim (amountClaimed) from an
+   already-approved payment (amountPaid), since the two records use different field names. */
+function portalOpenPaymentDetailSheet(r, isClaim) {
+  if (!r) return;
+  const proof = r.proof;
+  const proofIsImage = proof && !/\.pdf$/i.test(proof.name || '');
+  const proofBlock = !proof
+    ? `<div class="muted" style="font-size:.82rem; margin-top:4px;">No proof of payment was attached to this submission.</div>`
+    : proofIsImage
+      ? `<div class="proof-thumb-wrap" style="align-items:flex-start;">
+           <img class="proof-thumb" src="${proof.url}" data-lightbox="${escapeAttr(proof.url)}" alt="Payment proof" style="width:100%; height:220px; cursor:pointer;">
+           <div class="proof-thumb-label">Tap to enlarge</div>
+         </div>`
+      : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
+  const statusLabel = isClaim ? (r.status === 'pending' ? 'Waiting on review' : 'Rejected') : (r.status || 'paid').toUpperCase();
+
+  portalOpenSheet(`
+    <h2>Payment details</h2>
+    <div class="field-row">
+      <div class="field"><label>Amount</label><div class="rc-title">${peso(isClaim ? r.amountClaimed : r.amountPaid)}</div></div>
+      <div class="field"><label>Status</label><div class="rc-title">${escapeHTML(statusLabel)}</div></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Period covered</label><div class="rc-title">${escapeHTML(r.coveredPeriod || '—')}</div></div>
+      <div class="field"><label>${isClaim ? 'Submitted' : 'Date paid'}</label><div class="rc-title">${escapeHTML(isClaim ? new Date(r.submittedAt).toLocaleDateString('en-PH') : (r.datePaid || '—'))}</div></div>
+    </div>
+    <div class="field"><label>Method</label><div class="rc-title">${escapeHTML(r.method || '—')}</div></div>
+    ${r.notes ? `<div class="field"><label>Your notes</label><div class="rc-sub">${escapeHTML(r.notes)}</div></div>` : ''}
+    ${isClaim && r.status === 'rejected' && r.reviewNote ? `<div class="field"><label>Reason from landlord</label><div class="rc-sub">${escapeHTML(r.reviewNote)}</div></div>` : ''}
+    <div class="field"><label>Your proof of payment</label>${proofBlock}</div>
+    ${isClaim ? `<div class="sheet-actions"><button class="btn btn-danger" id="pp-delete-btn">Delete this submission</button></div>` : ''}
+  `, () => {
+    const img = document.querySelector('#portalSheetBody [data-lightbox]');
+    if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+    const delBtn = document.getElementById('pp-delete-btn');
+    if (delBtn) delBtn.addEventListener('click', () => portalDeletePaymentClaim(r));
+  });
+}
+
+/* Lets a tenant withdraw their own pending/rejected payment claim — e.g. they entered
+   the wrong amount or attached the wrong proof — so they can resubmit cleanly. Approved
+   claims are never deletable from here: once approved they've become a real `payments`
+   record on the landlord's side and are the source of truth for the tenant's balance,
+   so undoing that has to go through the landlord, not a self-service delete. */
+async function portalDeletePaymentClaim(claim) {
+  if (!claim || claim.status === 'approved') return;
+  if (!confirm('Delete this submission? This can\'t be undone — you\'ll need to submit again.')) return;
+  try {
+    await portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(claim.id).delete();
+    if (claim.proof && claim.proof.storagePath && sb) {
+      // Best-effort cleanup of the uploaded file — a failure here shouldn't block
+      // the delete itself, the claim record is already gone either way.
+      sb.storage.from(TENANT_DOCS_BUCKET).remove([claim.proof.storagePath]).catch(() => {});
+    }
+    portal.pendingPayments = portal.pendingPayments.filter(p => p.id !== claim.id);
+    portalCloseSheet();
+    portalShowToast('Submission deleted');
+    if (portal.view === 'history') portalRenderHistory();
+    else portalRenderDashboard();
+  } catch (err) {
+    console.warn('Delete payment claim failed', err);
+    portalShowToast('Could not delete — check your connection');
+  }
 }
 
 /* ------------------------------- DOCUMENTS ------------------------------- */

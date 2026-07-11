@@ -39,6 +39,15 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
         && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid;
 
+      // Tenant may delete their own claim, but only while it's still pending
+      // or rejected. Once approved it's become a real payment record and is
+      // no longer self-deletable from the portal — see portalDeletePaymentClaim.
+      allow delete: if request.auth != null && store == 'pendingPayments'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && resource.data.portalUid == request.auth.uid
+        && resource.data.status != 'approved';
+
       // A tenant is allowed to update ONLY their own tenant doc, and ONLY
       // the fields the portal ever actually writes: `documents` (ID
       // photo/contract uploads), or claiming `portalUid`/`portalEmail`
