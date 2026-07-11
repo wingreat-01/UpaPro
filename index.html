@@ -1043,6 +1043,26 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('popstate', () => {
   if (ignoreNextPopstate) { ignoreNextPopstate = false; return; }
   if (!document.getElementById('sheetBackdrop').classList.contains('show')) return;
+
+  // If a field inside the sheet still has focus, treat this back press as
+  // "just dismiss the keyboard" instead of "close the sheet". On Android,
+  // a plain text/email field usually eats the back button itself to lower
+  // the keyboard, so our popstate handler never even sees it — but a
+  // type="password" field can show its own autofill/suggestion overlay,
+  // which sometimes lets that same back press fall through to the page as
+  // real navigation. Without this check, that meant back-in-password
+  // closed the whole sheet instead of just the keyboard, unlike back-in-email.
+  const active = document.activeElement;
+  if (active && document.getElementById('sheetBody').contains(active) &&
+      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+    active.blur();
+    // We already consumed the pushed history entry — re-push it so the
+    // *next* back press (with nothing focused) still closes the sheet.
+    history.pushState({ modal: true }, '');
+    sheetHistoryPushed = true;
+    return;
+  }
+
   // The back button already consumed our pushed history entry.
   sheetHistoryPushed = false;
   if (sheetDirty && !confirm('Discard unsaved changes?')) {
