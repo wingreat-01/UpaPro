@@ -147,6 +147,10 @@
   .stamp.overdue{--c:var(--rust);}
   .stamp.due{--c:var(--amber);}
   .stamp.small{width:38px; height:38px; font-size:.5rem; border-width:1.5px;}
+  .stamp.filled{
+    border-style:solid; background:var(--c); color:#fff;
+    box-shadow:0 3px 8px color-mix(in srgb, var(--c) 45%, transparent);
+  }
 
   /* ---------- EMPTY STATE ---------- */
   .empty{
@@ -1180,8 +1184,13 @@ function renderLocationDetail(locationId) {
   document.getElementById('unitList').innerHTML = units.length
     ? units.map(u => {
         const tenant = activeTenantForUnit(u.id);
+        const stamp = u.status === 'occupied'
+          ? { cls: 'filled', color: 'var(--peso)', text: 'RENTED' }
+          : u.status === 'maintenance'
+            ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
+            : { cls: '', color: 'var(--slate)', text: 'OPEN' };
         return `<div class="row-card" data-unit-id="${u.id}">
-          <div class="stamp small ${u.status === 'occupied' ? '' : 'due'}" style="--c:${u.status === 'occupied' ? 'var(--peso)' : 'var(--slate)'};">${u.status === 'occupied' ? 'RENTED' : (u.status === 'maintenance' ? 'FIX' : 'OPEN')}</div>
+          <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
           <div class="rc-main">
             <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
             <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Vacant'}</div>
@@ -1795,6 +1804,8 @@ const portal = {
   tenant: null, unit: null, payments: [], pendingPayments: [],
   view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'documents'
 };
+// True while portalRedeemInvite() is setting up a fresh account — see onPortalAuthChanged.
+let portalRedeeming = false;
 
 function initTenantFirebase() {
   if (portal.app) return;
@@ -1843,6 +1854,10 @@ function portalOpenSheet(html, onMount) {
 function portalCloseSheet() { document.getElementById('portalSheetBackdrop').classList.remove('show'); }
 
 async function onPortalAuthChanged(user) {
+  // While portalRedeemInvite() is mid-flight, createUserWithEmailAndPassword()
+  // fires this listener immediately — before portalAccounts/{uid} exists yet.
+  // Skip here; portalRedeemInvite() calls this manually once setup is done.
+  if (portalRedeeming) return;
   portal.user = user;
   document.getElementById('portalLogoutBtn').style.display = user ? 'flex' : 'none';
   document.getElementById('portalBackBtn').classList.toggle('show', false);
@@ -1937,6 +1952,7 @@ async function portalRedeemInvite() {
   errEl.textContent = '';
   if (!code || !email || !password) { errEl.textContent = 'Fill in every field.'; return; }
   let newUser = null;
+  portalRedeeming = true;
   try {
     const cred = await portal.auth.createUserWithEmailAndPassword(email, password);
     newUser = cred.user;
@@ -1954,9 +1970,11 @@ async function portalRedeemInvite() {
     await portal.store.collection('users').doc(invite.adminUid).collection('tenants').doc(invite.tenantId)
       .update({ portalUid: newUser.uid, portalEmail: email, updatedAt: Date.now() });
     portalShowToast('Account created!');
-    // onAuthStateChanged picks it up from here and loads the dashboard.
+    portalRedeeming = false;
+    onPortalAuthChanged(newUser); // portalAccounts doc exists now — safe to load the dashboard.
   } catch (err) {
     console.warn('Invite redemption failed', err);
+    portalRedeeming = false;
     if (newUser) { try { await newUser.delete(); } catch (_) {} }
     errEl.textContent = err.code === 'portal/bad-invite' ? err.message : cloudAuthErrorMessage(err);
   }
