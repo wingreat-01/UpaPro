@@ -1484,16 +1484,24 @@ function genInviteCode() {
 
 async function generatePortalInvite(tenant) {
   if (!fbUser || !fbStore) return showToast('Sign in via Settings → Cloud sync first');
-  let inviteId, attempts = 0;
-  do {
-    inviteId = genInviteCode();
-    attempts++;
-  } while (attempts < 5 && (await fbStore.collection('invites').doc(inviteId).get()).exists);
-  const invite = {
-    adminUid: fbUser.uid, tenantId: tenant.id, unitId: tenant.unitId,
-    createdAt: Date.now(), used: false,
-  };
   try {
+    // Regenerating replaces the code the admin shares, but the OLD invite
+    // doc was otherwise left sitting in Firestore, still valid and unused
+    // forever — anyone who found an old code (old screenshot, message
+    // thread) could still redeem it later. Void it before making a new one.
+    if (tenant.portalInvite && !tenant.portalInvite.used) {
+      await fbStore.collection('invites').doc(tenant.portalInvite.id)
+        .update({ used: true, voidedAt: Date.now() }).catch(() => {});
+    }
+    let inviteId, attempts = 0;
+    do {
+      inviteId = genInviteCode();
+      attempts++;
+    } while (attempts < 5 && (await fbStore.collection('invites').doc(inviteId).get()).exists);
+    const invite = {
+      adminUid: fbUser.uid, tenantId: tenant.id, unitId: tenant.unitId,
+      createdAt: Date.now(), used: false,
+    };
     await fbStore.collection('invites').doc(inviteId).set(invite);
     const updated = { ...tenant, portalInvite: { id: inviteId, used: false }, updatedAt: Date.now() };
     await dbPut('tenants', updated);
@@ -1502,6 +1510,9 @@ async function generatePortalInvite(tenant) {
     renderPortalAccessBlock(state.cache.tenants.find(t => t.id === tenant.id));
     showToast('Invite code created — share it with the tenant');
   } catch (err) {
+    // Collision-check loop used to sit outside this try/catch, so a
+    // network hiccup (e.g. offline) during it threw uncaught with no
+    // feedback to the admin. Now the whole thing is covered.
     console.warn('Invite creation failed', err);
     showToast('Could not create invite — check your connection');
   }

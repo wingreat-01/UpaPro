@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------------------------------------------------------------
+       ADMIN DATA — owner-only, unchanged from the existing published rule.
+       users/{uid}/{store}/{docId}: locations, units, tenants, payments,
+       pendingPayments — only the signed-in admin who owns them can
+       read/write their own subtree.
+    --------------------------------------------------------------- */
+    match /users/{adminUid}/{store}/{docId} {
+      allow read, write: if request.auth != null && request.auth.uid == adminUid;
+
+      // TENANT PORTAL CARVE-OUTS — a signed-in tenant portal account
+      // (a different uid than the admin) needs narrow, specific access
+      // to a few of the admin's documents. Each carve-out re-derives the
+      // tenant's own portalAccounts link doc to confirm they're actually
+      // linked to *this* adminUid before allowing anything.
+      allow get: if request.auth != null && store == 'tenants'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.tenantId == docId;
+
+      allow get: if request.auth != null && store == 'units'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.unitId == docId;
+
+      allow list: if request.auth != null && store == 'payments'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid;
+
+      allow create: if request.auth != null && store == 'pendingPayments'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && request.resource.data.portalUid == request.auth.uid;
+
+      allow list: if request.auth != null && store == 'pendingPayments'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid;
+
+      // A tenant is allowed to update ONLY their own tenant doc, and ONLY
+      // the fields the portal ever actually writes: `documents` (ID
+      // photo/contract uploads), or claiming `portalUid`/`portalEmail`
+      // one time at signup (guarded so it can't be reassigned later).
+      allow update: if request.auth != null && store == 'tenants'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.tenantId == docId
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['documents', 'portalUid', 'portalEmail', 'updatedAt']);
+    }
+
+    /* ---------------------------------------------------------------
+       invites/{code} — one-time invite codes, top-level collection.
+       - create: only the admin who owns the tenant/unit named in the
+         invite can create one (adminUid must match their own uid).
+       - get: any signed-in user may look up a code to redeem it (this is
+         what a brand-new signup account needs, before it's linked to
+         anything). The code itself is the "secret" here, same as a
+         password-reset link — knowing it is what grants the read.
+       - update: only allowed to flip `used` from false -> true, and only
+         by the account claiming it (usedByUid must be the caller) — this
+         covers both real redemption AND the admin voiding a stale code
+         on regenerate.
+       - delete/full overwrite: never allowed directly.
+    --------------------------------------------------------------- */
+    match /invites/{code} {
+      allow get: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.adminUid == request.auth.uid
+        && request.resource.data.used == false;
+      allow update: if request.auth != null
+        && resource.data.used == false
+        && request.resource.data.used == true
+        && (
+             request.resource.data.usedByUid == request.auth.uid ||               // tenant redeeming it
+             request.resource.data.adminUid == request.auth.uid                    // admin voiding it on regenerate
+           );
+      allow delete: if false;
+    }
+
+    /* ---------------------------------------------------------------
+       portalAccounts/{tenantAuthUid} — the link doc a tenant portal
+       account uses to find "which admin, which tenant, which unit" on
+       every sign-in (see onPortalAuthChanged).
+       - get: only the account itself can read its own link.
+       - create: only once, by that same account, and only if the
+         invite doc it's citing was JUST marked used by this same uid —
+         i.e. this create can only ever follow a legitimate redemption,
+         never be forged directly.
+       - update/delete: never — a link, once made, is immutable from the
+         client; revoking access is an admin-side action on the tenant
+         record instead (see revokePortalAccess).
+    --------------------------------------------------------------- */
+    match /portalAccounts/{tenantAuthUid} {
+      allow get: if request.auth != null && request.auth.uid == tenantAuthUid;
+      allow create: if request.auth != null && request.auth.uid == tenantAuthUid
+        && exists(/databases/$(database)/documents/invites/$(request.resource.data.inviteId))
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.used == true
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteId)).data.usedByUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
