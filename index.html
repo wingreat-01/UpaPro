@@ -291,6 +291,34 @@
   .doc-slot .doc-actions{display:flex; gap:6px; margin-top:2px; flex-wrap:wrap;}
   .doc-slot .doc-actions a, .doc-slot .doc-actions button{font-size:.72rem; padding:6px 10px; min-height:0;}
 
+  /* ---------- Payment-proof review thumbnails (admin) ---------- */
+  .proof-thumb-row{display:flex; gap:10px; margin-top:8px; flex-wrap:wrap;}
+  .proof-thumb-wrap{display:flex; flex-direction:column; align-items:center; gap:3px;}
+  .proof-thumb{
+    width:60px; height:60px; border-radius:10px; object-fit:cover;
+    border:1px solid var(--line); cursor:zoom-in; background:var(--paper-2);
+  }
+  .proof-thumb-label{font-size:.62rem; color:var(--slate); text-align:center;}
+  .proof-file-chip{
+    display:flex; align-items:center; gap:6px; font-size:.72rem; padding:8px 12px;
+    border:1px solid var(--line); border-radius:10px; background:var(--paper-2);
+    cursor:pointer; text-decoration:none; color:inherit;
+  }
+  .proof-missing{
+    display:flex; align-items:center; gap:6px; font-size:.72rem; font-weight:600; color:var(--rust);
+    background:var(--rust-soft); padding:7px 11px; border-radius:10px; margin-top:8px; width:100%;
+  }
+  .img-lightbox-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,.85); display:none;
+    align-items:center; justify-content:center; z-index:999; padding:28px; cursor:zoom-out;
+  }
+  .img-lightbox-backdrop.show{display:flex;}
+  .img-lightbox-backdrop img{max-width:100%; max-height:100%; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.5); cursor:default;}
+  .img-lightbox-close{
+    position:absolute; top:18px; right:18px; width:38px; height:38px; border-radius:50%;
+    background:rgba(255,255,255,.15); color:#fff; border:none; font-size:1.1rem; cursor:pointer;
+  }
+
   /* ---------- TENANT PORTAL ---------- */
   #tenantPortal{
     max-width:480px; margin:0 auto; min-height:100vh; background:var(--paper);
@@ -430,6 +458,10 @@
 <!-- SHEET BACKDROP (all forms render inside here) -->
 <div class="sheet-backdrop" id="sheetBackdrop">
   <div class="sheet" id="sheetBody"></div>
+</div>
+<div class="img-lightbox-backdrop" id="imgLightboxBackdrop">
+  <button class="img-lightbox-close" id="imgLightboxCloseBtn" aria-label="Close">✕</button>
+  <img id="imgLightboxImg" src="" alt="Document preview">
 </div>
 
 <script>
@@ -571,8 +603,8 @@ let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAu
    contracts) and their public-but-unguessable-path download URLs. There is
    no Supabase Auth session here — sb.auth is never touched. */
 const supabaseConfig = {
-  url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co/rest/v1/",
-  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c"
+  url: "https://YOUR-PROJECT.supabase.co",
+  anonKey: "YOUR-ANON-KEY"
 };
 const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
 const TENANT_DOCS_BUCKET = 'tenant-docs';
@@ -918,8 +950,32 @@ document.getElementById('sheetBody').addEventListener('input', (e) => {
   if (e.target.id !== 'f-search') sheetDirty = true;
 });
 
+/* --------- Full-screen image lightbox (payment proof / ID review) ---------
+   Lightweight, no history-push needed — Escape/backdrop-click just hides it. */
+function openImageLightbox(url) {
+  const bd = document.getElementById('imgLightboxBackdrop');
+  if (!bd) return;
+  document.getElementById('imgLightboxImg').src = url;
+  bd.classList.add('show');
+}
+function closeImageLightbox() {
+  const bd = document.getElementById('imgLightboxBackdrop');
+  if (!bd) return;
+  bd.classList.remove('show');
+  document.getElementById('imgLightboxImg').src = '';
+}
+document.getElementById('imgLightboxCloseBtn').addEventListener('click', closeImageLightbox);
+document.getElementById('imgLightboxBackdrop').addEventListener('click', (e) => {
+  if (e.target.id === 'imgLightboxBackdrop') closeImageLightbox();
+});
+
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.getElementById('sheetBackdrop').classList.contains('show')) {
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('imgLightboxBackdrop').classList.contains('show')) {
+    closeImageLightbox();
+    return;
+  }
+  if (document.getElementById('sheetBackdrop').classList.contains('show')) {
     requestCloseSheet();
   }
 });
@@ -1229,8 +1285,6 @@ function renderUnitDetail(unitId) {
           <div class="kv"><div class="k">${monthLabel(period)} paid</div><div class="v">${peso(paid)}</div></div>
           <div class="kv"><div class="k">Balance</div><div class="v" style="color:${balance > 0 ? 'var(--rust)' : 'var(--peso)'}">${peso(balance)}</div></div>
         </div>
-        <div class="section-label" style="margin-top:14px;">Documents</div>
-        <div id="tenantDocsBlock" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
         <div class="section-label" style="margin-top:14px;">Tenant portal access</div>
         <div id="tenantPortalAccessBlock"></div>
         <div style="display:flex; gap:8px; margin-top:14px;">
@@ -1244,7 +1298,6 @@ function renderUnitDetail(unitId) {
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
-    renderTenantDocs(tenant);
     renderPortalAccessBlock(tenant);
   } else {
     document.getElementById('unitTenantBlock').innerHTML = `
@@ -1278,113 +1331,17 @@ function renderUnitDetail(unitId) {
 function nth(n) { return ['th', 'st', 'nd', 'rd'][(n % 10 > 3 || Math.floor(n / 10) === 1) ? 0 : n % 10]; }
 
 /* ------------------------------ TENANT DOCUMENTS ----------------------------
-   ID photo + signed contract, stored in Supabase Storage (bucket
-   TENANT_DOCS_BUCKET) under users/{uid}/tenants/{tenantId}/{slot}-{timestamp}.{ext}.
-   The public URL and storage path are saved on the tenant record itself
-   (documents.idPhoto / documents.contract), which still syncs through
-   Firestore last-write-wins exactly as before — only the file bytes moved,
-   not the metadata. Requires being signed in via Firebase (for the uid used
-   in the path) — there's no local-only fallback for these, since the whole
-   point is a safe off-device copy. */
+   ID photo + signed contract are managed entirely from the TENANT PORTAL now
+   (tenant uploads their own — see portalPickAndUploadDoc / portalRenderDocSlots
+   further down), not from the admin tenant detail view. Storage lives in
+   Supabase Storage (bucket TENANT_DOCS_BUCKET) under
+   users/{uid}/tenants/{tenantId}/{slot}-{timestamp}.{ext}. The public URL and
+   storage path are saved on the tenant record itself (documents.idPhoto /
+   documents.contract), which syncs through Firestore last-write-wins like
+   everything else — so the admin still has read access to the data, there's
+   just no upload/replace/remove UI for it on the admin side. */
 const DOC_SLOTS = { idPhoto: 'ID photo', contract: 'Signed contract' };
 const MAX_DOC_BYTES = 15 * 1024 * 1024;
-
-function renderTenantDocs(tenant) {
-  const wrap = document.getElementById('tenantDocsBlock');
-  if (!wrap) return;
-  if (!fbUser) {
-    wrap.innerHTML = `<div class="muted" style="font-size:.78rem;">Sign in via Settings → Cloud sync to attach ID photos and contracts.</div>`;
-    return;
-  }
-  wrap.innerHTML = Object.entries(DOC_SLOTS).map(([slot, label]) => {
-    const doc = tenant.documents && tenant.documents[slot];
-    if (doc) {
-      const icon = /\.pdf$/i.test(doc.name || '') ? '📄' : '🖼️';
-      return `
-        <div class="doc-slot has-file">
-          <div class="doc-icon">${icon}</div>
-          <div class="doc-label">${escapeHTML(label)}</div>
-          <div class="doc-name">${escapeHTML(doc.name || '')}</div>
-          <div class="doc-actions">
-            <a href="${doc.url}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">View</a>
-            <button class="btn btn-outline btn-sm" data-slot="${slot}" data-action="replace">Replace</button>
-            <button class="btn btn-danger btn-sm" data-slot="${slot}" data-action="remove">Remove</button>
-          </div>
-        </div>`;
-    }
-    return `
-      <div class="doc-slot">
-        <div class="doc-icon">➕</div>
-        <div class="doc-label">${escapeHTML(label)}</div>
-        <div class="doc-actions">
-          <button class="btn btn-primary btn-sm" data-slot="${slot}" data-action="add">Add</button>
-        </div>
-      </div>`;
-  }).join('');
-
-  wrap.querySelectorAll('button[data-slot]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const slot = btn.dataset.slot;
-      const action = btn.dataset.action;
-      if (action === 'remove') removeTenantDocument(tenant.id, slot);
-      else pickAndUploadTenantDocument(tenant.id, slot);
-    });
-  });
-}
-
-function pickAndUploadTenantDocument(tenantId, slot) {
-  if (!fbUser || !sb) return showToast('Sign in via Cloud sync first to upload documents');
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/*,application/pdf';
-  input.onchange = async () => {
-    const file = input.files[0];
-    if (!file) return;
-    if (file.size > MAX_DOC_BYTES) return showToast('File is too large — max 15MB');
-    showToast('Uploading…');
-    try {
-      const tenant = state.cache.tenants.find(t => t.id === tenantId);
-      const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
-      const path = `users/${fbUser.uid}/tenants/${tenantId}/${slot}-${Date.now()}.${ext}`;
-      const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
-      if (uploadErr) throw uploadErr;
-      const url = docPublicUrl(path);
-
-      // Clean up the previous file in this slot now that the new upload succeeded.
-      const prevDoc = tenant.documents && tenant.documents[slot];
-      if (prevDoc && prevDoc.storagePath) sb.storage.from(TENANT_DOCS_BUCKET).remove([prevDoc.storagePath]).catch(() => {});
-
-      const updated = {
-        ...tenant,
-        documents: { ...(tenant.documents || {}), [slot]: { url, storagePath: path, name: file.name, uploadedAt: Date.now() } },
-        updatedAt: Date.now(),
-      };
-      await dbPut('tenants', updated);
-      queueRecordSync('tenants', updated);
-      await refreshCache();
-      renderTenantDocs(state.cache.tenants.find(t => t.id === tenantId));
-      showToast('Document uploaded');
-    } catch (err) {
-      console.warn('Document upload failed', err);
-      showToast('Upload failed — check your connection');
-    }
-  };
-  input.click();
-}
-
-async function removeTenantDocument(tenantId, slot) {
-  const tenant = state.cache.tenants.find(t => t.id === tenantId);
-  const doc = tenant && tenant.documents && tenant.documents[slot];
-  if (!doc) return;
-  if (!confirm(`Remove ${DOC_SLOTS[slot]}?`)) return;
-  if (doc.storagePath && sb) sb.storage.from(TENANT_DOCS_BUCKET).remove([doc.storagePath]).catch(() => {});
-  const updated = { ...tenant, documents: { ...(tenant.documents || {}), [slot]: null }, updatedAt: Date.now() };
-  await dbPut('tenants', updated);
-  queueRecordSync('tenants', updated);
-  await refreshCache();
-  renderTenantDocs(state.cache.tenants.find(t => t.id === tenantId));
-  showToast('Document removed');
-}
 
 /* --------------------------- TENANT PORTAL ACCESS (admin side) ---------------------------
    A tenant portal account is a *separate* Firebase Auth user (their own email+password),
@@ -1428,9 +1385,25 @@ function renderPortalAccessBlock(tenant) {
   }
 }
 
+/* Short, human-typeable invite code: 8 chars from an unambiguous alphabet
+   (no 0/O/1/I, since those get misread when texted/read aloud), formatted
+   as XXXX-XXXX. Collision check against existing invites/ docs since this
+   doubles as the Firestore document ID — extremely unlikely to collide at
+   this scale, but cheap to guard against. */
+function genInviteCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code.slice(0, 4) + '-' + code.slice(4);
+}
+
 async function generatePortalInvite(tenant) {
   if (!fbUser || !fbStore) return showToast('Sign in via Settings → Cloud sync first');
-  const inviteId = uid() + uid(); // long + unguessable, this doubles as the "invite code"
+  let inviteId, attempts = 0;
+  do {
+    inviteId = genInviteCode();
+    attempts++;
+  } while (attempts < 5 && (await fbStore.collection('invites').doc(inviteId).get()).exists);
   const invite = {
     adminUid: fbUser.uid, tenantId: tenant.id, unitId: tenant.unitId,
     createdAt: Date.now(), used: false,
@@ -1598,15 +1571,38 @@ function renderPendingReviewsList() {
   list.innerHTML = rows.length ? rows.map(p => {
     const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
     const unit = state.cache.units.find(u => u.id === p.unitId);
+    const idPhoto = tenant && tenant.documents && tenant.documents.idPhoto;
+    const proof = p.proof;
+    const proofIsImage = proof && !/\.pdf$/i.test(proof.name || '');
+
+    const proofBlock = !proof
+      ? `<div class="proof-missing">⚠️ No proof attached — verify with the tenant before approving</div>`
+      : proofIsImage
+        ? `<div class="proof-thumb-wrap">
+             <img class="proof-thumb" src="${proof.url}" data-lightbox="${escapeAttr(proof.url)}" alt="Payment proof">
+             <div class="proof-thumb-label">Proof</div>
+           </div>`
+        : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 Proof (${escapeHTML(proof.name || 'file')})</a>`;
+
+    const idPhotoBlock = idPhoto
+      ? `<div class="proof-thumb-wrap">
+           <img class="proof-thumb" src="${idPhoto.url}" data-lightbox="${escapeAttr(idPhoto.url)}" alt="Tenant ID on file">
+           <div class="proof-thumb-label">ID on file</div>
+         </div>`
+      : '';
+
     return `
       <div class="row-card" style="cursor:default; flex-wrap:wrap;">
         <div class="stamp small due">NEW</div>
         <div class="rc-main">
           <div class="rc-title">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
           <div class="rc-sub">${escapeHTML(unit ? unit.unitLabel : '')} · ${escapeHTML(p.coveredPeriod || '')} · ${escapeHTML(p.method || '')}</div>
-          ${p.proof && p.proof.url ? `<div style="margin-top:4px;"><a href="${p.proof.url}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">View proof</a></div>` : ''}
         </div>
         <div class="rc-amt">${peso(p.amountClaimed)}</div>
+        <div class="proof-thumb-row" style="width:100%;">
+          ${proofBlock}
+          ${idPhotoBlock}
+        </div>
         <div style="width:100%; display:flex; gap:8px; margin-top:10px;">
           <button class="btn btn-danger btn-sm" style="flex:1;" data-reject="${p.id}">Reject</button>
           <button class="btn btn-accent btn-sm" style="flex:1;" data-approve="${p.id}">Approve</button>
@@ -1615,6 +1611,7 @@ function renderPendingReviewsList() {
   }).join('') : emptyHTML('✅', 'All caught up', 'No payment proofs waiting for review.');
   list.querySelectorAll('[data-approve]').forEach(btn => btn.addEventListener('click', () => approvePendingPayment(btn.dataset.approve)));
   list.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => rejectPendingPayment(btn.dataset.reject)));
+  list.querySelectorAll('[data-lightbox]').forEach(img => img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox)));
 }
 async function approvePendingPayment(id) {
   const p = state.cache.pendingPayments.find(x => x.id === id);
@@ -1923,7 +1920,7 @@ function portalRenderLogin() {
 function portalRenderSignup() {
   document.getElementById('portalMain').innerHTML = `
     <div class="section-label">Redeem your invite</div>
-    <div class="field"><label>Invite code</label><input id="p-code" style="font-family:'JetBrains Mono',monospace;" placeholder="Paste the code your landlord sent"></div>
+    <div class="field"><label>Invite code</label><input id="p-code" style="font-family:'JetBrains Mono',monospace; text-transform:uppercase;" placeholder="e.g. AB3D-9F2K"></div>
     <div class="field"><label>Your email</label><input id="p-signup-email" type="email" inputmode="email" autocomplete="email"></div>
     <div class="field"><label>Choose a password</label><input id="p-signup-password" type="password" autocomplete="new-password" placeholder="At least 6 characters"></div>
     <div id="p-signup-error" style="color:var(--rust); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
@@ -1933,7 +1930,7 @@ function portalRenderSignup() {
 }
 
 async function portalRedeemInvite() {
-  const code = document.getElementById('p-code').value.trim();
+  const code = document.getElementById('p-code').value.trim().toUpperCase();
   const email = document.getElementById('p-signup-email').value.trim();
   const password = document.getElementById('p-signup-password').value;
   const errEl = document.getElementById('p-signup-error');
