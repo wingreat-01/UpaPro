@@ -17,7 +17,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
+     now lives on Supabase Storage instead of Firebase Storage. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
   :root{
     --ink:#1C2B33;
@@ -562,7 +564,34 @@ const firebaseConfig = {
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
 const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments'];
-let fbAuth = null, fbStore = null, fbStorage = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
+let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
+
+/* Supabase — Storage ONLY. Auth and the Firestore database stay on Firebase;
+   this client is used purely for tenant document uploads (ID photos, signed
+   contracts) and their public-but-unguessable-path download URLs. There is
+   no Supabase Auth session here — sb.auth is never touched. */
+const supabaseConfig = {
+  url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co/rest/v1/",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c"
+};
+const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
+const TENANT_DOCS_BUCKET = 'tenant-docs';
+let sb = null;
+
+function initSupabaseStorage() {
+  if (!supabaseStorageEnabled) return;
+  try {
+    if (typeof supabase === 'undefined') return;
+    sb = supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
+  } catch (err) {
+    console.warn('Supabase Storage init failed', err);
+  }
+}
+
+function docPublicUrl(path) {
+  const { data } = sb.storage.from(TENANT_DOCS_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
 
 function initFirebase() {
   if (!firebaseEnabled) return;
@@ -571,7 +600,6 @@ function initFirebase() {
     firebase.initializeApp(firebaseConfig);
     fbAuth = firebase.auth();
     fbStore = firebase.firestore();
-    fbStorage = firebase.storage();
     fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {});
     fbAuth.onAuthStateChanged(onCloudAuthStateChanged);
   } catch (err) {
@@ -1250,12 +1278,14 @@ function renderUnitDetail(unitId) {
 function nth(n) { return ['th', 'st', 'nd', 'rd'][(n % 10 > 3 || Math.floor(n / 10) === 1) ? 0 : n % 10]; }
 
 /* ------------------------------ TENANT DOCUMENTS ----------------------------
-   ID photo + signed contract, stored in Firebase Storage under
-   users/{uid}/tenants/{tenantId}/{slot}-{timestamp}.{ext}. The download URL
-   and storage path are saved on the tenant record itself (documents.idPhoto /
-   documents.contract), so they sync through the same Firestore last-write-wins
-   path as everything else. Requires being signed in — there's no local-only
-   fallback for these, since the whole point is a safe off-device copy. */
+   ID photo + signed contract, stored in Supabase Storage (bucket
+   TENANT_DOCS_BUCKET) under users/{uid}/tenants/{tenantId}/{slot}-{timestamp}.{ext}.
+   The public URL and storage path are saved on the tenant record itself
+   (documents.idPhoto / documents.contract), which still syncs through
+   Firestore last-write-wins exactly as before — only the file bytes moved,
+   not the metadata. Requires being signed in via Firebase (for the uid used
+   in the path) — there's no local-only fallback for these, since the whole
+   point is a safe off-device copy. */
 const DOC_SLOTS = { idPhoto: 'ID photo', contract: 'Signed contract' };
 const MAX_DOC_BYTES = 15 * 1024 * 1024;
 
@@ -1303,7 +1333,7 @@ function renderTenantDocs(tenant) {
 }
 
 function pickAndUploadTenantDocument(tenantId, slot) {
-  if (!fbUser || !fbStorage) return showToast('Sign in via Cloud sync first to upload documents');
+  if (!fbUser || !sb) return showToast('Sign in via Cloud sync first to upload documents');
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*,application/pdf';
@@ -1316,13 +1346,13 @@ function pickAndUploadTenantDocument(tenantId, slot) {
       const tenant = state.cache.tenants.find(t => t.id === tenantId);
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `users/${fbUser.uid}/tenants/${tenantId}/${slot}-${Date.now()}.${ext}`;
-      const ref = fbStorage.ref(path);
-      await ref.put(file);
-      const url = await ref.getDownloadURL();
+      const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      const url = docPublicUrl(path);
 
       // Clean up the previous file in this slot now that the new upload succeeded.
       const prevDoc = tenant.documents && tenant.documents[slot];
-      if (prevDoc && prevDoc.storagePath) fbStorage.ref(prevDoc.storagePath).delete().catch(() => {});
+      if (prevDoc && prevDoc.storagePath) sb.storage.from(TENANT_DOCS_BUCKET).remove([prevDoc.storagePath]).catch(() => {});
 
       const updated = {
         ...tenant,
@@ -1347,7 +1377,7 @@ async function removeTenantDocument(tenantId, slot) {
   const doc = tenant && tenant.documents && tenant.documents[slot];
   if (!doc) return;
   if (!confirm(`Remove ${DOC_SLOTS[slot]}?`)) return;
-  if (doc.storagePath) fbStorage.ref(doc.storagePath).delete().catch(() => {});
+  if (doc.storagePath && sb) sb.storage.from(TENANT_DOCS_BUCKET).remove([doc.storagePath]).catch(() => {});
   const updated = { ...tenant, documents: { ...(tenant.documents || {}), [slot]: null }, updatedAt: Date.now() };
   await dbPut('tenants', updated);
   queueRecordSync('tenants', updated);
@@ -1763,7 +1793,7 @@ document.getElementById('searchBtn').addEventListener('click', () => {
    Nothing in this section works until those rules are live.
    ========================================================================= */
 const portal = {
-  app: null, auth: null, store: null, storage: null,
+  app: null, auth: null, store: null,
   user: null, adminUid: null, tenantId: null, unitId: null,
   tenant: null, unit: null, payments: [], pendingPayments: [],
   view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'documents'
@@ -1774,7 +1804,9 @@ function initTenantFirebase() {
   portal.app = firebase.initializeApp(firebaseConfig, 'tenantPortalApp');
   portal.auth = portal.app.auth();
   portal.store = portal.app.firestore();
-  portal.storage = portal.app.storage();
+  // File storage (ID photo, contract, payment proof) uses the single shared
+  // `sb` Supabase Storage client — no per-instance storage needed here since
+  // sb.auth is never used for Storage in this setup (see supabaseStorageEnabled).
 }
 
 function enterTenantPortalMode() {
@@ -1999,9 +2031,9 @@ async function portalSubmitPaymentProof() {
     if (file) {
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/proof-${Date.now()}.${ext}`;
-      const ref = portal.storage.ref(path);
-      await ref.put(file);
-      proof = { url: await ref.getDownloadURL(), storagePath: path, name: file.name };
+      const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      proof = { url: docPublicUrl(path), storagePath: path, name: file.name };
     }
     const id = uid();
     const claim = {
@@ -2096,9 +2128,9 @@ function portalPickAndUploadDoc(slot) {
     try {
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/${slot}-${Date.now()}.${ext}`;
-      const ref = portal.storage.ref(path);
-      await ref.put(file);
-      const url = await ref.getDownloadURL();
+      const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      const url = docPublicUrl(path);
       const updatedDocs = { ...(portal.tenant.documents || {}), [slot]: { url, storagePath: path, name: file.name, uploadedAt: Date.now() } };
       await portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId)
         .update({ documents: updatedDocs, updatedAt: Date.now() });
@@ -2139,6 +2171,7 @@ async function seedIfEmpty() {
   await refreshCache();
   render();
   initFirebase();
+  initSupabaseStorage();
   // A tenant opened the shared link (?portal=1) — skip straight to their portal
   // instead of the admin dashboard. The admin app still boots quietly underneath
   // so nothing else in this file has to special-case "portal mode".
