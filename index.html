@@ -845,7 +845,7 @@ function openCloudSyncSheet() {
       try {
         await fbAuth.createUserWithEmailAndPassword(email, password);
         showToast('Account created — syncing your data');
-        updateCloudSyncUI();
+        closeSheet();
       } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
     });
     document.getElementById('cs-signin-btn').addEventListener('click', async () => {
@@ -857,7 +857,7 @@ function openCloudSyncSheet() {
       try {
         await fbAuth.signInWithEmailAndPassword(email, password);
         showToast('Signed in — syncing your data');
-        updateCloudSyncUI();
+        closeSheet();
       } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
     });
     document.getElementById('cs-signout-btn').addEventListener('click', async () => {

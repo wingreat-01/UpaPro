@@ -114,6 +114,8 @@
 
 ## Notes
 
+- **UX tweak — cloud sync sheet auto-closes after sign-in/sign-up (this session):** the sheet used to stay open and just refresh its own "signed in" view after a successful sign-in or account creation. It now calls `closeSheet()` right after, same as the sign-out button already did — one less tap to get back to the app.
+
 - **Bug fix — invite redemption shows "This account isn't linked to a tenant yet" instead of the real error (this session):** happened whenever a tenant entered a bad invite code (typo, already-used, expired). `portalRedeemInvite()` creates the throwaway Firebase Auth account *before* validating the code, guarded by a `portalRedeeming` flag so the auth-state listener ignores it mid-flight. On a bad code, the cleanup path was un-guarding (`portalRedeeming = false`) *before* deleting that throwaway account — and `newUser.delete()` itself fires an auth-state change, which then hit the now-unguarded listener, found no linked tenant record (there never was one), signed the account out, showed the generic "isn't linked" toast, and bounced back to the login screen — wiping out the signup form (and the actual "invalid or already used" message) before the tenant ever saw it. **Fix:** delete the throwaway account *before* lowering the guard, same ordering the success path already used. The real invite error now reaches the screen.
   - **Still to verify:** try redeeming with a deliberately wrong/reused code and confirm the specific error text ("That invite code is invalid or already used.") actually stays on screen instead of the generic toast.
 
