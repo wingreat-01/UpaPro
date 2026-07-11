@@ -615,8 +615,8 @@ let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAu
    contracts) and their public-but-unguessable-path download URLs. There is
    no Supabase Auth session here — sb.auth is never touched. */
 const supabaseConfig = {
-  url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co",
-  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c"
+  url: "https://YOUR-PROJECT.supabase.co",
+  anonKey: "YOUR-ANON-KEY"
 };
 const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
 const TENANT_DOCS_BUCKET = 'tenant-docs';
@@ -1399,21 +1399,67 @@ function renderUnitDetail(unitId) {
   const payments = paymentsForTenant(tenant ? tenant.id : '__none__');
   document.getElementById('unitPayments').innerHTML = payments.length
     ? payments.map(p => `
-      <div class="row-card" style="cursor:default;">
+      <div class="row-card" data-payment-detail="${p.id}">
         <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
         <div class="rc-main">
           <div class="rc-title">${escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
-          <div class="rc-sub">Paid ${p.datePaid || '—'}</div>
+          <div class="rc-sub">Paid ${p.datePaid || '—'}${p.proof ? ' · 📎 proof attached' : ''}</div>
         </div>
         <div class="rc-amt">${peso(p.amountPaid)}</div>
       </div>`).join('')
     : emptyHTML('🧾', 'No payments logged', tenant ? 'Log the first payment for this tenant.' : 'Assign a tenant first.');
+  document.getElementById('unitPayments').querySelectorAll('[data-payment-detail]').forEach(row =>
+    row.addEventListener('click', () => openPaymentDetailSheet(row.dataset.paymentDetail)));
 
   document.getElementById('fabAdd').onclick = tenant
     ? () => openPaymentForm(tenant, unit)
     : () => openTenantForm(null, unit.id);
 }
 function nth(n) { return ['th', 'st', 'nd', 'rd'][(n % 10 > 3 || Math.floor(n / 10) === 1) ? 0 : n % 10]; }
+
+/* ------------------------------ PAYMENT DETAIL (admin) ------------------------------
+   Read-only detail view for a single logged payment, opened by tapping a row in a
+   tenant's payment history. Surfaces the proof-of-payment file when present — either
+   uploaded by the tenant via the portal (carried over on approvePendingPayment) or,
+   for older/manually-logged payments, absent entirely. */
+function openPaymentDetailSheet(paymentId) {
+  const p = state.cache.payments.find(x => x.id === paymentId);
+  if (!p) return;
+  const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+  const unit = state.cache.units.find(u => u.id === p.unitId);
+  const proof = p.proof;
+  const proofIsImage = proof && !/\.pdf$/i.test(proof.name || '');
+  const proofBlock = !proof
+    ? `<div class="muted" style="font-size:.82rem; margin-top:4px;">No proof of payment on file for this entry.</div>`
+    : proofIsImage
+      ? `<div class="proof-thumb-wrap" style="align-items:flex-start;">
+           <img class="proof-thumb" src="${proof.url}" data-lightbox="${escapeAttr(proof.url)}" alt="Payment proof" style="width:100%; height:220px; cursor:pointer;">
+           <div class="proof-thumb-label">Tap to enlarge</div>
+         </div>`
+      : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
+
+  openSheet(`
+    <h2>Payment details</h2>
+    <div class="field-row">
+      <div class="field"><label>Tenant</label><div class="rc-title">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div></div>
+      <div class="field"><label>Unit</label><div class="rc-title">${escapeHTML(unit ? unit.unitLabel : '—')}</div></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Amount paid</label><div class="rc-title">${peso(p.amountPaid)}</div></div>
+      <div class="field"><label>Status</label><div class="rc-title">${escapeHTML((p.status || '').toUpperCase())}</div></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Period covered</label><div class="rc-title">${escapeHTML(p.coveredPeriod || '—')}</div></div>
+      <div class="field"><label>Date paid</label><div class="rc-title">${escapeHTML(p.datePaid || '—')}</div></div>
+    </div>
+    <div class="field"><label>Method</label><div class="rc-title">${escapeHTML(p.method || '—')}</div></div>
+    ${p.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(p.notes)}</div></div>` : ''}
+    <div class="field"><label>Proof of payment</label>${proofBlock}</div>
+  `, () => {
+    const img = document.querySelector('#sheetBody [data-lightbox]');
+    if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+  });
+}
 
 /* ------------------------------ TENANT DOCUMENTS ----------------------------
    ID photo + signed contract are managed entirely from the TENANT PORTAL now
@@ -1722,6 +1768,7 @@ async function approvePendingPayment(id) {
     datePaid: p.datePaid || todayISO(), method: p.method || 'gcash',
     coveredPeriod: p.coveredPeriod, status,
     notes: p.notes ? `Tenant-submitted: ${p.notes}` : 'Submitted via tenant portal',
+    proof: p.proof || null,
     updatedAt: Date.now(),
   };
   await dbPut('payments', payment);
