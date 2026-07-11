@@ -615,8 +615,8 @@ let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAu
    contracts) and their public-but-unguessable-path download URLs. There is
    no Supabase Auth session here — sb.auth is never touched. */
 const supabaseConfig = {
-  url: "https://YOUR-PROJECT.supabase.co",
-  anonKey: "YOUR-ANON-KEY"
+  url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c"
 };
 const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
 const TENANT_DOCS_BUCKET = 'tenant-docs';
