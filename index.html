@@ -1882,6 +1882,9 @@ const portal = {
 };
 // True while portalRedeemInvite() is setting up a fresh account — see onPortalAuthChanged.
 let portalRedeeming = false;
+// Unsubscribe function for the current onAuthStateChanged listener — held so
+// portalRedeemInvite() can detach it entirely during redemption (see there).
+let portalAuthUnsub = null;
 
 function initTenantFirebase() {
   if (portal.app) return;
@@ -1898,7 +1901,7 @@ function enterTenantPortalMode() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('tenantPortal').style.display = 'block';
   initTenantFirebase();
-  portal.auth.onAuthStateChanged(onPortalAuthChanged);
+  portalAuthUnsub = portal.auth.onAuthStateChanged(onPortalAuthChanged);
 }
 function exitTenantPortalMode() {
   document.getElementById('tenantPortal').style.display = 'none';
@@ -2029,6 +2032,16 @@ async function portalRedeemInvite() {
   if (!code || !email || !password) { errEl.textContent = 'Fill in every field.'; return; }
   let newUser = null;
   portalRedeeming = true;
+  // Detach the auth-state listener entirely for the duration of redemption.
+  // The `portalRedeeming` flag alone isn't enough: it only guards against
+  // events that happen to arrive while it's true, but Firebase doesn't
+  // guarantee WHEN the sign-up (or delete) auth event actually gets
+  // delivered — it can be slow enough to land right as (or just after) the
+  // flag flips back to false, no matter how carefully that's ordered. With
+  // no listener attached at all, there's nothing left to race: it's
+  // reattached only once the account is in a known-good (or known-cleaned-up)
+  // state, and immediately fires with the real, current status.
+  if (portalAuthUnsub) { portalAuthUnsub(); portalAuthUnsub = null; }
   try {
     const cred = await portal.auth.createUserWithEmailAndPassword(email, password);
     newUser = cred.user;
@@ -2047,21 +2060,14 @@ async function portalRedeemInvite() {
       .update({ portalUid: newUser.uid, portalEmail: email, updatedAt: Date.now() });
     portalShowToast('Account created!');
     portalRedeeming = false;
-    onPortalAuthChanged(newUser); // portalAccounts doc exists now — safe to load the dashboard.
+    // Reattaching fires immediately with the current (now fully set up) user,
+    // so there's no need to also call onPortalAuthChanged manually here.
+    portalAuthUnsub = portal.auth.onAuthStateChanged(onPortalAuthChanged);
   } catch (err) {
     console.warn('Invite redemption failed', err);
-    // Delete the throwaway auth account BEFORE lowering the portalRedeeming
-    // guard, not after. newUser.delete() itself fires an auth-state change
-    // (signing the stray account back out) — if the guard drops first, that
-    // event slips through to the *unguarded* onPortalAuthChanged, which
-    // finds no portalAccounts doc (there never was one, since the invite
-    // was bad), shows "This account isn't linked to a tenant yet", and
-    // bounces back to the login screen — wiping out the signup form (and
-    // the real, useful invite error below) before the person ever sees it.
-    // Keeping the guard up through the delete, same as the success path
-    // does, lets the real error message actually stick.
     if (newUser) { try { await newUser.delete(); } catch (_) {} }
     portalRedeeming = false;
+    portalAuthUnsub = portal.auth.onAuthStateChanged(onPortalAuthChanged);
     errEl.textContent = err.code === 'portal/bad-invite' ? err.message : cloudAuthErrorMessage(err);
   }
 }
