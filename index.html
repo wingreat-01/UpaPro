@@ -2564,7 +2564,7 @@ function portalRenderUtilities() {
       ? `${Math.max(0, (Number(b.electricity.currReading) || 0) - (Number(b.electricity.prevReading) || 0))} kWh` : '';
     const waterSub = b.water && b.water.mode === 'submeter'
       ? `${Math.max(0, (Number(b.water.currReading) || 0) - (Number(b.water.prevReading) || 0))} cu.m` : '';
-    return `<div class="row-card" style="align-items:flex-start;">
+    return `<div class="row-card" style="align-items:flex-start; cursor:pointer;" data-portal-bill="${b.id}">
       <div class="rc-main">
         <div class="rc-title">${escapeHTML(monthLabel(b.period))}</div>
         <div class="rc-sub">⚡ ${peso(elecAmt)}${elecSub ? ` (${elecSub})` : ''} · 💧 ${peso(waterAmt)}${waterSub ? ` (${waterSub})` : ''}</div>
@@ -2572,6 +2572,48 @@ function portalRenderUtilities() {
       <div class="rc-amt">${peso(elecAmt + waterAmt)}</div>
     </div>`;
   }).join('')}</div>` : emptyHTML('⚡', 'No utility bills yet', 'Your landlord will post electricity and water charges here once entered.');
+  document.querySelectorAll('#portalMain [data-portal-bill]').forEach(row =>
+    row.addEventListener('click', () => portalOpenUtilityBillDetailSheet(portal.utilityBills.find(b => b.id === row.dataset.portalBill))));
+}
+
+/* Read-only breakdown for one month's utility bill — previous/current
+   reading, total consumed, and the rate used, for whichever of
+   electricity/water is actually sub-metered on this unit. A utility left
+   as a flat amount just shows the amount, since there's no reading to
+   show. */
+function portalOpenUtilityBillDetailSheet(bill) {
+  if (!bill) return;
+  const lineBlock = (label, icon, line, unitLabel, rateLabel) => {
+    if (!line) return '';
+    if (line.mode === 'submeter') {
+      const prev = Number(line.prevReading) || 0;
+      const curr = Number(line.currReading) || 0;
+      const used = Math.max(0, curr - prev);
+      return `
+        <div class="section-label" style="margin-top:14px;">${icon} ${label}</div>
+        <div class="field-row">
+          <div class="field"><label>Previous reading</label><div class="rc-title">${prev}</div></div>
+          <div class="field"><label>Current reading</label><div class="rc-title">${curr}</div></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Total ${unitLabel} used</label><div class="rc-title">${used} ${unitLabel}</div></div>
+          <div class="field"><label>${rateLabel}</label><div class="rc-title">₱${(Number(line.rate) || 0).toFixed(2)}</div></div>
+        </div>
+        <div class="field"><label>Amount</label><div class="rc-title">${peso(utilityLineAmount(line))}</div></div>`;
+    }
+    return `
+      <div class="section-label" style="margin-top:14px;">${icon} ${label}</div>
+      <div class="field"><label>Amount</label><div class="rc-title">${peso(utilityLineAmount(line))}</div></div>`;
+  };
+  portalOpenSheet(`
+    <h2>${escapeHTML(monthLabel(bill.period))} utility bill</h2>
+    ${lineBlock('Electricity', '⚡', bill.electricity, 'kWh', "Meralco's rate (₱/kWh)")}
+    ${lineBlock('Water', '💧', bill.water, 'cu.m', 'Rate (₱/cu.m)')}
+    <div class="field" style="margin-top:14px; padding-top:10px; border-top:1px solid rgba(41,37,32,.12);">
+      <label>Total</label><div class="rc-title" style="font-size:1.4rem; font-weight:700;">${peso(utilityLineAmount(bill.electricity) + utilityLineAmount(bill.water))}</div>
+    </div>
+    ${bill.notes ? `<div class="field"><label>Notes from your landlord</label><div class="rc-sub">${escapeHTML(bill.notes)}</div></div>` : ''}
+  `);
 }
 
 /* Read-only detail view for the tenant's own payment/claim, mirroring the admin-side
