@@ -615,8 +615,8 @@ let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAu
    contracts) and their public-but-unguessable-path download URLs. There is
    no Supabase Auth session here — sb.auth is never touched. */
 const supabaseConfig = {
-  url: "https://YOUR-PROJECT.supabase.co",
-  anonKey: "YOUR-ANON-KEY"
+  url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c" // Settings → API → Project API keys → anon/public, in your Supabase dashboard
 };
 const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
 const TENANT_DOCS_BUCKET = 'tenant-docs';
@@ -2217,6 +2217,7 @@ async function portalSubmitPaymentProof() {
   try {
     let proof = null;
     if (file) {
+      if (!sb) throw new Error('SUPABASE_NOT_CONFIGURED');
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/proof-${Date.now()}.${ext}`;
       const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
@@ -2239,7 +2240,13 @@ async function portalSubmitPaymentProof() {
     portalRenderDashboard();
   } catch (err) {
     console.warn('Payment proof submission failed', err);
-    portalShowToast('Could not submit — check your connection');
+    // A missing/placeholder Supabase config throws before any network call
+    // is made (sb is null) — that's not a connectivity problem, so don't
+    // tell the tenant to check their connection when the real issue is
+    // that file uploads were never set up on the admin side.
+    portalShowToast(err && err.message === 'SUPABASE_NOT_CONFIGURED'
+      ? 'File uploads aren\'t set up yet — ask your landlord'
+      : 'Could not submit — check your connection');
   } finally {
     saveBtn.disabled = false; saveBtn.textContent = 'Submit for review';
   }
@@ -2385,6 +2392,7 @@ function portalPickAndUploadDoc(slot) {
     if (file.size > MAX_DOC_BYTES) return portalShowToast('File is too large — max 15MB');
     portalShowToast('Uploading…');
     try {
+      if (!sb) throw new Error('SUPABASE_NOT_CONFIGURED');
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/${slot}-${Date.now()}.${ext}`;
       const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
@@ -2398,7 +2406,11 @@ function portalPickAndUploadDoc(slot) {
       portalShowToast('Uploaded');
     } catch (err) {
       console.warn('Portal document upload failed', err);
-      portalShowToast('Upload failed — check your connection');
+      // Same distinction as the payment-proof path: a null `sb` means
+      // Supabase Storage was never configured, not that the network is down.
+      portalShowToast(err && err.message === 'SUPABASE_NOT_CONFIGURED'
+        ? 'File uploads aren\'t set up yet — ask your landlord'
+        : 'Upload failed — check your connection');
     }
   };
   input.click();
