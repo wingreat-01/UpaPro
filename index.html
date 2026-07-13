@@ -1564,12 +1564,17 @@ function renderUnitUtilityBlock(tenant, unit) {
     <div class="section-label" style="margin-top:14px;">${monthLabel(period)} utility bill</div>
     <div class="detail-hero">
       ${bill ? `
-        <div class="kv-grid">
-          <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div></div>
-          <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div></div>
-          <div class="kv"><div class="k">Total</div><div class="v">${peso(elecAmt + waterAmt)}</div></div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:16px;">
+          <div style="display:flex; flex-direction:column; gap:10px; flex:1; min-width:0;">
+            <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div></div>
+            <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div></div>
+          </div>
+          <div style="text-align:right; flex-shrink:0; padding-left:16px; border-left:1px solid rgba(41,37,32,.12);">
+            <div class="k" style="font-size:.72rem;">Total</div>
+            <div class="v" style="font-size:1.6rem; font-weight:700; line-height:1.2;">${peso(elecAmt + waterAmt)}</div>
+          </div>
         </div>
-        <div style="display:flex; gap:8px; margin-top:12px;">
+        <div style="display:flex; gap:8px; margin-top:14px;">
           <button class="btn btn-primary btn-sm" id="editUtilityBillBtn">✏️ Edit bill</button>
         </div>
       ` : `
