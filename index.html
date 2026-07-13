@@ -1335,6 +1335,12 @@ function renderLocationDetail(locationId) {
   if (!loc) return goBack();
   const units = unitsForLocation(locationId);
   const occ = units.filter(u => u.status === 'occupied').length;
+  // Rent status (incl. this period's utility bill) for every occupied unit
+  // everywhere — index by unitId so the units list can flag at a glance
+  // which tenants still owe something this month, same overdue/due-soon
+  // logic the Overdue tab already uses.
+  const statusByUnit = {};
+  computeRentStatus().forEach(r => { statusByUnit[r.unit.id] = r; });
 
   document.getElementById('locHero').innerHTML = `
     <div class="dh-title">${escapeHTML(loc.name)}</div>
@@ -1350,18 +1356,30 @@ function renderLocationDetail(locationId) {
   document.getElementById('unitList').innerHTML = units.length
     ? units.map(u => {
         const tenant = activeTenantForUnit(u.id);
-        const stamp = u.status === 'occupied'
-          ? { cls: 'filled', color: 'var(--peso)', text: 'RENTED' }
-          : u.status === 'maintenance'
+        const row = statusByUnit[u.id];
+        let stamp, amountHTML;
+        if (u.status === 'occupied' && row) {
+          stamp = row.status === 'overdue'
+            ? { cls: 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
+            : row.status === 'due-soon'
+              ? { cls: 'due', color: 'var(--amber)', text: 'DUE SOON' }
+              : { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
+          amountHTML = row.balance > 0
+            ? `<div class="rc-amt" style="color:var(--rust); font-weight:700;">${peso(row.balance)}</div>`
+            : `<div class="rc-amt" style="color:var(--peso);">Paid</div>`;
+        } else {
+          stamp = u.status === 'maintenance'
             ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
             : { cls: '', color: 'var(--slate)', text: 'OPEN' };
+          amountHTML = `<div class="rc-amt muted">${peso(u.monthlyRent)}</div>`;
+        }
         return `<div class="row-card" data-unit-id="${u.id}">
           <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
           <div class="rc-main">
             <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
             <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Vacant'}</div>
           </div>
-          <div class="rc-amt">${peso(u.monthlyRent)}</div>
+          ${amountHTML}
         </div>`;
       }).join('')
     : emptyHTML('🚪', 'No units yet', 'Tap + to add the first unit for this location.');
