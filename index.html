@@ -646,7 +646,7 @@ let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAu
    no Supabase Auth session here — sb.auth is never touched. */
 const supabaseConfig = {
   url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co",
-  anonKey: "PASTE-YOUR-ANON-KEY-HERE" // Settings → API → Project API keys → anon/public, in your Supabase dashboard
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c" // Settings → API → Project API keys → anon/public, in your Supabase dashboard
 };
 const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
 const TENANT_DOCS_BUCKET = 'tenant-docs';
@@ -705,9 +705,10 @@ async function onCloudAuthStateChanged(user) {
     // instead of risking a phantom seed.
     const pulled = await runFullCloudSync(false);
     if (pulled) {
+      await cleanupPhantomSeed();
       await seedIfEmpty();
     } else {
-      setTimeout(() => { if (fbUser) runFullCloudSync(false).then(ok => { if (ok) seedIfEmpty().then(refreshCache).then(render); }); }, 4000);
+      setTimeout(() => { if (fbUser) runFullCloudSync(false).then(ok => { if (ok) return cleanupPhantomSeed().then(() => seedIfEmpty()).then(refreshCache).then(render); }); }, 4000);
     }
     await refreshCache();
     render();
@@ -1370,9 +1371,10 @@ function renderDashboard() {
 function rentRowHTML(r) {
   const stampClass = r.status === 'overdue' ? 'overdue' : (r.status === 'due-soon' ? 'due' : '');
   const stampText = r.status === 'overdue' ? `${r.daysOverdue}D LATE` : (r.status === 'due-soon' ? 'DUE SOON' : 'OK');
+  const stampStyle = r.status === 'due-soon' ? ' style="--c:var(--rust);"' : '';
   return `
     <div class="row-card" data-unit-id="${r.unit.id}">
-      <div class="stamp small ${stampClass}">${stampText}</div>
+      <div class="stamp small ${stampClass}"${stampStyle}>${stampText}</div>
       <div class="rc-main">
         <div class="rc-title">${escapeHTML(r.tenant.fullName)}</div>
         <div class="rc-sub">${escapeHTML(r.location ? r.location.name : '')} · ${escapeHTML(r.unit.unitLabel)}</div>
@@ -1483,7 +1485,7 @@ function renderLocationDetail(locationId) {
           stamp = row.status === 'overdue'
             ? { cls: 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
             : row.status === 'due-soon'
-              ? { cls: 'due', color: 'var(--amber)', text: 'DUE SOON' }
+              ? { cls: 'due', color: 'var(--rust)', text: 'DUE SOON' }
               : { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
           amountHTML = row.balance > 0
             ? `<div class="rc-amt" style="color:var(--rust); font-weight:700;">${peso(row.balance)}</div>`
@@ -1625,7 +1627,7 @@ function renderUnitDetail(unitId) {
     const period = monthKey();
     const row = computeRentStatus().find(r => r.unit.id === unit.id);
     const paid = row ? row.paid : amountPaidThisPeriod(tenant.id, period);
-    const colorFor = (c) => c.status === 'overdue' ? 'var(--rust)' : (c.status === 'due-soon' ? 'var(--amber)' : 'var(--peso)');
+    const colorFor = (c) => c.status === 'overdue' ? 'var(--rust)' : (c.status === 'due-soon' ? 'var(--rust)' : 'var(--peso)');
     const chargeLineHTML = (label, c) => c.amount > 0 ? `
           <div class="kv"><div class="k">${label}</div><div class="v" style="color:${colorFor(c)}">${c.balance > 0 ? peso(c.balance) + ' due ' + c.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Paid'}</div></div>` : '';
     document.getElementById('unitTenantBlock').innerHTML = `
@@ -3005,10 +3007,43 @@ function emptyHTML(icon, title, sub) {
 async function seedIfEmpty() {
   const existing = await dbGetAll('locations');
   if (existing.length) return;
-  const loc1 = { id: uid(), name: 'Paupahan A', address: '', notes: '', updatedAt: Date.now() };
+  // Flagged as seedPlaceholder so a later cloud pull can tell this apart
+  // from a real location of the same name and clean it up automatically
+  // if it turns out to have been a phantom (see cleanupPhantomSeed).
+  const loc1 = { id: uid(), name: 'Paupahan A', address: '', notes: '', seedPlaceholder: true, updatedAt: Date.now() };
   await dbPut('locations', loc1);
-  const unit1 = { id: uid(), locationId: loc1.id, unitLabel: 'Room 1', monthlyRent: 3500, dueDay: 1, status: 'vacant', notes: '', updatedAt: Date.now() };
+  const unit1 = { id: uid(), locationId: loc1.id, unitLabel: 'Room 1', monthlyRent: 3500, dueDay: 1, status: 'vacant', notes: '', seedPlaceholder: true, updatedAt: Date.now() };
   await dbPut('units', unit1);
+}
+/** Cleans up a "Paupahan A" starter location that got auto-seeded while
+ *  signed out (e.g. a fresh Incognito session, where Firebase Auth has no
+ *  persisted session yet) and then got a real cloud account's data pulled
+ *  in right alongside it a moment later, on sign-in. Only removes the
+ *  placeholder if it's still completely untouched — if the person actually
+ *  started using it (renamed it, added units/tenants), we leave it alone
+ *  and let them sort it out manually rather than silently deleting data. */
+async function cleanupPhantomSeed() {
+  const locations = await dbGetAll('locations');
+  const real = locations.filter(l => !l.deleted && !l.seedPlaceholder);
+  if (!real.length) return; // nothing pulled in — this may be a genuinely empty account
+  const placeholders = locations.filter(l => !l.deleted && l.seedPlaceholder);
+  if (!placeholders.length) return;
+  const allUnits = await dbGetAll('units');
+  const now = Date.now();
+  for (const loc of placeholders) {
+    const units = allUnits.filter(u => u.locationId === loc.id && !u.deleted);
+    const untouched = loc.name === 'Paupahan A' && !loc.address && !loc.notes &&
+      units.every(u => u.seedPlaceholder && u.status === 'vacant');
+    if (!untouched) continue;
+    for (const u of units) {
+      const tomb = { ...u, deleted: true, deletedAt: now, updatedAt: now };
+      await dbPut('units', tomb);
+      queueRecordSync('units', tomb);
+    }
+    const tombLoc = { ...loc, deleted: true, deletedAt: now, updatedAt: now };
+    await dbPut('locations', tombLoc);
+    queueRecordSync('locations', tombLoc);
+  }
 }
 
 /* ----------------------------------- BOOT -------------------------------------- */
