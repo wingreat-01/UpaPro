@@ -993,6 +993,19 @@ function lastUtilityReading(tenantId, kind) {
   }
   return 0;
 }
+/** Most recent rate actually used for this tenant's utility (so a rate
+ *  change — e.g. Meralco adjusts their per-kWh rate — sticks for future
+ *  months without retyping, but each bill still snapshots its own rate
+ *  for the record). Falls back to null so the caller can fall further
+ *  back to the unit's configured default rate. */
+function lastUtilityRate(tenantId, kind) {
+  const bills = utilityBillsForTenant(tenantId);
+  for (const b of bills) {
+    const line = b[kind];
+    if (line && line.mode === 'submeter' && line.rate != null) return Number(line.rate) || 0;
+  }
+  return null;
+}
 
 /** Computes current-period rent status for every occupied unit.
  *  Returns array of { location, unit, tenant, paid, expected, balance,
@@ -1387,9 +1400,10 @@ function openUnitForm(existing, locationId) {
         </select>
       </div>
       <div class="field" id="f-elecrate-wrap" style="display:${elecMode === 'submeter' ? '' : 'none'};">
-        <label>Rate ₱/kWh</label><input id="f-elecrate" type="number" inputmode="decimal" step="0.01" value="${isEdit ? existing.electricityRate || '' : ''}" placeholder="12.00">
+        <label>Starting rate ₱/kWh</label><input id="f-elecrate" type="number" inputmode="decimal" step="0.01" value="${isEdit ? existing.electricityRate || '' : ''}" placeholder="12.00">
       </div>
     </div>
+    <div class="muted" style="font-size:.72rem; margin:-6px 0 8px;">Just a starting point — each month's bill lets you re-enter the current rate (e.g. when Meralco or the water utility adjusts theirs).</div>
     <div class="field-row">
       <div class="field"><label>Water</label>
         <select id="f-watermode">
@@ -1398,7 +1412,7 @@ function openUnitForm(existing, locationId) {
         </select>
       </div>
       <div class="field" id="f-waterrate-wrap" style="display:${waterMode === 'submeter' ? '' : 'none'};">
-        <label>Rate ₱/cu.m</label><input id="f-waterrate" type="number" inputmode="decimal" step="0.01" value="${isEdit ? existing.waterRate || '' : ''}" placeholder="85.00">
+        <label>Starting rate ₱/cu.m</label><input id="f-waterrate" type="number" inputmode="decimal" step="0.01" value="${isEdit ? existing.waterRate || '' : ''}" placeholder="85.00">
       </div>
     </div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
@@ -1581,13 +1595,22 @@ function openUtilityBillForm(tenant, unit, existingBill) {
   const water = (isEdit && existingBill.water) || {};
   const elecPrevDefault = elec.prevReading != null ? elec.prevReading : lastUtilityReading(tenant.id, 'electricity');
   const waterPrevDefault = water.prevReading != null ? water.prevReading : lastUtilityReading(tenant.id, 'water');
+  // Rate defaults to whatever was typed last time for this tenant (so a
+  // Meralco/water-utility rate change sticks going forward), falling back
+  // to the unit's configured default rate the very first time it's billed.
+  const elecRateDefault = elec.rate != null ? elec.rate : (lastUtilityRate(tenant.id, 'electricity') ?? unit.electricityRate ?? 0);
+  const waterRateDefault = water.rate != null ? water.rate : (lastUtilityRate(tenant.id, 'water') ?? unit.waterRate ?? 0);
 
-  const lineFieldsHTML = (kind, mode, line, prevDefault, rate, unitLabel) => mode === 'submeter' ? `
+  const lineFieldsHTML = (kind, mode, line, prevDefault, rateDefault, unitLabel, rateLabel) => mode === 'submeter' ? `
     <div class="field-row">
       <div class="field"><label>Previous reading</label><input id="f-${kind}-prev" type="number" inputmode="decimal" value="${prevDefault || 0}"></div>
       <div class="field"><label>Current reading</label><input id="f-${kind}-curr" type="number" inputmode="decimal" value="${line.currReading != null ? line.currReading : ''}" placeholder="0"></div>
     </div>
-    <div class="muted" style="font-size:.78rem; margin:-4px 0 10px;">Rate: ₱${(Number(rate) || 0).toFixed(2)}/${unitLabel} · <span id="f-${kind}-computed">₱0</span> for this month</div>
+    <div class="field-row">
+      <div class="field"><label>Total ${unitLabel} used</label><input id="f-${kind}-kwh" type="text" value="0" disabled></div>
+      <div class="field"><label>${rateLabel}</label><input id="f-${kind}-rate" type="number" inputmode="decimal" step="0.01" value="${rateDefault || ''}" placeholder="0.00"></div>
+    </div>
+    <div class="muted" style="font-size:.78rem; margin:-4px 0 10px;">Amount: <span id="f-${kind}-computed">₱0</span> for this month (${unitLabel} used × ${rateLabel.toLowerCase()})</div>
   ` : `
     <div class="field"><label>Amount</label><input id="f-${kind}-amount" type="number" inputmode="decimal" value="${line.amount != null ? line.amount : ''}" placeholder="0"></div>
   `;
@@ -1596,42 +1619,50 @@ function openUtilityBillForm(tenant, unit, existingBill) {
     <h2>${isEdit ? 'Edit' : 'Add'} utility bill</h2>
     <div class="field"><label>Period</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
     <div class="section-label" style="margin-top:4px;">⚡ Electricity ${elecMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
-    ${lineFieldsHTML('elec', elecMode, elec, elecPrevDefault, unit.electricityRate, 'kWh')}
+    ${lineFieldsHTML('elec', elecMode, elec, elecPrevDefault, elecRateDefault, 'kWh', "Meralco's rate (₱/kWh)")}
     <div class="section-label">💧 Water ${waterMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
-    ${lineFieldsHTML('water', waterMode, water, waterPrevDefault, unit.waterRate, 'cu.m')}
+    ${lineFieldsHTML('water', waterMode, water, waterPrevDefault, waterRateDefault, 'cu.m', 'Rate (₱/cu.m)')}
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existingBill.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
       ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
       <button class="btn btn-accent" id="btnSave">Save bill</button>
     </div>
   `, () => {
-    const recompute = (kind, mode, rate) => {
+    // Recomputes both the "total used" readout and the peso amount live,
+    // reading the rate straight from its own input each time — the rate
+    // is editable per bill (not locked to the unit's default) since the
+    // actual per-kWh/per-cu.m rate can change month to month.
+    const recompute = (kind, mode) => {
       if (mode !== 'submeter') return;
       const prev = Number(document.getElementById(`f-${kind}-prev`).value) || 0;
       const curr = Number(document.getElementById(`f-${kind}-curr`).value) || 0;
-      const amt = Math.round(Math.max(0, curr - prev) * (Number(rate) || 0));
-      const el = document.getElementById(`f-${kind}-computed`);
-      if (el) el.textContent = peso(amt);
+      const rate = Number(document.getElementById(`f-${kind}-rate`).value) || 0;
+      const consumed = Math.max(0, curr - prev);
+      const amt = Math.round(consumed * rate);
+      const kwhEl = document.getElementById(`f-${kind}-kwh`);
+      const amtEl = document.getElementById(`f-${kind}-computed`);
+      if (kwhEl) kwhEl.value = consumed;
+      if (amtEl) amtEl.textContent = peso(amt);
     };
     if (elecMode === 'submeter') {
-      recompute('elec', elecMode, unit.electricityRate);
-      document.getElementById('f-elec-prev').addEventListener('input', () => recompute('elec', elecMode, unit.electricityRate));
-      document.getElementById('f-elec-curr').addEventListener('input', () => recompute('elec', elecMode, unit.electricityRate));
+      recompute('elec', elecMode);
+      ['f-elec-prev', 'f-elec-curr', 'f-elec-rate'].forEach(id =>
+        document.getElementById(id).addEventListener('input', () => recompute('elec', elecMode)));
     }
     if (waterMode === 'submeter') {
-      recompute('water', waterMode, unit.waterRate);
-      document.getElementById('f-water-prev').addEventListener('input', () => recompute('water', waterMode, unit.waterRate));
-      document.getElementById('f-water-curr').addEventListener('input', () => recompute('water', waterMode, unit.waterRate));
+      recompute('water', waterMode);
+      ['f-water-prev', 'f-water-curr', 'f-water-rate'].forEach(id =>
+        document.getElementById(id).addEventListener('input', () => recompute('water', waterMode)));
     }
     document.getElementById('btnSave').addEventListener('click', async () => {
       const p = document.getElementById('f-period').value.trim() || monthKey();
-      const buildLine = (kind, mode, rate) => mode === 'submeter'
-        ? { mode, prevReading: Number(document.getElementById(`f-${kind}-prev`).value) || 0, currReading: Number(document.getElementById(`f-${kind}-curr`).value) || 0, rate: Number(rate) || 0 }
+      const buildLine = (kind, mode) => mode === 'submeter'
+        ? { mode, prevReading: Number(document.getElementById(`f-${kind}-prev`).value) || 0, currReading: Number(document.getElementById(`f-${kind}-curr`).value) || 0, rate: Number(document.getElementById(`f-${kind}-rate`).value) || 0 }
         : { mode, amount: Number(document.getElementById(`f-${kind}-amount`).value) || 0 };
       const obj = isEdit ? { ...existingBill } : { id: uid(), tenantId: tenant.id, unitId: unit.id };
       obj.period = p;
-      obj.electricity = buildLine('elec', elecMode, unit.electricityRate);
-      obj.water = buildLine('water', waterMode, unit.waterRate);
+      obj.electricity = buildLine('elec', elecMode);
+      obj.water = buildLine('water', waterMode);
       obj.notes = document.getElementById('f-notes').value.trim();
       obj.updatedAt = Date.now();
       await dbPut('utilityBills', obj);
