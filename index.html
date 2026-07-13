@@ -663,8 +663,22 @@ async function onCloudAuthStateChanged(user) {
     // session) would seed a brand-new "Paupahan A" immediately on boot,
     // and then the pull would add the cloud's older copy right alongside
     // it as a second, separate record.
-    await runFullCloudSync(false);
-    await seedIfEmpty();
+    //
+    // It's not enough for the pull to just run BEFORE the seed check —
+    // it has to actually succeed. A pull that fails or times out (common
+    // on a fresh Incognito tab with a slow first connection) used to still
+    // let seedIfEmpty() through, since a caught error looked identical to
+    // "no cloud data exists yet". That silently created (and synced) a
+    // fresh duplicate "Paupahan A" while the real data just hadn't
+    // finished downloading. Now we only seed once a pull has confirmed
+    // the account is genuinely empty; a failed pull retries shortly
+    // instead of risking a phantom seed.
+    const pulled = await runFullCloudSync(false);
+    if (pulled) {
+      await seedIfEmpty();
+    } else {
+      setTimeout(() => { if (fbUser) runFullCloudSync(false).then(ok => { if (ok) seedIfEmpty().then(refreshCache).then(render); }); }, 4000);
+    }
     await refreshCache();
     render();
     cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
@@ -777,7 +791,14 @@ async function pullAndMergeCollection(storeName) {
 }
 
 async function runFullCloudSync(showUi) {
-  if (!fbUser || !fbStore || cloudSyncBusy) return;
+  // Returns true only if the pull genuinely completed, false otherwise
+  // (not signed in, already syncing, or the pull threw). Callers that
+  // decide whether it's safe to seed a starter location rely on this —
+  // treating a *failed* pull as "safe to seed" is what let a slow or
+  // flaky connection (most common on a fresh Incognito/new-tab load)
+  // spawn a brand-new "Paupahan A" right alongside the real cloud data
+  // that just hadn't finished downloading yet.
+  if (!fbUser || !fbStore || cloudSyncBusy) return false;
   cloudSyncBusy = true;
   const statusEl = document.getElementById('cs-sync-status');
   if (showUi && statusEl) statusEl.textContent = 'Syncing…';
@@ -792,10 +813,12 @@ async function runFullCloudSync(showUi) {
     await refreshCache();
     render();
     if (showUi) showToast('Cloud sync complete');
+    return true;
   } catch (err) {
     console.warn('Cloud sync failed', err);
     if (statusEl) statusEl.textContent = 'Sync failed — check your connection';
     if (showUi) showToast('Sync failed — will retry automatically');
+    return false;
   } finally {
     cloudSyncBusy = false;
   }
