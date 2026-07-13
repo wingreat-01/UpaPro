@@ -1569,9 +1569,9 @@ function renderUnitUtilityBlock(tenant, unit) {
             <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div></div>
             <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div></div>
           </div>
-          <div style="text-align:right; flex-shrink:0; padding-left:16px; border-left:1px solid rgba(41,37,32,.12);">
-            <div class="k" style="font-size:.72rem;">Total</div>
-            <div class="v" style="font-size:1.6rem; font-weight:700; line-height:1.2;">${peso(elecAmt + waterAmt)}</div>
+          <div style="text-align:right; flex-shrink:0; background:var(--amber-soft); border-radius:12px; padding:10px 16px;">
+            <div class="k" style="font-size:.72rem; color:var(--amber);">Total</div>
+            <div style="font-size:1.6rem; font-weight:700; line-height:1.2; color:var(--amber);">${peso(elecAmt + waterAmt)}</div>
           </div>
         </div>
         <div style="display:flex; gap:8px; margin-top:14px;">
