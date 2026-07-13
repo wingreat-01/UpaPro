@@ -506,6 +506,7 @@ const peso = n => '₱' + (Number(n) || 0).toLocaleString('en-PH', { minimumFrac
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthKey = (d = new Date()) => d.toISOString().slice(0, 7); // "2026-07"
 const monthLabel = (key) => {
+  if (!/^\d{4}-\d{2}$/.test(key || '')) return key ? key.charAt(0).toUpperCase() + key.slice(1) : '—';
   const [y, m] = key.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 };
@@ -963,7 +964,7 @@ function paymentsForTenant(tenantId) {
 }
 function amountPaidThisPeriod(tenantId, period) {
   return state.cache.payments
-    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period)
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit')
     .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
 }
 /** Tag-aware balance allocation. A payment tagged 'rent'/'electricity'/'water'
@@ -973,11 +974,15 @@ function amountPaidThisPeriod(tenantId, period) {
  *  just typed one lump sum) are split proportionally across whatever was
  *  actually owed that period, so they still count without double-booking
  *  the same peso against two different balances. `weights` is the period's
- *  expected { rent, electricity, water } amounts. */
+ *  expected { rent, electricity, water } amounts.
+ *  Payments tagged 'deposit' (move-in advance/security money that isn't
+ *  actually rent for any specific month) are excluded entirely here — they
+ *  never count toward, or get split across, a rent/electricity/water
+ *  balance for any period. See openPaymentForm's deposit handling. */
 function amountPaidForCharge(tenantId, period, chargeType, weights) {
   const totalExpected = (weights.rent || 0) + (weights.electricity || 0) + (weights.water || 0);
   return state.cache.payments
-    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period)
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit')
     .reduce((sum, p) => {
       const amt = Number(p.amountPaid) || 0;
       if (!amt) return sum;
@@ -1671,14 +1676,14 @@ function renderUnitDetail(unitId) {
     document.getElementById('assignTenantBtn').addEventListener('click', () => openTenantForm(null, unit.id));
   }
 
-  const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' };
+  const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' };
   const payments = paymentsForTenant(tenant ? tenant.id : '__none__');
   document.getElementById('unitPayments').innerHTML = payments.length
     ? payments.map(p => `
       <div class="row-card" data-payment-detail="${p.id}">
         <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
         <div class="rc-main">
-          <div class="rc-title">${escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
+          <div class="rc-title">${p.tag === 'deposit' ? 'Deposit' : escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
           <div class="rc-sub">${tagLabel[p.tag] || 'Rent'} · Paid ${p.datePaid || '—'}${p.proof ? ' · 📎 proof attached' : ''}</div>
         </div>
         <div class="rc-amt">${peso(p.amountPaid)}</div>
@@ -1872,8 +1877,8 @@ function openPaymentDetailSheet(paymentId) {
       <div class="field"><label>Status</label><div class="rc-title">${escapeHTML((p.status || '').toUpperCase())}</div></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>Applies to</label><div class="rc-title">${{ rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' }[p.tag] || 'Rent'}</div></div>
-      <div class="field"><label>Period covered</label><div class="rc-title">${escapeHTML(p.coveredPeriod || '—')}</div></div>
+      <div class="field"><label>Applies to</label><div class="rc-title">${{ rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' }[p.tag] || 'Rent'}</div></div>
+      <div class="field"><label>Period covered</label><div class="rc-title">${p.tag === 'deposit' ? 'Not tied to a month' : escapeHTML(p.coveredPeriod || '—')}</div></div>
     </div>
     <div class="field-row">
       <div class="field"><label>Date paid</label><div class="rc-title">${escapeHTML(p.datePaid || '—')}</div></div>
@@ -1893,7 +1898,9 @@ function openPaymentDetailSheet(paymentId) {
       // status, the Overdue tab, and the unit detail balance all recompute
       // from state.cache.payments live). Make that consequence explicit
       // before it happens rather than after.
-      const ok = confirm(`Delete this ${peso(p.amountPaid)} payment record? This will add it back to ${tenant ? tenant.fullName : 'the tenant'}'s balance for ${monthLabel(p.coveredPeriod || monthKey())}.`);
+      const ok = p.tag === 'deposit'
+        ? confirm(`Delete this ${peso(p.amountPaid)} deposit record? This won't affect any month's rent/utility balance — it's just removing the record of the deposit itself.`)
+        : confirm(`Delete this ${peso(p.amountPaid)} payment record? This will add it back to ${tenant ? tenant.fullName : 'the tenant'}'s balance for ${monthLabel(p.coveredPeriod || monthKey())}.`);
       if (!ok) return;
       const tombstone = { ...p, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
       await dbPut('payments', tombstone);
@@ -2072,6 +2079,7 @@ function openPaymentForm(tenant, unit) {
       <div class="tagchip active" data-tag="rent">Rent</div>
       <div class="tagchip" data-tag="electricity">⚡ Electricity</div>
       <div class="tagchip" data-tag="water">💧 Water</div>
+      <div class="tagchip" data-tag="deposit">🔒 Deposit</div>
     </div>
     <div class="field"><label>Amount paid</label><input id="f-amount" type="number" inputmode="decimal" value="${unit.monthlyRent}" placeholder="0"></div>
     <div class="field-row">
@@ -2084,7 +2092,8 @@ function openPaymentForm(tenant, unit) {
         </select>
       </div>
     </div>
-    <div class="field"><label>Period covered</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
+    <div class="field" id="f-period-field"><label id="f-period-label">Period covered</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
+    <p class="muted" id="f-deposit-note" style="display:none; margin-top:-10px;">Deposit money isn't rent for any specific month, so it's kept separate from every month's balance — it won't ever show up as "paid" rent or utilities.</p>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional"></textarea></div>
     <div class="sheet-actions">
       <button class="btn btn-accent" id="btnSave">Save payment</button>
@@ -2096,25 +2105,46 @@ function openPaymentForm(tenant, unit) {
         tag = chip.dataset.tag;
         document.querySelectorAll('#tagChipRow .tagchip').forEach(c => c.classList.toggle('active', c === chip));
         const amtEl = document.getElementById('f-amount');
+        const periodField = document.getElementById('f-period-field');
+        const periodInput = document.getElementById('f-period');
+        const depositNote = document.getElementById('f-deposit-note');
         // Nudge the amount field to the relevant charge's expected total —
         // still fully editable, just a helpful default for the common case.
         if (tag === 'rent') amtEl.value = unit.monthlyRent;
         else if (tag === 'electricity') amtEl.value = elecAmt || '';
         else if (tag === 'water') amtEl.value = waterAmt || '';
+        else if (tag === 'deposit') amtEl.value = '';
+        // Deposit money isn't tied to a calendar month, so hide the period
+        // field entirely rather than let it imply this counts toward that
+        // month's rent/utility balance.
+        periodField.style.display = tag === 'deposit' ? 'none' : '';
+        depositNote.style.display = tag === 'deposit' ? '' : 'none';
+        if (tag === 'deposit') periodInput.value = '';
       });
     });
     document.getElementById('btnSave').addEventListener('click', async () => {
       const amountPaid = Number(document.getElementById('f-amount').value) || 0;
       if (amountPaid <= 0) return showToast('Enter an amount greater than 0');
-      const period = document.getElementById('f-period').value.trim() || monthKey();
-      const expectedForTag = tag === 'rent' ? (Number(unit.monthlyRent) || 0) : (tag === 'electricity' ? elecAmt : waterAmt);
-      const weights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
-      const already = amountPaidForCharge(tenant.id, period, tag, weights);
-      const status = (already + amountPaid) >= expectedForTag ? 'paid' : 'partial';
+      const datePaid = document.getElementById('f-datepaid').value || todayISO();
+      let period, status;
+      if (tag === 'deposit') {
+        // Fixed, non-month coveredPeriod so this can never be picked up by
+        // any period lookup — combined with the tag !== 'deposit' filters in
+        // amountPaidForCharge/amountPaidThisPeriod, it's double-protected
+        // from ever being counted as that month's rent or utilities.
+        period = 'deposit';
+        status = 'paid';
+      } else {
+        period = document.getElementById('f-period').value.trim() || monthKey();
+        const expectedForTag = tag === 'rent' ? (Number(unit.monthlyRent) || 0) : (tag === 'electricity' ? elecAmt : waterAmt);
+        const weights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
+        const already = amountPaidForCharge(tenant.id, period, tag, weights);
+        status = (already + amountPaid) >= expectedForTag ? 'paid' : 'partial';
+      }
       const obj = {
         id: uid(), tenantId: tenant.id, unitId: unit.id, tag,
-        amountPaid, dueDate: `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
-        datePaid: document.getElementById('f-datepaid').value || todayISO(),
+        amountPaid, dueDate: tag === 'deposit' ? datePaid : `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
+        datePaid,
         method: document.getElementById('f-method').value,
         coveredPeriod: period, status,
         notes: document.getElementById('f-notes').value.trim(),
@@ -2630,7 +2660,7 @@ function portalRenderDashboard() {
   // Same tag-aware allocation as the admin side, just reading portal.payments
   // (the tenant's own Firestore-synced payment list) instead of state.cache.
   const paidForTag = (chargeType) => portal.payments
-    .filter(p => p.coveredPeriod === period)
+    .filter(p => p.coveredPeriod === period && p.tag !== 'deposit')
     .reduce((sum, p) => {
       const amt = Number(p.amountPaid) || 0;
       if (!amt) return sum;
