@@ -385,6 +385,7 @@
     <section class="view" id="view-unit-detail">
       <div class="detail-hero" id="unitHero"></div>
       <div id="unitTenantBlock"></div>
+      <div id="unitUtilityBlock"></div>
       <div class="section-label">Payment history</div>
       <div class="card-list" id="unitPayments"></div>
     </section>
@@ -486,7 +487,7 @@
 
 const APP_ID = 'upaPro';
 const DB_NAME = 'upapro_db';
-const DB_VERSION = 3; // v3: + _syncOutbox store (durable retry queue for cloud sync writes)
+const DB_VERSION = 4; // v4: + utilityBills store (monthly electricity/water charges per tenant)
 let db;
 
 const uid = () => 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -540,6 +541,16 @@ function openDB() {
       // resurrect — see checklist notes).
       if (!d.objectStoreNames.contains('_syncOutbox')) {
         d.createObjectStore('_syncOutbox', { keyPath: 'key' });
+      }
+      // v4 — one utility bill doc per tenant per month (electricity + water).
+      // Amounts are entered flat off the physical bill, OR computed from a
+      // sub-meter reading × rate when the unit is configured for sub-metering
+      // — see unit.electricityBilling / unit.waterBilling.
+      if (!d.objectStoreNames.contains('utilityBills')) {
+        const s = d.createObjectStore('utilityBills', { keyPath: 'id' });
+        s.createIndex('tenantId', 'tenantId');
+        s.createIndex('unitId', 'unitId');
+        s.createIndex('period', 'period');
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
@@ -607,7 +618,7 @@ const firebaseConfig = {
   appId: "1:177340239376:web:80806c92272103f4770495"
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
-const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments'];
+const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills'];
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
 
 /* Supabase — Storage ONLY. Auth and the Firestore database stay on Firebase;
@@ -616,7 +627,7 @@ let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAu
    no Supabase Auth session here — sb.auth is never touched. */
 const supabaseConfig = {
   url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co",
-  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c" // Settings → API → Project API keys → anon/public, in your Supabase dashboard
+  anonKey: "PASTE-YOUR-ANON-KEY-HERE" // Settings → API → Project API keys → anon/public, in your Supabase dashboard
 };
 const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
 const TENANT_DOCS_BUCKET = 'tenant-docs';
@@ -896,14 +907,14 @@ function openCloudSyncSheet() {
 /* ------------------------------- APP STATE -------------------------------- */
 const state = {
   navStack: [{ view: 'dashboard' }],
-  cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [] },
+  cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [], utilityBills: [] },
 };
 
 function currentRoute() { return state.navStack[state.navStack.length - 1]; }
 
 async function refreshCache() {
-  const [locations, units, tenants, payments, pendingPayments] = await Promise.all([
-    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments')
+  const [locations, units, tenants, payments, pendingPayments, utilityBills] = await Promise.all([
+    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills')
   ]);
   // Filter out soft-deleted (tombstoned) records here — the single place
   // all rendering reads from state.cache. Raw dbGetAll() calls elsewhere
@@ -915,6 +926,7 @@ async function refreshCache() {
     tenants: tenants.filter(r => !r.deleted),
     payments: payments.filter(r => !r.deleted),
     pendingPayments: pendingPayments.filter(r => !r.deleted),
+    utilityBills: utilityBills.filter(r => !r.deleted),
   };
 }
 
@@ -942,6 +954,46 @@ function pendingPaymentsForTenant(tenantId) {
     .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
 }
 
+/* ------------------------------ UTILITY BILLS ------------------------------
+   One doc per tenant per period. Each of electricity/water independently
+   carries either a flat `amount` (typed straight off the physical bill) or
+   a sub-meter reading pair + rate that this app multiplies out — set per
+   unit via unit.electricityBilling / unit.waterBilling, since some units
+   share a meter with the building and others are individually sub-metered. */
+function utilityBillFor(tenantId, period) {
+  return state.cache.utilityBills.find(b => b.tenantId === tenantId && b.period === period) || null;
+}
+function utilityBillsForTenant(tenantId) {
+  return state.cache.utilityBills.filter(b => b.tenantId === tenantId)
+    .sort((a, b) => (b.period || '').localeCompare(a.period || ''));
+}
+/** Resolves the peso amount for one utility line (electricity or water) on
+ *  a bill, given the unit's billing mode for that utility. Falls back to 0
+ *  when the line hasn't been filled in yet. */
+function utilityLineAmount(line) {
+  if (!line) return 0;
+  if (line.mode === 'submeter') {
+    const consumed = Math.max(0, (Number(line.currReading) || 0) - (Number(line.prevReading) || 0));
+    return Math.round(consumed * (Number(line.rate) || 0));
+  }
+  return Number(line.amount) || 0;
+}
+function utilityBillTotal(bill) {
+  if (!bill) return 0;
+  return utilityLineAmount(bill.electricity) + utilityLineAmount(bill.water);
+}
+/** Best-guess previous reading for a fresh bill: carries over the last
+ *  logged current reading for that utility so the admin only has to type
+ *  today's number, not both. */
+function lastUtilityReading(tenantId, kind) {
+  const bills = utilityBillsForTenant(tenantId);
+  for (const b of bills) {
+    const line = b[kind];
+    if (line && line.mode === 'submeter' && line.currReading != null) return Number(line.currReading) || 0;
+  }
+  return 0;
+}
+
 /** Computes current-period rent status for every occupied unit.
  *  Returns array of { location, unit, tenant, paid, expected, balance,
  *  dueDate, daysOverdue, status: 'paid'|'due-soon'|'overdue' } */
@@ -954,7 +1006,9 @@ function computeRentStatus() {
     const tenant = activeTenantForUnit(unit.id);
     if (!tenant) continue;
     const location = state.cache.locations.find(l => l.id === unit.locationId);
-    const expected = Number(unit.monthlyRent) || 0;
+    const bill = utilityBillFor(tenant.id, period);
+    const utilities = utilityBillTotal(bill);
+    const expected = (Number(unit.monthlyRent) || 0) + utilities;
     const paid = amountPaidThisPeriod(tenant.id, period);
     const balance = Math.max(0, expected - paid);
     const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
@@ -967,7 +1021,7 @@ function computeRentStatus() {
       else status = 'upcoming';
     }
     rows.push({
-      location, unit, tenant, paid, expected, balance,
+      location, unit, tenant, paid, expected, balance, utilities,
       dueDate, daysOverdue: Math.max(0, daysDiff), status
     });
   }
@@ -1307,6 +1361,8 @@ function renderLocationDetail(locationId) {
 
 function openUnitForm(existing, locationId) {
   const isEdit = !!existing;
+  const elecMode = isEdit ? (existing.electricityBilling || 'flat') : 'flat';
+  const waterMode = isEdit ? (existing.waterBilling || 'flat') : 'flat';
   openSheet(`
     <h2>${isEdit ? 'Edit unit' : 'Add unit'}</h2>
     <div class="field"><label>Unit label</label><input id="f-label" value="${isEdit ? escapeAttr(existing.unitLabel) : ''}" placeholder="e.g. Room 3"></div>
@@ -1321,12 +1377,42 @@ function openUnitForm(existing, locationId) {
         <option value="maintenance" ${isEdit && existing.status === 'maintenance' ? 'selected' : ''}>Maintenance</option>
       </select>
     </div>
+    <div class="section-label" style="margin-top:4px;">Utility billing</div>
+    <div class="muted" style="font-size:.78rem; margin:-4px 0 8px;">Only matters if this unit gets electricity/water bills — leave as Flat amount if you don't bill utilities separately here.</div>
+    <div class="field-row">
+      <div class="field"><label>Electricity</label>
+        <select id="f-elecmode">
+          <option value="flat" ${elecMode === 'flat' ? 'selected' : ''}>Flat amount</option>
+          <option value="submeter" ${elecMode === 'submeter' ? 'selected' : ''}>Sub-meter (₱/kWh)</option>
+        </select>
+      </div>
+      <div class="field" id="f-elecrate-wrap" style="display:${elecMode === 'submeter' ? '' : 'none'};">
+        <label>Rate ₱/kWh</label><input id="f-elecrate" type="number" inputmode="decimal" step="0.01" value="${isEdit ? existing.electricityRate || '' : ''}" placeholder="12.00">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Water</label>
+        <select id="f-watermode">
+          <option value="flat" ${waterMode === 'flat' ? 'selected' : ''}>Flat amount</option>
+          <option value="submeter" ${waterMode === 'submeter' ? 'selected' : ''}>Sub-meter (₱/cu.m)</option>
+        </select>
+      </div>
+      <div class="field" id="f-waterrate-wrap" style="display:${waterMode === 'submeter' ? '' : 'none'};">
+        <label>Rate ₱/cu.m</label><input id="f-waterrate" type="number" inputmode="decimal" step="0.01" value="${isEdit ? existing.waterRate || '' : ''}" placeholder="85.00">
+      </div>
+    </div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
       ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
       <button class="btn btn-primary" id="btnSave">${isEdit ? 'Save changes' : 'Add unit'}</button>
     </div>
   `, () => {
+    document.getElementById('f-elecmode').addEventListener('change', (e) => {
+      document.getElementById('f-elecrate-wrap').style.display = e.target.value === 'submeter' ? '' : 'none';
+    });
+    document.getElementById('f-watermode').addEventListener('change', (e) => {
+      document.getElementById('f-waterrate-wrap').style.display = e.target.value === 'submeter' ? '' : 'none';
+    });
     document.getElementById('btnSave').addEventListener('click', async () => {
       const label = document.getElementById('f-label').value.trim();
       if (!label) return showToast('Unit label is required');
@@ -1335,6 +1421,10 @@ function openUnitForm(existing, locationId) {
       obj.monthlyRent = Number(document.getElementById('f-rent').value) || 0;
       obj.dueDay = Math.min(Math.max(Number(document.getElementById('f-dueday').value) || 1, 1), 28);
       obj.status = document.getElementById('f-status').value;
+      obj.electricityBilling = document.getElementById('f-elecmode').value;
+      obj.electricityRate = Number(document.getElementById('f-elecrate').value) || 0;
+      obj.waterBilling = document.getElementById('f-watermode').value;
+      obj.waterRate = Number(document.getElementById('f-waterrate').value) || 0;
       obj.notes = document.getElementById('f-notes').value.trim();
       obj.updatedAt = Date.now();
       await dbPut('units', obj);
@@ -1381,7 +1471,10 @@ function renderUnitDetail(unitId) {
   if (tenant) {
     const period = monthKey();
     const paid = amountPaidThisPeriod(tenant.id, period);
-    const balance = Math.max(0, (Number(unit.monthlyRent) || 0) - paid);
+    const bill = utilityBillFor(tenant.id, period);
+    const utilities = utilityBillTotal(bill);
+    const expected = (Number(unit.monthlyRent) || 0) + utilities;
+    const balance = Math.max(0, expected - paid);
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -1407,6 +1500,7 @@ function renderUnitDetail(unitId) {
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
     renderPortalAccessBlock(tenant);
+    renderUnitUtilityBlock(tenant, unit);
   } else {
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Tenant</div>
@@ -1416,6 +1510,7 @@ function renderUnitDetail(unitId) {
         <p>Assign a tenant to start tracking rent.</p>
         <div style="margin-top:12px;"><button class="btn btn-primary" id="assignTenantBtn">Assign tenant</button></div>
       </div>`;
+    document.getElementById('unitUtilityBlock').innerHTML = '';
     document.getElementById('assignTenantBtn').addEventListener('click', () => openTenantForm(null, unit.id));
   }
 
@@ -1439,6 +1534,125 @@ function renderUnitDetail(unitId) {
     : () => openTenantForm(null, unit.id);
 }
 function nth(n) { return ['th', 'st', 'nd', 'rd'][(n % 10 > 3 || Math.floor(n / 10) === 1) ? 0 : n % 10]; }
+
+/* ------------------------------ UTILITY BILL (admin) ------------------------------
+   Shown on the unit detail page for the current tenant, right below the
+   rent balance. One card for the current period's bill (if entered yet)
+   plus a link into past months, since these amounts also feed straight
+   into the rent balance/overdue calculations above. */
+function renderUnitUtilityBlock(tenant, unit) {
+  const period = monthKey();
+  const bill = utilityBillFor(tenant.id, period);
+  const wrap = document.getElementById('unitUtilityBlock');
+  const elecAmt = bill ? utilityLineAmount(bill.electricity) : null;
+  const waterAmt = bill ? utilityLineAmount(bill.water) : null;
+  wrap.innerHTML = `
+    <div class="section-label" style="margin-top:14px;">${monthLabel(period)} utility bill</div>
+    <div class="detail-hero">
+      ${bill ? `
+        <div class="kv-grid">
+          <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div></div>
+          <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div></div>
+          <div class="kv"><div class="k">Total</div><div class="v">${peso(elecAmt + waterAmt)}</div></div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button class="btn btn-primary btn-sm" id="editUtilityBillBtn">✏️ Edit bill</button>
+        </div>
+      ` : `
+        <p class="muted" style="font-size:.85rem;">No utility bill entered for ${monthLabel(period)} yet.</p>
+        <div style="margin-top:10px;"><button class="btn btn-accent btn-sm" id="addUtilityBillBtn">Add this month's bill</button></div>
+      `}
+    </div>`;
+  const btn = document.getElementById(bill ? 'editUtilityBillBtn' : 'addUtilityBillBtn');
+  if (btn) btn.addEventListener('click', () => openUtilityBillForm(tenant, unit, bill));
+}
+
+/** Add/edit a tenant's utility bill for a given period. Each of electricity
+ *  and water independently switches between a flat typed amount and a
+ *  sub-meter reading pair, based on how the unit is configured — a unit on
+ *  a shared/building meter stays flat, a sub-metered unit computes the
+ *  amount live as the admin types the current reading. */
+function openUtilityBillForm(tenant, unit, existingBill) {
+  const isEdit = !!existingBill;
+  const period = isEdit ? existingBill.period : monthKey();
+  const elecMode = unit.electricityBilling || 'flat';
+  const waterMode = unit.waterBilling || 'flat';
+  const elec = (isEdit && existingBill.electricity) || {};
+  const water = (isEdit && existingBill.water) || {};
+  const elecPrevDefault = elec.prevReading != null ? elec.prevReading : lastUtilityReading(tenant.id, 'electricity');
+  const waterPrevDefault = water.prevReading != null ? water.prevReading : lastUtilityReading(tenant.id, 'water');
+
+  const lineFieldsHTML = (kind, mode, line, prevDefault, rate, unitLabel) => mode === 'submeter' ? `
+    <div class="field-row">
+      <div class="field"><label>Previous reading</label><input id="f-${kind}-prev" type="number" inputmode="decimal" value="${prevDefault || 0}"></div>
+      <div class="field"><label>Current reading</label><input id="f-${kind}-curr" type="number" inputmode="decimal" value="${line.currReading != null ? line.currReading : ''}" placeholder="0"></div>
+    </div>
+    <div class="muted" style="font-size:.78rem; margin:-4px 0 10px;">Rate: ₱${(Number(rate) || 0).toFixed(2)}/${unitLabel} · <span id="f-${kind}-computed">₱0</span> for this month</div>
+  ` : `
+    <div class="field"><label>Amount</label><input id="f-${kind}-amount" type="number" inputmode="decimal" value="${line.amount != null ? line.amount : ''}" placeholder="0"></div>
+  `;
+
+  openSheet(`
+    <h2>${isEdit ? 'Edit' : 'Add'} utility bill</h2>
+    <div class="field"><label>Period</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
+    <div class="section-label" style="margin-top:4px;">⚡ Electricity ${elecMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
+    ${lineFieldsHTML('elec', elecMode, elec, elecPrevDefault, unit.electricityRate, 'kWh')}
+    <div class="section-label">💧 Water ${waterMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
+    ${lineFieldsHTML('water', waterMode, water, waterPrevDefault, unit.waterRate, 'cu.m')}
+    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existingBill.notes || '') : ''}</textarea></div>
+    <div class="sheet-actions">
+      ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
+      <button class="btn btn-accent" id="btnSave">Save bill</button>
+    </div>
+  `, () => {
+    const recompute = (kind, mode, rate) => {
+      if (mode !== 'submeter') return;
+      const prev = Number(document.getElementById(`f-${kind}-prev`).value) || 0;
+      const curr = Number(document.getElementById(`f-${kind}-curr`).value) || 0;
+      const amt = Math.round(Math.max(0, curr - prev) * (Number(rate) || 0));
+      const el = document.getElementById(`f-${kind}-computed`);
+      if (el) el.textContent = peso(amt);
+    };
+    if (elecMode === 'submeter') {
+      recompute('elec', elecMode, unit.electricityRate);
+      document.getElementById('f-elec-prev').addEventListener('input', () => recompute('elec', elecMode, unit.electricityRate));
+      document.getElementById('f-elec-curr').addEventListener('input', () => recompute('elec', elecMode, unit.electricityRate));
+    }
+    if (waterMode === 'submeter') {
+      recompute('water', waterMode, unit.waterRate);
+      document.getElementById('f-water-prev').addEventListener('input', () => recompute('water', waterMode, unit.waterRate));
+      document.getElementById('f-water-curr').addEventListener('input', () => recompute('water', waterMode, unit.waterRate));
+    }
+    document.getElementById('btnSave').addEventListener('click', async () => {
+      const p = document.getElementById('f-period').value.trim() || monthKey();
+      const buildLine = (kind, mode, rate) => mode === 'submeter'
+        ? { mode, prevReading: Number(document.getElementById(`f-${kind}-prev`).value) || 0, currReading: Number(document.getElementById(`f-${kind}-curr`).value) || 0, rate: Number(rate) || 0 }
+        : { mode, amount: Number(document.getElementById(`f-${kind}-amount`).value) || 0 };
+      const obj = isEdit ? { ...existingBill } : { id: uid(), tenantId: tenant.id, unitId: unit.id };
+      obj.period = p;
+      obj.electricity = buildLine('elec', elecMode, unit.electricityRate);
+      obj.water = buildLine('water', waterMode, unit.waterRate);
+      obj.notes = document.getElementById('f-notes').value.trim();
+      obj.updatedAt = Date.now();
+      await dbPut('utilityBills', obj);
+      queueRecordSync('utilityBills', obj);
+      await refreshCache();
+      closeSheet();
+      showToast('Utility bill saved');
+      render();
+    });
+    if (isEdit) document.getElementById('btnDelete').addEventListener('click', async () => {
+      if (!confirm(`Delete the ${monthLabel(existingBill.period)} utility bill?`)) return;
+      const tombstone = { ...existingBill, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+      await dbPut('utilityBills', tombstone);
+      queueRecordSync('utilityBills', tombstone);
+      await refreshCache();
+      closeSheet();
+      showToast('Utility bill deleted');
+      render();
+    });
+  });
+}
 
 /* ------------------------------ PAYMENT DETAIL (admin) ------------------------------
    Read-only detail view for a single logged payment, opened by tapping a row in a
@@ -1958,8 +2172,8 @@ document.getElementById('searchBtn').addEventListener('click', () => {
 const portal = {
   app: null, auth: null, store: null,
   user: null, adminUid: null, tenantId: null, unitId: null,
-  tenant: null, unit: null, payments: [], pendingPayments: [],
-  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'documents'
+  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [],
+  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents'
 };
 // True while portalRedeemInvite() is setting up a fresh account — see onPortalAuthChanged.
 let portalRedeeming = false;
@@ -2042,11 +2256,12 @@ async function onPortalAuthChanged(user) {
 }
 
 async function portalLoadData() {
-  const [tSnap, uSnap, paySnap, pendSnap] = await Promise.all([
+  const [tSnap, uSnap, paySnap, pendSnap, billSnap] = await Promise.all([
     portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('units').doc(portal.unitId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('payments').where('tenantId', '==', portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').where('portalUid', '==', portal.user.uid).get(),
+    portal.store.collection('users').doc(portal.adminUid).collection('utilityBills').where('tenantId', '==', portal.tenantId).get(),
   ]);
   portal.tenant = tSnap.exists ? tSnap.data() : null;
   portal.unit = uSnap.exists ? uSnap.data() : null;
@@ -2054,16 +2269,20 @@ async function portalLoadData() {
   portal.payments.sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
   portal.pendingPayments = []; pendSnap.forEach(d => portal.pendingPayments.push(d.data()));
   portal.pendingPayments.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+  portal.utilityBills = []; billSnap.forEach(d => portal.utilityBills.push(d.data()));
+  portal.utilityBills = portal.utilityBills.filter(b => !b.deleted);
+  portal.utilityBills.sort((a, b) => (b.period || '').localeCompare(a.period || ''));
 }
 
 function portalRender() {
   document.getElementById('portalBackBtn').classList.toggle('show', portal.view !== 'login' && portal.view !== 'signup');
-  const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', documents: 'My documents' };
+  const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', utilities: 'Utility bills', documents: 'My documents' };
   document.getElementById('portalPageTitle').textContent = titles[portal.view] || 'Tenant Portal';
   if (portal.view === 'login') return portalRenderLogin();
   if (portal.view === 'signup') return portalRenderSignup();
   if (portal.view === 'dashboard') return portalRenderDashboard();
   if (portal.view === 'history') return portalRenderHistory();
+  if (portal.view === 'utilities') return portalRenderUtilities();
   if (portal.view === 'documents') return portalRenderDocuments();
 }
 
@@ -2164,26 +2383,42 @@ function portalRenderDashboard() {
   const paidThisPeriod = portal.payments
     .filter(p => p.coveredPeriod === period)
     .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
-  const balance = Math.max(0, (Number(u.monthlyRent) || 0) - paidThisPeriod);
+  const bill = portal.utilityBills.find(b => b.period === period) || null;
+  const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+  const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+  const rent = Number(u.monthlyRent) || 0;
+  const expected = rent + elecAmt + waterAmt;
+  const balance = Math.max(0, expected - paidThisPeriod);
   const dueDay = Math.min(Math.max(Number(u.dueDay) || 1, 1), 28);
   const cardClass = balance <= 0 ? 'clear' : (new Date().getDate() > dueDay ? 'overdue' : '');
   const pendingCount = portal.pendingPayments.filter(p => p.status === 'pending').length;
+  const hasUtilities = elecAmt > 0 || waterAmt > 0;
 
   document.getElementById('portalMain').innerHTML = `
     <div class="portal-balance-card ${cardClass}">
       <div class="pb-label">${monthLabel(period)} balance</div>
       <div class="pb-amt">${peso(balance)}</div>
-      <div class="pb-sub">${balance <= 0 ? 'You\'re all paid up 🎉' : `Rent is ${peso(u.monthlyRent)}/mo · due the ${dueDay}${nth(dueDay)}`}</div>
+      <div class="pb-sub">${balance <= 0 ? 'You\'re all paid up 🎉' : `Due the ${dueDay}${nth(dueDay)}`}</div>
+      ${hasUtilities ? `
+        <div style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(247,243,236,.2); font-size:.82rem; display:flex; flex-direction:column; gap:3px;">
+          <div style="display:flex; justify-content:space-between;"><span>Rent</span><span>${peso(rent)}</span></div>
+          ${elecAmt ? `<div style="display:flex; justify-content:space-between;"><span>⚡ Electricity</span><span>${peso(elecAmt)}</span></div>` : ''}
+          ${waterAmt ? `<div style="display:flex; justify-content:space-between;"><span>💧 Water</span><span>${peso(waterAmt)}</span></div>` : ''}
+          ${paidThisPeriod ? `<div style="display:flex; justify-content:space-between;"><span>Paid</span><span>−${peso(paidThisPeriod)}</span></div>` : ''}
+        </div>
+      ` : `<div class="pb-sub">Rent is ${peso(rent)}/mo</div>`}
     </div>
     ${pendingCount ? `<div class="muted" style="margin:-10px 0 16px;">⏳ ${pendingCount} payment${pendingCount > 1 ? 's' : ''} waiting on your landlord's review</div>` : ''}
     <div class="portal-actions">
       <button class="btn btn-accent" id="p-submit-payment-btn">Submit payment</button>
       <button class="btn btn-outline" id="p-history-btn">History</button>
     </div>
+    <div class="settings-item" id="p-utilities-btn"><div><div class="si-title">Utility bills</div><div class="si-sub">Electricity &amp; water, by month</div></div><span>⚡</span></div>
     <div class="settings-item" id="p-documents-btn"><div><div class="si-title">My documents</div><div class="si-sub">ID photo &amp; signed contract</div></div><span>📄</span></div>
   `;
   document.getElementById('p-submit-payment-btn').addEventListener('click', portalOpenSubmitPaymentSheet);
   document.getElementById('p-history-btn').addEventListener('click', () => { portal.view = 'history'; portalRender(); });
+  document.getElementById('p-utilities-btn').addEventListener('click', () => { portal.view = 'utilities'; portalRender(); });
   document.getElementById('p-documents-btn').addEventListener('click', () => { portal.view = 'documents'; portalRender(); });
 }
 
@@ -2281,6 +2516,26 @@ function portalRenderHistory() {
     row.addEventListener('click', () => portalOpenPaymentDetailSheet(portal.payments.find(p => p.id === row.dataset.portalPayment))));
   document.querySelectorAll('#portalMain [data-portal-claim]').forEach(row =>
     row.addEventListener('click', () => portalOpenPaymentDetailSheet(portal.pendingPayments.find(p => p.id === row.dataset.portalClaim), true)));
+}
+
+/* ---------------------------- UTILITY BILLS (tenant) ---------------------------- */
+function portalRenderUtilities() {
+  const bills = portal.utilityBills;
+  document.getElementById('portalMain').innerHTML = bills.length ? `<div class="card-list">${bills.map(b => {
+    const elecAmt = utilityLineAmount(b.electricity);
+    const waterAmt = utilityLineAmount(b.water);
+    const elecSub = b.electricity && b.electricity.mode === 'submeter'
+      ? `${Math.max(0, (Number(b.electricity.currReading) || 0) - (Number(b.electricity.prevReading) || 0))} kWh` : '';
+    const waterSub = b.water && b.water.mode === 'submeter'
+      ? `${Math.max(0, (Number(b.water.currReading) || 0) - (Number(b.water.prevReading) || 0))} cu.m` : '';
+    return `<div class="row-card" style="align-items:flex-start;">
+      <div class="rc-main">
+        <div class="rc-title">${escapeHTML(monthLabel(b.period))}</div>
+        <div class="rc-sub">⚡ ${peso(elecAmt)}${elecSub ? ` (${elecSub})` : ''} · 💧 ${peso(waterAmt)}${waterSub ? ` (${waterSub})` : ''}</div>
+      </div>
+      <div class="rc-amt">${peso(elecAmt + waterAmt)}</div>
+    </div>`;
+  }).join('')}</div>` : emptyHTML('⚡', 'No utility bills yet', 'Your landlord will post electricity and water charges here once entered.');
 }
 
 /* Read-only detail view for the tenant's own payment/claim, mirroring the admin-side
