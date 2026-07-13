@@ -133,6 +133,17 @@
   .chip.vacant{background:var(--paper-2); color:var(--slate);}
   .chip.maintenance{background:var(--amber-soft); color:var(--amber);}
 
+  /* ---------- PAYMENT TAG CHIPS (which balance a payment applies to) ---------- */
+  .tagchip-row{display:flex; gap:8px; flex-wrap:wrap; margin:2px 0 14px;}
+  .tagchip{
+    flex:1; min-width:84px; text-align:center; cursor:pointer; user-select:none;
+    font-size:.82rem; font-weight:600; padding:8px 10px; border-radius:10px;
+    border:1px solid var(--line); background:var(--card); color:var(--slate);
+    transition:transform .1s ease;
+  }
+  .tagchip:active{transform:scale(.97);}
+  .tagchip.active{background:var(--peso-soft); color:var(--peso); border-color:var(--peso);}
+
   /* ---------- STAMP (signature element) ---------- */
   .stamp{
     --c:var(--peso);
@@ -498,6 +509,14 @@ const monthLabel = (key) => {
   const [y, m] = key.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 };
+/** Shifts a "YYYY-MM" period by n months (n can be negative). Used to default
+ *  a utility bill's due date into the month after the billing period, since
+ *  Meralco/water bills are typically due the month after the usage they cover. */
+function monthOffset(period, n) {
+  const [y, m] = period.split('-').map(Number);
+  const d = new Date(y, (m - 1) + n, 1);
+  return monthKey(d);
+}
 
 /* ---------------------------- INDEXEDDB LAYER ---------------------------- */
 function openDB() {
@@ -946,6 +965,28 @@ function amountPaidThisPeriod(tenantId, period) {
     .filter(p => p.tenantId === tenantId && p.coveredPeriod === period)
     .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
 }
+/** Tag-aware balance allocation. A payment tagged 'rent'/'electricity'/'water'
+ *  counts only toward that charge's balance — this is what lets a tenant pay
+ *  rent while an overdue electricity bill correctly stays overdue.
+ *  Older/untagged payments (logged before tagging existed, or a tenant who
+ *  just typed one lump sum) are split proportionally across whatever was
+ *  actually owed that period, so they still count without double-booking
+ *  the same peso against two different balances. `weights` is the period's
+ *  expected { rent, electricity, water } amounts. */
+function amountPaidForCharge(tenantId, period, chargeType, weights) {
+  const totalExpected = (weights.rent || 0) + (weights.electricity || 0) + (weights.water || 0);
+  return state.cache.payments
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period)
+    .reduce((sum, p) => {
+      const amt = Number(p.amountPaid) || 0;
+      if (!amt) return sum;
+      if (p.tag) return p.tag === chargeType ? sum + amt : sum;
+      // Untagged: proportional split, falling back to pure rent when there's
+      // no utility bill at all this period to split against.
+      if (totalExpected > 0) return sum + amt * ((weights[chargeType] || 0) / totalExpected);
+      return chargeType === 'rent' ? sum + amt : sum;
+    }, 0);
+}
 function pendingReviewCount() {
   return state.cache.pendingPayments.filter(p => p.status === 'pending').length;
 }
@@ -1006,13 +1047,67 @@ function lastUtilityRate(tenantId, kind) {
   }
   return null;
 }
+/** Electricity and water each carry their own due date on the bill itself
+ *  (not the unit), since the actual Meralco/water-utility due date shifts
+ *  bill-to-bill. `kind` is 'electricityDueDate' or 'waterDueDate'. */
+function lastUtilityDueDate(tenantId, field) {
+  const bills = utilityBillsForTenant(tenantId);
+  for (const b of bills) {
+    if (b[field]) return b[field];
+  }
+  return null;
+}
+/** Sensible default due date for a fresh bill: carries forward the same
+ *  day-of-month this tenant was last billed on for that utility (falling
+ *  back to the 15th for electricity / 20th for water the very first time),
+ *  applied to the month AFTER the billing period — utility bills are
+ *  typically due the month after the usage they cover. Always editable. */
+function defaultUtilityDueDate(tenantId, field, period) {
+  const last = lastUtilityDueDate(tenantId, field);
+  let day = field === 'electricityDueDate' ? 15 : 20;
+  if (last) {
+    const lastDay = Number(last.slice(-2));
+    if (lastDay >= 1 && lastDay <= 31) day = lastDay;
+  }
+  day = Math.min(day, 28);
+  const dueMonth = monthOffset(period, 1);
+  return `${dueMonth}-${String(day).padStart(2, '0')}`;
+}
+/** Resolves the actual Date a utility charge is due against. Prefers the
+ *  bill's own stored due date (electricityDueDate/waterDueDate); if no bill
+ *  or no due date was ever entered, falls back to a default day in the
+ *  month after the period so an un-billed unit still shows *some* signal. */
+function resolveUtilityDueDate(bill, field, period) {
+  const stored = bill && bill[field];
+  if (stored) return new Date(stored + 'T00:00:00');
+  const [y, m] = monthOffset(period, 1).split('-').map(Number);
+  const day = field === 'electricityDueDate' ? 15 : 20;
+  return new Date(y, m - 1, day);
+}
+/** Shared overdue/due-soon/upcoming/paid logic for any single charge
+ *  (rent, electricity, or water) given its own balance and due date. */
+function chargeStatus(balance, dueDate, today) {
+  const daysDiff = Math.floor((today - dueDate) / 86400000);
+  let status = 'paid';
+  if (balance > 0) {
+    if (daysDiff > 0) status = 'overdue';
+    else if (daysDiff >= -3) status = 'due-soon';
+    else status = 'upcoming';
+  }
+  return { status, daysOverdue: Math.max(0, daysDiff) };
+}
 
-/** Computes current-period rent status for every occupied unit.
- *  Returns array of { location, unit, tenant, paid, expected, balance,
- *  dueDate, daysOverdue, status: 'paid'|'due-soon'|'overdue' } */
+/** Computes current-period status for every occupied unit — as three
+ *  independent charges (rent, electricity, water), each with its own
+ *  balance, due date, and overdue/due-soon/paid status, since a unit's
+ *  rent due date and its utility due dates are no longer the same thing.
+ *  Also returns the old combined shape (paid/expected/balance/status/
+ *  dueDate/daysOverdue) for callers that just want the "worst case" at a
+ *  glance — status there is the worst of the three, balance is the sum. */
 function computeRentStatus() {
   const period = monthKey();
   const today = new Date();
+  const order = { overdue: 0, 'due-soon': 1, upcoming: 2, paid: 3 };
   const rows = [];
   for (const unit of state.cache.units) {
     if (unit.status !== 'occupied') continue;
@@ -1020,25 +1115,51 @@ function computeRentStatus() {
     if (!tenant) continue;
     const location = state.cache.locations.find(l => l.id === unit.locationId);
     const bill = utilityBillFor(tenant.id, period);
-    const utilities = utilityBillTotal(bill);
-    const expected = (Number(unit.monthlyRent) || 0) + utilities;
-    const paid = amountPaidThisPeriod(tenant.id, period);
-    const balance = Math.max(0, expected - paid);
+    const rentAmt = Number(unit.monthlyRent) || 0;
+    const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+    const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+    const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+
+    const rentPaid = amountPaidForCharge(tenant.id, period, 'rent', weights);
+    const elecPaid = amountPaidForCharge(tenant.id, period, 'electricity', weights);
+    const waterPaid = amountPaidForCharge(tenant.id, period, 'water', weights);
+    const rentBalance = Math.max(0, rentAmt - rentPaid);
+    const elecBalance = Math.max(0, elecAmt - elecPaid);
+    const waterBalance = Math.max(0, waterAmt - waterPaid);
+
     const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
-    const dueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
-    const daysDiff = Math.floor((today - dueDate) / 86400000);
-    let status = 'paid';
-    if (balance > 0) {
-      if (daysDiff > 0) status = 'overdue';
-      else if (daysDiff >= -3) status = 'due-soon';
-      else status = 'upcoming';
-    }
+    const rentDueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+    const elecDueDate = resolveUtilityDueDate(bill, 'electricityDueDate', period);
+    const waterDueDate = resolveUtilityDueDate(bill, 'waterDueDate', period);
+
+    const rentCS = chargeStatus(rentBalance, rentDueDate, today);
+    const elecCS = chargeStatus(elecBalance, elecDueDate, today);
+    const waterCS = chargeStatus(waterBalance, waterDueDate, today);
+
+    const rent = { amount: rentAmt, paid: rentPaid, balance: rentBalance, dueDate: rentDueDate, ...rentCS };
+    const electricity = { amount: elecAmt, paid: elecPaid, balance: elecBalance, dueDate: elecDueDate, ...elecCS };
+    const water = { amount: waterAmt, paid: waterPaid, balance: waterBalance, dueDate: waterDueDate, ...waterCS };
+
+    // Combined view for callers that just want "is this tenant okay overall":
+    // worst status of the three, summed balances, rent's due date (for
+    // anything still showing a single date, e.g. list stamps).
+    const worstStatus = [rent, electricity, water].reduce((worst, c) => order[c.status] < order[worst] ? c.status : worst, 'paid');
+    const daysOverdue = Math.max(
+      rent.status === 'overdue' ? rent.daysOverdue : 0,
+      electricity.status === 'overdue' ? electricity.daysOverdue : 0,
+      water.status === 'overdue' ? water.daysOverdue : 0
+    );
+
     rows.push({
-      location, unit, tenant, paid, expected, balance, utilities,
-      dueDate, daysOverdue: Math.max(0, daysDiff), status
+      location, unit, tenant,
+      paid: rentPaid + elecPaid + waterPaid,
+      expected: rentAmt + elecAmt + waterAmt,
+      balance: rentBalance + elecBalance + waterBalance,
+      utilities: elecAmt + waterAmt,
+      dueDate: rentDueDate, daysOverdue, status: worstStatus,
+      rent, electricity, water,
     });
   }
-  const order = { overdue: 0, 'due-soon': 1, upcoming: 2, paid: 3 };
   rows.sort((a, b) => (order[a.status] - order[b.status]) || (b.daysOverdue - a.daysOverdue));
   return rows;
 }
@@ -1502,11 +1623,11 @@ function renderUnitDetail(unitId) {
 
   if (tenant) {
     const period = monthKey();
-    const paid = amountPaidThisPeriod(tenant.id, period);
-    const bill = utilityBillFor(tenant.id, period);
-    const utilities = utilityBillTotal(bill);
-    const expected = (Number(unit.monthlyRent) || 0) + utilities;
-    const balance = Math.max(0, expected - paid);
+    const row = computeRentStatus().find(r => r.unit.id === unit.id);
+    const paid = row ? row.paid : amountPaidThisPeriod(tenant.id, period);
+    const colorFor = (c) => c.status === 'overdue' ? 'var(--rust)' : (c.status === 'due-soon' ? 'var(--amber)' : 'var(--peso)');
+    const chargeLineHTML = (label, c) => c.amount > 0 ? `
+          <div class="kv"><div class="k">${label}</div><div class="v" style="color:${colorFor(c)}">${c.balance > 0 ? peso(c.balance) + ' due ' + c.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Paid'}</div></div>` : '';
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -1516,7 +1637,9 @@ function renderUnitDetail(unitId) {
           <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
           <div class="kv"><div class="k">Deposit</div><div class="v">${peso(tenant.depositAmount)}</div></div>
           <div class="kv"><div class="k">${monthLabel(period)} paid</div><div class="v">${peso(paid)}</div></div>
-          <div class="kv"><div class="k">Balance</div><div class="v" style="color:${balance > 0 ? 'var(--rust)' : 'var(--peso)'}">${peso(balance)}</div></div>
+          ${row ? chargeLineHTML('Rent', row.rent) : ''}
+          ${row ? chargeLineHTML('⚡ Electricity', row.electricity) : ''}
+          ${row ? chargeLineHTML('💧 Water', row.water) : ''}
         </div>
         <div class="section-label" style="margin-top:14px;">Tenant portal access</div>
         <div id="tenantPortalAccessBlock"></div>
@@ -1546,6 +1669,7 @@ function renderUnitDetail(unitId) {
     document.getElementById('assignTenantBtn').addEventListener('click', () => openTenantForm(null, unit.id));
   }
 
+  const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' };
   const payments = paymentsForTenant(tenant ? tenant.id : '__none__');
   document.getElementById('unitPayments').innerHTML = payments.length
     ? payments.map(p => `
@@ -1553,7 +1677,7 @@ function renderUnitDetail(unitId) {
         <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
         <div class="rc-main">
           <div class="rc-title">${escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
-          <div class="rc-sub">Paid ${p.datePaid || '—'}${p.proof ? ' · 📎 proof attached' : ''}</div>
+          <div class="rc-sub">${tagLabel[p.tag] || 'Rent'} · Paid ${p.datePaid || '—'}${p.proof ? ' · 📎 proof attached' : ''}</div>
         </div>
         <div class="rc-amt">${peso(p.amountPaid)}</div>
       </div>`).join('')
@@ -1584,8 +1708,8 @@ function renderUnitUtilityBlock(tenant, unit) {
       ${bill ? `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:16px;">
           <div style="display:flex; flex-direction:column; gap:10px; flex:1; min-width:0;">
-            <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div></div>
-            <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div></div>
+            <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}${bill.electricityDueDate ? ` <span class="muted" style="font-size:.72rem;">· due ${bill.electricityDueDate}</span>` : ''}</div></div>
+            <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}${bill.waterDueDate ? ` <span class="muted" style="font-size:.72rem;">· due ${bill.waterDueDate}</span>` : ''}</div></div>
           </div>
           <div style="text-align:right; flex-shrink:0; background:var(--amber-soft); border-radius:12px; padding:10px 16px;">
             <div class="k" style="font-size:.72rem; color:var(--amber);">Total</div>
@@ -1623,6 +1747,8 @@ function openUtilityBillForm(tenant, unit, existingBill) {
   // to the unit's configured default rate the very first time it's billed.
   const elecRateDefault = elec.rate != null ? elec.rate : (lastUtilityRate(tenant.id, 'electricity') ?? unit.electricityRate ?? 0);
   const waterRateDefault = water.rate != null ? water.rate : (lastUtilityRate(tenant.id, 'water') ?? unit.waterRate ?? 0);
+  const elecDueDefault = existingBill && existingBill.electricityDueDate ? existingBill.electricityDueDate : defaultUtilityDueDate(tenant.id, 'electricityDueDate', period);
+  const waterDueDefault = existingBill && existingBill.waterDueDate ? existingBill.waterDueDate : defaultUtilityDueDate(tenant.id, 'waterDueDate', period);
 
   const lineFieldsHTML = (kind, mode, line, prevDefault, rateDefault, unitLabel, rateLabel) => mode === 'submeter' ? `
     <div class="field-row">
@@ -1643,8 +1769,10 @@ function openUtilityBillForm(tenant, unit, existingBill) {
     <div class="field"><label>Period</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
     <div class="section-label" style="margin-top:4px;">⚡ Electricity ${elecMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
     ${lineFieldsHTML('elec', elecMode, elec, elecPrevDefault, elecRateDefault, 'kWh', "Meralco's rate (₱/kWh)")}
+    <div class="field"><label>Electricity due date</label><input id="f-elec-duedate" type="date" value="${elecDueDefault}"></div>
     <div class="section-label">💧 Water ${waterMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
     ${lineFieldsHTML('water', waterMode, water, waterPrevDefault, waterRateDefault, 'cu.m', 'Rate (₱/cu.m)')}
+    <div class="field"><label>Water due date</label><input id="f-water-duedate" type="date" value="${waterDueDefault}"></div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existingBill.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
       ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
@@ -1686,6 +1814,8 @@ function openUtilityBillForm(tenant, unit, existingBill) {
       obj.period = p;
       obj.electricity = buildLine('elec', elecMode);
       obj.water = buildLine('water', waterMode);
+      obj.electricityDueDate = document.getElementById('f-elec-duedate').value || defaultUtilityDueDate(tenant.id, 'electricityDueDate', p);
+      obj.waterDueDate = document.getElementById('f-water-duedate').value || defaultUtilityDueDate(tenant.id, 'waterDueDate', p);
       obj.notes = document.getElementById('f-notes').value.trim();
       obj.updatedAt = Date.now();
       await dbPut('utilityBills', obj);
@@ -1740,15 +1870,37 @@ function openPaymentDetailSheet(paymentId) {
       <div class="field"><label>Status</label><div class="rc-title">${escapeHTML((p.status || '').toUpperCase())}</div></div>
     </div>
     <div class="field-row">
+      <div class="field"><label>Applies to</label><div class="rc-title">${{ rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' }[p.tag] || 'Rent'}</div></div>
       <div class="field"><label>Period covered</label><div class="rc-title">${escapeHTML(p.coveredPeriod || '—')}</div></div>
+    </div>
+    <div class="field-row">
       <div class="field"><label>Date paid</label><div class="rc-title">${escapeHTML(p.datePaid || '—')}</div></div>
     </div>
     <div class="field"><label>Method</label><div class="rc-title">${escapeHTML(p.method || '—')}</div></div>
     ${p.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(p.notes)}</div></div>` : ''}
     <div class="field"><label>Proof of payment</label>${proofBlock}</div>
+    <div class="sheet-actions">
+      <button class="btn btn-danger" id="btnDeletePayment">Delete this record</button>
+    </div>
   `, () => {
     const img = document.querySelector('#sheetBody [data-lightbox]');
     if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+    document.getElementById('btnDeletePayment').addEventListener('click', async () => {
+      // Deleting an approved payment isn't just tidying up a list — it
+      // directly increases this tenant's balance for that period (rent
+      // status, the Overdue tab, and the unit detail balance all recompute
+      // from state.cache.payments live). Make that consequence explicit
+      // before it happens rather than after.
+      const ok = confirm(`Delete this ${peso(p.amountPaid)} payment record? This will add it back to ${tenant ? tenant.fullName : 'the tenant'}'s balance for ${monthLabel(p.coveredPeriod || monthKey())}.`);
+      if (!ok) return;
+      const tombstone = { ...p, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+      await dbPut('payments', tombstone);
+      queueRecordSync('payments', tombstone);
+      await refreshCache();
+      closeSheet();
+      showToast('Payment record deleted');
+      render();
+    });
   });
 }
 
@@ -1907,8 +2059,18 @@ function openTenantForm(existing, unitId) {
 }
 
 function openPaymentForm(tenant, unit) {
+  const period = monthKey();
+  const bill = utilityBillFor(tenant.id, period);
+  const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+  const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
   openSheet(`
     <h2>Log payment</h2>
+    <div class="field"><label>Applies to</label></div>
+    <div class="tagchip-row" id="tagChipRow">
+      <div class="tagchip active" data-tag="rent">Rent</div>
+      <div class="tagchip" data-tag="electricity">⚡ Electricity</div>
+      <div class="tagchip" data-tag="water">💧 Water</div>
+    </div>
     <div class="field"><label>Amount paid</label><input id="f-amount" type="number" inputmode="decimal" value="${unit.monthlyRent}" placeholder="0"></div>
     <div class="field-row">
       <div class="field"><label>Date paid</label><input id="f-datepaid" type="date" value="${todayISO()}"></div>
@@ -1920,20 +2082,35 @@ function openPaymentForm(tenant, unit) {
         </select>
       </div>
     </div>
-    <div class="field"><label>Period covered</label><input id="f-period" value="${monthKey()}" placeholder="2026-07"></div>
+    <div class="field"><label>Period covered</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional"></textarea></div>
     <div class="sheet-actions">
       <button class="btn btn-accent" id="btnSave">Save payment</button>
     </div>
   `, () => {
+    let tag = 'rent';
+    document.querySelectorAll('#tagChipRow .tagchip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        tag = chip.dataset.tag;
+        document.querySelectorAll('#tagChipRow .tagchip').forEach(c => c.classList.toggle('active', c === chip));
+        const amtEl = document.getElementById('f-amount');
+        // Nudge the amount field to the relevant charge's expected total —
+        // still fully editable, just a helpful default for the common case.
+        if (tag === 'rent') amtEl.value = unit.monthlyRent;
+        else if (tag === 'electricity') amtEl.value = elecAmt || '';
+        else if (tag === 'water') amtEl.value = waterAmt || '';
+      });
+    });
     document.getElementById('btnSave').addEventListener('click', async () => {
       const amountPaid = Number(document.getElementById('f-amount').value) || 0;
       if (amountPaid <= 0) return showToast('Enter an amount greater than 0');
       const period = document.getElementById('f-period').value.trim() || monthKey();
-      const already = amountPaidThisPeriod(tenant.id, period);
-      const status = (already + amountPaid) >= (Number(unit.monthlyRent) || 0) ? 'paid' : 'partial';
+      const expectedForTag = tag === 'rent' ? (Number(unit.monthlyRent) || 0) : (tag === 'electricity' ? elecAmt : waterAmt);
+      const weights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
+      const already = amountPaidForCharge(tenant.id, period, tag, weights);
+      const status = (already + amountPaid) >= expectedForTag ? 'paid' : 'partial';
       const obj = {
-        id: uid(), tenantId: tenant.id, unitId: unit.id,
+        id: uid(), tenantId: tenant.id, unitId: unit.id, tag,
         amountPaid, dueDate: `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
         datePaid: document.getElementById('f-datepaid').value || todayISO(),
         method: document.getElementById('f-method').value,
@@ -2029,7 +2206,7 @@ function renderPendingReviewsList() {
         <div class="stamp small due">NEW</div>
         <div class="rc-main">
           <div class="rc-title">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
-          <div class="rc-sub">${escapeHTML(unit ? unit.unitLabel : '')} · ${escapeHTML(p.coveredPeriod || '')} · ${escapeHTML(p.method || '')}</div>
+          <div class="rc-sub">${escapeHTML(unit ? unit.unitLabel : '')} · ${{ rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' }[p.tag] || 'Rent'} · ${escapeHTML(p.coveredPeriod || '')} · ${escapeHTML(p.method || '')}</div>
         </div>
         <div class="rc-amt">${peso(p.amountClaimed)}</div>
         <div class="proof-thumb-row" style="width:100%;">
@@ -2050,10 +2227,18 @@ async function approvePendingPayment(id) {
   const p = state.cache.pendingPayments.find(x => x.id === id);
   if (!p) return;
   const unit = state.cache.units.find(u => u.id === p.unitId);
-  const already = amountPaidThisPeriod(p.tenantId, p.coveredPeriod);
-  const status = (already + Number(p.amountClaimed || 0)) >= (Number(unit ? unit.monthlyRent : 0) || 0) ? 'paid' : 'partial';
+  const tag = p.tag || 'rent';
+  const bill = utilityBillFor(p.tenantId, p.coveredPeriod);
+  const weights = {
+    rent: Number(unit ? unit.monthlyRent : 0) || 0,
+    electricity: bill ? utilityLineAmount(bill.electricity) : 0,
+    water: bill ? utilityLineAmount(bill.water) : 0,
+  };
+  const expectedForTag = weights[tag] || 0;
+  const already = amountPaidForCharge(p.tenantId, p.coveredPeriod, tag, weights);
+  const status = (already + Number(p.amountClaimed || 0)) >= expectedForTag ? 'paid' : 'partial';
   const payment = {
-    id: uid(), tenantId: p.tenantId, unitId: p.unitId,
+    id: uid(), tenantId: p.tenantId, unitId: p.unitId, tag,
     amountPaid: Number(p.amountClaimed) || 0,
     dueDate: unit ? `${p.coveredPeriod}-${String(unit.dueDay || 1).padStart(2, '0')}` : p.coveredPeriod,
     datePaid: p.datePaid || todayISO(), method: p.method || 'gcash',
@@ -2434,17 +2619,38 @@ function portalRenderDashboard() {
     return;
   }
   const period = monthKey();
-  const paidThisPeriod = portal.payments
-    .filter(p => p.coveredPeriod === period)
-    .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
   const bill = portal.utilityBills.find(b => b.period === period) || null;
+  const rentAmt = Number(u.monthlyRent) || 0;
   const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
   const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
-  const rent = Number(u.monthlyRent) || 0;
-  const expected = rent + elecAmt + waterAmt;
-  const balance = Math.max(0, expected - paidThisPeriod);
+  const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+  const totalExpected = rentAmt + elecAmt + waterAmt;
+  // Same tag-aware allocation as the admin side, just reading portal.payments
+  // (the tenant's own Firestore-synced payment list) instead of state.cache.
+  const paidForTag = (chargeType) => portal.payments
+    .filter(p => p.coveredPeriod === period)
+    .reduce((sum, p) => {
+      const amt = Number(p.amountPaid) || 0;
+      if (!amt) return sum;
+      if (p.tag) return p.tag === chargeType ? sum + amt : sum;
+      if (totalExpected > 0) return sum + amt * ((weights[chargeType] || 0) / totalExpected);
+      return chargeType === 'rent' ? sum + amt : sum;
+    }, 0);
+  const rentPaid = paidForTag('rent'), elecPaid = paidForTag('electricity'), waterPaid = paidForTag('water');
+  const paidThisPeriod = rentPaid + elecPaid + waterPaid;
+  const rentBalance = Math.max(0, rentAmt - rentPaid);
+  const elecBalance = Math.max(0, elecAmt - elecPaid);
+  const waterBalance = Math.max(0, waterAmt - waterPaid);
+  const balance = rentBalance + elecBalance + waterBalance;
+
   const dueDay = Math.min(Math.max(Number(u.dueDay) || 1, 1), 28);
-  const cardClass = balance <= 0 ? 'clear' : (new Date().getDate() > dueDay ? 'overdue' : '');
+  const today = new Date();
+  const rentDueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+  const elecDueDate = resolveUtilityDueDate(bill, 'electricityDueDate', period);
+  const waterDueDate = resolveUtilityDueDate(bill, 'waterDueDate', period);
+  const fmtDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const isOverdue = (bal, due) => bal > 0 && today > due;
+  const cardClass = balance <= 0 ? 'clear' : (isOverdue(rentBalance, rentDueDate) || isOverdue(elecBalance, elecDueDate) || isOverdue(waterBalance, waterDueDate) ? 'overdue' : '');
   const pendingCount = portal.pendingPayments.filter(p => p.status === 'pending').length;
   const hasUtilities = elecAmt > 0 || waterAmt > 0;
 
@@ -2452,15 +2658,14 @@ function portalRenderDashboard() {
     <div class="portal-balance-card ${cardClass}">
       <div class="pb-label">${monthLabel(period)} balance</div>
       <div class="pb-amt">${peso(balance)}</div>
-      <div class="pb-sub">${balance <= 0 ? 'You\'re all paid up 🎉' : `Due the ${dueDay}${nth(dueDay)}`}</div>
-      ${hasUtilities ? `
-        <div style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(247,243,236,.2); font-size:.82rem; display:flex; flex-direction:column; gap:3px;">
-          <div style="display:flex; justify-content:space-between;"><span>Rent</span><span>${peso(rent)}</span></div>
-          ${elecAmt ? `<div style="display:flex; justify-content:space-between;"><span>⚡ Electricity</span><span>${peso(elecAmt)}</span></div>` : ''}
-          ${waterAmt ? `<div style="display:flex; justify-content:space-between;"><span>💧 Water</span><span>${peso(waterAmt)}</span></div>` : ''}
-          ${paidThisPeriod ? `<div style="display:flex; justify-content:space-between;"><span>Paid</span><span>−${peso(paidThisPeriod)}</span></div>` : ''}
-        </div>
-      ` : `<div class="pb-sub">Rent is ${peso(rent)}/mo</div>`}
+      <div class="pb-sub">${balance <= 0 ? 'You\'re all paid up 🎉' : `Rent due the ${dueDay}${nth(dueDay)}`}</div>
+      <div style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(247,243,236,.2); font-size:.82rem; display:flex; flex-direction:column; gap:5px;">
+        <div style="display:flex; justify-content:space-between;"><span>Rent</span><span>${rentBalance > 0 ? peso(rentBalance) + ' due ' + fmtDate(rentDueDate) : peso(rentAmt) + ' · paid'}</span></div>
+        ${elecAmt ? `<div style="display:flex; justify-content:space-between;"><span>⚡ Electricity</span><span>${elecBalance > 0 ? peso(elecBalance) + ' due ' + fmtDate(elecDueDate) : peso(elecAmt) + ' · paid'}</span></div>` : ''}
+        ${waterAmt ? `<div style="display:flex; justify-content:space-between;"><span>💧 Water</span><span>${waterBalance > 0 ? peso(waterBalance) + ' due ' + fmtDate(waterDueDate) : peso(waterAmt) + ' · paid'}</span></div>` : ''}
+        ${paidThisPeriod ? `<div style="display:flex; justify-content:space-between;"><span>Paid so far</span><span>−${peso(paidThisPeriod)}</span></div>` : ''}
+      </div>
+      ${!hasUtilities ? `<div class="pb-sub">Rent is ${peso(rentAmt)}/mo</div>` : ''}
     </div>
     ${pendingCount ? `<div class="muted" style="margin:-10px 0 16px;">⏳ ${pendingCount} payment${pendingCount > 1 ? 's' : ''} waiting on your landlord's review</div>` : ''}
     <div class="portal-actions">
@@ -2480,6 +2685,12 @@ function portalOpenSubmitPaymentSheet() {
   portalOpenSheet(`
     <h2>Submit payment</h2>
     <p class="muted" style="margin-top:-6px;">This goes to your landlord for review — it won't count toward your balance until approved.</p>
+    <div class="field"><label>What's this for?</label></div>
+    <div class="tagchip-row" id="ppTagChipRow">
+      <div class="tagchip active" data-tag="rent">Rent</div>
+      <div class="tagchip" data-tag="electricity">⚡ Electricity</div>
+      <div class="tagchip" data-tag="water">💧 Water</div>
+    </div>
     <div class="field"><label>Amount paid</label><input id="pp-amount" type="number" inputmode="decimal" value="${portal.unit ? portal.unit.monthlyRent : ''}"></div>
     <div class="field-row">
       <div class="field"><label>Date paid</label><input id="pp-date" type="date" value="${todayISO()}"></div>
@@ -2492,6 +2703,18 @@ function portalOpenSubmitPaymentSheet() {
     <div class="field"><label>Notes</label><textarea id="pp-notes" placeholder="Optional"></textarea></div>
     <div class="sheet-actions"><button class="btn btn-accent" id="pp-save-btn">Submit for review</button></div>
   `, () => {
+    document.querySelectorAll('#ppTagChipRow .tagchip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('#ppTagChipRow .tagchip').forEach(c => c.classList.toggle('active', c === chip));
+        const amtEl = document.getElementById('pp-amount');
+        const period = document.getElementById('pp-period').value.trim() || monthKey();
+        const bill = portal.utilityBills.find(b => b.period === period) || null;
+        const tag = chip.dataset.tag;
+        if (tag === 'rent') amtEl.value = portal.unit ? portal.unit.monthlyRent : '';
+        else if (tag === 'electricity') amtEl.value = bill ? utilityLineAmount(bill.electricity) : '';
+        else if (tag === 'water') amtEl.value = bill ? utilityLineAmount(bill.water) : '';
+      });
+    });
     document.getElementById('pp-save-btn').addEventListener('click', portalSubmitPaymentProof);
   });
 }
@@ -2499,6 +2722,8 @@ function portalOpenSubmitPaymentSheet() {
 async function portalSubmitPaymentProof() {
   const amountClaimed = Number(document.getElementById('pp-amount').value) || 0;
   if (amountClaimed <= 0) return portalShowToast('Enter an amount greater than 0');
+  const activeTagChip = document.querySelector('#ppTagChipRow .tagchip.active');
+  const tag = activeTagChip ? activeTagChip.dataset.tag : 'rent';
   const file = document.getElementById('pp-proof').files[0];
   if (file && file.size > MAX_DOC_BYTES) return portalShowToast('File is too large — max 15MB');
   const saveBtn = document.getElementById('pp-save-btn');
@@ -2516,7 +2741,7 @@ async function portalSubmitPaymentProof() {
     const id = uid();
     const claim = {
       id, tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
-      amountClaimed, datePaid: document.getElementById('pp-date').value || todayISO(),
+      amountClaimed, tag, datePaid: document.getElementById('pp-date').value || todayISO(),
       method: document.getElementById('pp-method').value,
       coveredPeriod: document.getElementById('pp-period').value.trim() || monthKey(),
       notes: document.getElementById('pp-notes').value.trim(),
