@@ -1638,7 +1638,10 @@ function renderUnitDetail(unitId) {
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
-        <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
+          <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn" style="flex-shrink:0;">📄 Documents</button>
+        </div>
         <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
         <div class="kv-grid">
           <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
@@ -1661,6 +1664,7 @@ function renderUnitDetail(unitId) {
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
+    document.getElementById('viewTenantDocsBtn').addEventListener('click', () => openTenantDocumentsSheet(tenant));
     renderPortalAccessBlock(tenant);
     renderUnitUtilityBlock(tenant, unit);
   } else {
@@ -1931,6 +1935,37 @@ function openPaymentDetailSheet(paymentId) {
    just no upload/replace/remove UI for it on the admin side. */
 const DOC_SLOTS = { idPhoto: 'ID photo', contract: 'Signed contract' };
 const MAX_DOC_BYTES = 15 * 1024 * 1024;
+
+/* Admin-side read-only view of whatever the tenant has uploaded via their
+   portal (see comment above — admin never uploads/replaces these, only
+   views). Mirrors the thumbnail/lightbox-or-file-chip pattern used for
+   payment proof elsewhere in this file. */
+function openTenantDocumentsSheet(tenant) {
+  const docs = tenant.documents || {};
+  const blocks = Object.entries(DOC_SLOTS).map(([slot, label]) => {
+    const doc = docs[slot];
+    if (!doc) {
+      return `<div class="field"><label>${escapeHTML(label)}</label>
+        <div class="muted" style="font-size:.82rem; margin-top:4px;">Not uploaded yet.</div></div>`;
+    }
+    const isImage = !/\.pdf$/i.test(doc.name || '');
+    const body = isImage
+      ? `<div class="proof-thumb-wrap" style="align-items:flex-start;">
+           <img class="proof-thumb" src="${doc.url}" data-lightbox="${escapeAttr(doc.url)}" alt="${escapeAttr(label)}" style="width:100%; height:220px; cursor:pointer;">
+           <div class="proof-thumb-label">Tap to enlarge</div>
+         </div>`
+      : `<a class="proof-file-chip" href="${doc.url}" target="_blank" rel="noopener">📄 View file (${escapeHTML(doc.name || 'file')})</a>`;
+    const uploaded = doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString('en-PH') : null;
+    return `<div class="field"><label>${escapeHTML(label)}${uploaded ? ` · uploaded ${uploaded}` : ''}</label>${body}</div>`;
+  }).join('');
+  openSheet(`
+    <h2>${escapeHTML(tenant.fullName)}'s documents</h2>
+    ${blocks}
+  `, () => {
+    document.querySelectorAll('#sheetBody [data-lightbox]').forEach(img =>
+      img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox)));
+  });
+}
 
 /* --------------------------- TENANT PORTAL ACCESS (admin side) ---------------------------
    A tenant portal account is a *separate* Firebase Auth user (their own email+password),
