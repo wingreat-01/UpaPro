@@ -1335,7 +1335,7 @@ function render() {
   if (activeTab) activeTab.classList.add('active');
 
   const fab = document.getElementById('fabAdd');
-  fab.style.display = ['dashboard', 'overdue', 'settings'].includes(view) ? 'none' : 'flex';
+  fab.style.display = ['dashboard', 'overdue', 'settings', 'unit-detail'].includes(view) ? 'none' : 'flex';
 
   if (view === 'dashboard') renderDashboard();
   else if (view === 'locations') renderLocations();

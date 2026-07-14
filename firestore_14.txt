@@ -58,6 +58,21 @@ service cloud.firestore {
         && resource.data.portalUid == request.auth.uid
         && resource.data.status != 'approved';
 
+      // Tenant self-delete is a TOMBSTONE (deleted:true), not a hard delete —
+      // see portalDeletePaymentClaim. A hard delete left the admin's own local
+      // IndexedDB copy of the claim unaware it was gone, so the admin's next
+      // sync pull/push would resurrect it. This carve-out lets a tenant flip
+      // only the tombstone fields (`deleted`, `deletedAt`, `updatedAt`) on a
+      // claim that's theirs and not already approved — never the amount,
+      // status, proof, or anything else.
+      allow update: if request.auth != null && store == 'pendingPayments'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && resource.data.portalUid == request.auth.uid
+        && resource.data.status != 'approved'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['deleted', 'deletedAt', 'updatedAt']);
+
       // A tenant is allowed to update ONLY their own tenant doc, and ONLY
       // the fields the portal ever actually writes: `documents` (ID
       // photo/contract uploads), or claiming `portalUid`/`portalEmail`
