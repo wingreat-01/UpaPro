@@ -1197,9 +1197,18 @@ function openSheet(html, onMount) {
   document.getElementById('sheetBackdrop').classList.add('show');
   document.getElementById('sheetCloseBtn').addEventListener('click', requestCloseSheet);
   // Push a history entry so the Android/browser back button closes the
-  // sheet instead of leaving the app or the underlying screen.
-  history.pushState({ modal: true }, '');
-  sheetHistoryPushed = true;
+  // sheet instead of leaving the app or the underlying screen. Only push
+  // if one isn't already active — openSheet() replacing an already-open
+  // sheet's content (one screen swapping to another) would otherwise stack
+  // a second real history entry that sheetHistoryPushed (a single flag,
+  // not a counter) can't track. That stranded entry is what let closeSheet()
+  // under- or over-pop relative to what's actually on the browser's real
+  // history stack — see the guard in closeSheet() below for the other half
+  // of this fix.
+  if (!sheetHistoryPushed) {
+    history.pushState({ modal: true }, '');
+    sheetHistoryPushed = true;
+  }
   if (onMount) onMount();
 }
 
@@ -1216,8 +1225,19 @@ function closeSheet() {
   document.getElementById('sheetBackdrop').classList.remove('show');
   if (sheetHistoryPushed) {
     sheetHistoryPushed = false;
-    ignoreNextPopstate = true;
-    history.back(); // pop the history entry we pushed when opening
+    // Guard: only actually step back if we're still sitting on the modal
+    // state we pushed. If it's already gone for any reason (the real
+    // back button already consumed it, a rapid double-close, or any other
+    // flag desync), calling history.back() here would pop past our own
+    // entry and navigate the tab to whatever page was open before this
+    // app ever loaded — the whole page disappearing with no way back
+    // except retyping the URL. Skipping the back() in that case just
+    // leaves us on the current page, which is exactly where a closed
+    // sheet should be anyway.
+    if (history.state && history.state.modal) {
+      ignoreNextPopstate = true;
+      history.back(); // pop the history entry we pushed when opening
+    }
   }
 }
 
