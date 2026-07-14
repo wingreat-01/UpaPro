@@ -3411,12 +3411,23 @@ function portalOpenPaymentDetailSheet(r, isClaim) {
     ${r.notes ? `<div class="field"><label>Your notes</label><div class="rc-sub">${escapeHTML(r.notes)}</div></div>` : ''}
     ${isClaim && r.status === 'rejected' && r.reviewNote ? `<div class="field"><label>Reason from landlord</label><div class="rc-sub">${escapeHTML(r.reviewNote)}</div></div>` : ''}
     <div class="field"><label>Your proof of payment</label>${proofBlock}</div>
-    ${isClaim ? `<div class="sheet-actions"><button class="btn btn-danger" id="pp-delete-btn">Delete this submission</button></div>` : ''}
+    ${isClaim
+      ? `<div class="sheet-actions"><button class="btn btn-danger" id="pp-delete-btn">Delete this submission</button></div>`
+      : (r.source === 'portal'
+          ? `<div class="sheet-actions">
+               <button class="btn btn-outline" id="pp-edit-payment-btn">Edit</button>
+               <button class="btn btn-danger" id="pp-delete-payment-btn">Delete</button>
+             </div>`
+          : `<p class="muted" style="font-size:.8rem; margin-top:10px;">Logged by your landlord — not editable here.</p>`)}
   `, () => {
     const img = document.querySelector('#portalSheetBody [data-lightbox]');
     if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
     const delBtn = document.getElementById('pp-delete-btn');
     if (delBtn) delBtn.addEventListener('click', () => portalDeletePaymentClaim(r));
+    const editPayBtn = document.getElementById('pp-edit-payment-btn');
+    if (editPayBtn) editPayBtn.addEventListener('click', () => { portalCloseSheet(); portalOpenEditPaymentSheet(r); });
+    const deletePayBtn = document.getElementById('pp-delete-payment-btn');
+    if (deletePayBtn) deletePayBtn.addEventListener('click', () => portalDeleteApprovedPayment(r));
   });
 }
 
@@ -3450,6 +3461,135 @@ async function portalDeletePaymentClaim(claim) {
     else portalRenderDashboard();
   } catch (err) {
     console.warn('Delete payment claim failed', err);
+    portalShowToast('Could not delete — check your connection');
+  }
+}
+
+/* Lets a tenant correct an already-approved payment that THEY submitted (source
+   === 'portal') — e.g. the amount or date was off. Payments the landlord logged
+   directly (source === 'admin') are never editable here, mirroring the admin
+   side's rule that portal-sourced payments aren't editable there — each party
+   can only edit records that originated with them. Recomputes paid/partial
+   status the same way the admin's payment form does, excluding this record's
+   old amount from the "already paid" total so editing doesn't double-count it. */
+function portalOpenEditPaymentSheet(payment) {
+  const u = portal.unit;
+  const period = payment.coveredPeriod === 'deposit' ? monthKey() : (payment.coveredPeriod || monthKey());
+  const bill = portal.utilityBills.find(b => b.period === period) || null;
+  const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+  const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+  const initialTag = payment.tag || 'rent';
+  portalOpenSheet(`
+    <h2>Edit payment</h2>
+    <p class="muted" style="margin-top:-6px;">This updates your balance right away — no landlord review needed.</p>
+    <div class="field"><label>What's this for?</label></div>
+    <div class="tagchip-row" id="peTagChipRow">
+      <div class="tagchip${initialTag === 'rent' ? ' active' : ''}" data-tag="rent">Rent</div>
+      <div class="tagchip${initialTag === 'electricity' ? ' active' : ''}" data-tag="electricity">⚡ Electricity</div>
+      <div class="tagchip${initialTag === 'water' ? ' active' : ''}" data-tag="water">💧 Water</div>
+    </div>
+    <div class="field"><label>Amount paid</label><input id="pe-amount" type="number" inputmode="decimal" value="${payment.amountPaid}"></div>
+    <div class="field-row">
+      <div class="field"><label>Date paid</label><input id="pe-date" type="date" value="${payment.datePaid || todayISO()}"></div>
+      <div class="field"><label>Method</label>
+        <select id="pe-method">
+          <option value="gcash"${payment.method === 'gcash' ? ' selected' : ''}>GCash</option>
+          <option value="cash"${payment.method === 'cash' ? ' selected' : ''}>Cash</option>
+          <option value="bank"${payment.method === 'bank' ? ' selected' : ''}>Bank transfer</option>
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Period covered</label><input id="pe-period" value="${period}"></div>
+    <div class="field"><label>Notes</label><textarea id="pe-notes" placeholder="Optional">${escapeHTML(payment.notes || '')}</textarea></div>
+    <div class="sheet-actions"><button class="btn btn-accent" id="pe-save-btn">Save changes</button></div>
+  `, () => {
+    document.querySelectorAll('#peTagChipRow .tagchip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('#peTagChipRow .tagchip').forEach(c => c.classList.toggle('active', c === chip));
+        const amtEl = document.getElementById('pe-amount');
+        const tag = chip.dataset.tag;
+        if (tag === 'rent') amtEl.value = u ? u.monthlyRent : '';
+        else if (tag === 'electricity') amtEl.value = elecAmt || '';
+        else if (tag === 'water') amtEl.value = waterAmt || '';
+      });
+    });
+    document.getElementById('pe-save-btn').addEventListener('click', () => portalSaveEditedPayment(payment));
+  });
+}
+
+async function portalSaveEditedPayment(payment) {
+  const amountPaid = Number(document.getElementById('pe-amount').value) || 0;
+  if (amountPaid <= 0) return portalShowToast('Enter an amount greater than 0');
+  const activeChip = document.querySelector('#peTagChipRow .tagchip.active');
+  const tag = activeChip ? activeChip.dataset.tag : 'rent';
+  const period = document.getElementById('pe-period').value.trim() || monthKey();
+  const datePaid = document.getElementById('pe-date').value || todayISO();
+  const u = portal.unit;
+  const bill = portal.utilityBills.find(b => b.period === period) || null;
+  const weights = { rent: Number(u ? u.monthlyRent : 0) || 0, electricity: bill ? utilityLineAmount(bill.electricity) : 0, water: bill ? utilityLineAmount(bill.water) : 0 };
+  const totalExpected = weights.rent + weights.electricity + weights.water;
+  const expectedForTag = weights[tag] || 0;
+  // Same proportional-split logic as portalRenderDashboard's paidForTag,
+  // excluding this record's own (pre-edit) amount from the running total.
+  const already = portal.payments
+    .filter(p => p.id !== payment.id && p.coveredPeriod === period && p.tag !== 'deposit')
+    .reduce((sum, p) => {
+      const amt = Number(p.amountPaid) || 0;
+      if (!amt) return sum;
+      if (p.tag) return p.tag === tag ? sum + amt : sum;
+      if (totalExpected > 0) return sum + amt * ((weights[tag] || 0) / totalExpected);
+      return tag === 'rent' ? sum + amt : sum;
+    }, 0);
+  const status = (already + amountPaid) >= expectedForTag ? 'paid' : 'partial';
+  const btn = document.getElementById('pe-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const updated = {
+      ...payment,
+      amountPaid, tag, datePaid,
+      method: document.getElementById('pe-method').value,
+      coveredPeriod: period, status,
+      dueDate: u ? `${period}-${String(u.dueDay || 1).padStart(2, '0')}` : period,
+      notes: document.getElementById('pe-notes').value.trim(),
+      updatedAt: Date.now(),
+    };
+    await portal.store.collection('users').doc(portal.adminUid).collection('payments').doc(payment.id).set(updated);
+    portal.payments = portal.payments.map(p => (p.id === payment.id ? updated : p));
+    portalCloseSheet();
+    portalShowToast('Payment updated');
+    if (portal.view === 'history') portalRenderHistory();
+    else portalRenderDashboard();
+  } catch (err) {
+    console.warn('Update payment failed', err);
+    portalShowToast('Could not save — check your connection');
+    btn.disabled = false; btn.textContent = 'Save changes';
+  }
+}
+
+/* Lets a tenant remove a payment record they submitted and that was later
+   approved (source === 'portal') — same tombstone convention as everywhere
+   else, so the admin's local copy learns it's gone instead of resurrecting
+   it on next sync. Payments the landlord logged directly are never passed
+   here (no delete button is shown for those — see portalOpenPaymentDetailSheet). */
+async function portalDeleteApprovedPayment(payment) {
+  if (!payment || payment.source !== 'portal') return;
+  const ok = confirm(`Delete this ${peso(payment.amountPaid)} payment record? This will add it back to your balance for ${monthLabel(payment.coveredPeriod || monthKey())}.`);
+  if (!ok) return;
+  try {
+    const tombstone = { ...payment, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+    await portal.store.collection('users').doc(portal.adminUid).collection('payments').doc(payment.id).set(tombstone);
+    if (payment.proof && payment.proof.storagePath && sb) {
+      // Best-effort cleanup, same as portalDeletePaymentClaim — a failure
+      // here shouldn't block the delete itself.
+      sb.storage.from(TENANT_DOCS_BUCKET).remove([payment.proof.storagePath]).catch(() => {});
+    }
+    portal.payments = portal.payments.filter(p => p.id !== payment.id);
+    portalCloseSheet();
+    portalShowToast('Payment record deleted');
+    if (portal.view === 'history') portalRenderHistory();
+    else portalRenderDashboard();
+  } catch (err) {
+    console.warn('Delete payment failed', err);
     portalShowToast('Could not delete — check your connection');
   }
 }
