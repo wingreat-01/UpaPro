@@ -2227,9 +2227,9 @@ function renderContractDoc(tenant, c) {
       <p class="cd-indent"><strong>${escapeHTML(c.lessorName)}</strong>, Filipino, ${escapeHTML(c.lessorCivilStatus)} of legal age and resident of ${escapeHTML(c.lessorAddress || '____')}, hereinafter referred to as "lessor".</p>
       <p style="text-align:center;">And</p>
       <p class="cd-indent"><strong>${escapeHTML(tenant.fullName)}</strong>, Filipino, ${escapeHTML(c.lesseeCivilStatus)} of legal age and resident of ${escapeHTML(c.lesseeAddress)}, hereinafter referred to as "lessee".</p>
-      <p>That the lessor is the owner of a UNIT specifically located at UNIT ${unitNo} ${escapeHTML(c.propertyAddress)}.</p>
-      <p>That the lessor is willing and able to have the above-describe property leased for the period and consideration as herein below provided.</p>
-      <p>That the lesser is also willing and able to lease the said property for the period and consideration as herein below provided;</p>
+      <p class="cd-indent">That the lessor is the owner of a UNIT specifically located at UNIT ${unitNo} ${escapeHTML(c.propertyAddress)}.</p>
+      <p class="cd-indent">That the lessor is willing and able to have the above-describe property leased for the period and consideration as herein below provided.</p>
+      <p class="cd-indent">That the lesser is also willing and able to lease the said property for the period and consideration as herein below provided;</p>
       <div class="cd-witnesseth">WITNESSETH</div>
       <div class="cd-clause"><span class="cd-num">1)</span><span>That the duration of this lease shall be from ${fmtLongDate(c.durationFrom)} until ${fmtLongDate(c.durationUntil)}</span></div>
       <div class="cd-clause"><span class="cd-num">2)</span><span>That the monthly rental for the premises shall be ${rentalWords} only (Php${Number(c.monthlyRental).toLocaleString('en-PH')})</span></div>
