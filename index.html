@@ -979,10 +979,10 @@ function amountPaidThisPeriod(tenantId, period) {
  *  actually rent for any specific month) are excluded entirely here — they
  *  never count toward, or get split across, a rent/electricity/water
  *  balance for any period. See openPaymentForm's deposit handling. */
-function amountPaidForCharge(tenantId, period, chargeType, weights) {
+function amountPaidForCharge(tenantId, period, chargeType, weights, excludeId) {
   const totalExpected = (weights.rent || 0) + (weights.electricity || 0) + (weights.water || 0);
   return state.cache.payments
-    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit')
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit' && p.id !== excludeId)
     .reduce((sum, p) => {
       const amt = Number(p.amountPaid) || 0;
       if (!amt) return sum;
@@ -1887,11 +1887,17 @@ function openPaymentDetailSheet(paymentId) {
     ${p.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(p.notes)}</div></div>` : ''}
     <div class="field"><label>Proof of payment</label>${proofBlock}</div>
     <div class="sheet-actions">
+      ${tenant && unit ? `<button class="btn btn-outline" id="btnEditPayment">Edit</button>` : ''}
       <button class="btn btn-danger" id="btnDeletePayment">Delete this record</button>
     </div>
   `, () => {
     const img = document.querySelector('#sheetBody [data-lightbox]');
     if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+    const editBtn = document.getElementById('btnEditPayment');
+    if (editBtn) editBtn.addEventListener('click', () => {
+      closeSheet();
+      openPaymentForm(tenant, unit, p);
+    });
     document.getElementById('btnDeletePayment').addEventListener('click', async () => {
       // Deleting an approved payment isn't just tidying up a list — it
       // directly increases this tenant's balance for that period (rent
@@ -2067,39 +2073,41 @@ function openTenantForm(existing, unitId) {
   });
 }
 
-function openPaymentForm(tenant, unit) {
-  const period = monthKey();
+function openPaymentForm(tenant, unit, existing) {
+  const isEdit = !!existing;
+  const period = isEdit ? (existing.coveredPeriod === 'deposit' ? monthKey() : existing.coveredPeriod) : monthKey();
   const bill = utilityBillFor(tenant.id, period);
   const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
   const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+  const initialTag = isEdit ? (existing.tag || 'rent') : 'rent';
   openSheet(`
-    <h2>Log payment</h2>
+    <h2>${isEdit ? 'Edit payment' : 'Log payment'}</h2>
     <div class="field"><label>Applies to</label></div>
     <div class="tagchip-row" id="tagChipRow">
-      <div class="tagchip active" data-tag="rent">Rent</div>
-      <div class="tagchip" data-tag="electricity">⚡ Electricity</div>
-      <div class="tagchip" data-tag="water">💧 Water</div>
-      <div class="tagchip" data-tag="deposit">🔒 Deposit</div>
+      <div class="tagchip${initialTag === 'rent' ? ' active' : ''}" data-tag="rent">Rent</div>
+      <div class="tagchip${initialTag === 'electricity' ? ' active' : ''}" data-tag="electricity">⚡ Electricity</div>
+      <div class="tagchip${initialTag === 'water' ? ' active' : ''}" data-tag="water">💧 Water</div>
+      <div class="tagchip${initialTag === 'deposit' ? ' active' : ''}" data-tag="deposit">🔒 Deposit</div>
     </div>
-    <div class="field"><label>Amount paid</label><input id="f-amount" type="number" inputmode="decimal" value="${unit.monthlyRent}" placeholder="0"></div>
+    <div class="field"><label>Amount paid</label><input id="f-amount" type="number" inputmode="decimal" value="${isEdit ? existing.amountPaid : unit.monthlyRent}" placeholder="0"></div>
     <div class="field-row">
-      <div class="field"><label>Date paid</label><input id="f-datepaid" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Date paid</label><input id="f-datepaid" type="date" value="${isEdit ? (existing.datePaid || todayISO()) : todayISO()}"></div>
       <div class="field"><label>Method</label>
         <select id="f-method">
-          <option value="cash">Cash</option>
-          <option value="gcash">GCash</option>
-          <option value="bank">Bank transfer</option>
+          <option value="cash"${isEdit && existing.method === 'cash' ? ' selected' : ''}>Cash</option>
+          <option value="gcash"${isEdit && existing.method === 'gcash' ? ' selected' : ''}>GCash</option>
+          <option value="bank"${isEdit && existing.method === 'bank' ? ' selected' : ''}>Bank transfer</option>
         </select>
       </div>
     </div>
-    <div class="field" id="f-period-field"><label id="f-period-label">Period covered</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
-    <p class="muted" id="f-deposit-note" style="display:none; margin-top:-10px;">Deposit money isn't rent for any specific month, so it's kept separate from every month's balance — it won't ever show up as "paid" rent or utilities.</p>
-    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional"></textarea></div>
+    <div class="field" id="f-period-field" style="${initialTag === 'deposit' ? 'display:none;' : ''}"><label id="f-period-label">Period covered</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
+    <p class="muted" id="f-deposit-note" style="${initialTag === 'deposit' ? '' : 'display:none;'} margin-top:-10px;">Deposit money isn't rent for any specific month, so it's kept separate from every month's balance — it won't ever show up as "paid" rent or utilities.</p>
+    <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
-      <button class="btn btn-accent" id="btnSave">Save payment</button>
+      <button class="btn btn-accent" id="btnSave">${isEdit ? 'Save changes' : 'Save payment'}</button>
     </div>
   `, () => {
-    let tag = 'rent';
+    let tag = initialTag;
     document.querySelectorAll('#tagChipRow .tagchip').forEach(chip => {
       chip.addEventListener('click', () => {
         tag = chip.dataset.tag;
@@ -2138,11 +2146,14 @@ function openPaymentForm(tenant, unit) {
         period = document.getElementById('f-period').value.trim() || monthKey();
         const expectedForTag = tag === 'rent' ? (Number(unit.monthlyRent) || 0) : (tag === 'electricity' ? elecAmt : waterAmt);
         const weights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
-        const already = amountPaidForCharge(tenant.id, period, tag, weights);
+        // Exclude this record itself from "already paid" when editing —
+        // otherwise saving would count the old amount toward the new total
+        // and could wrongly flip a fully-paid charge to itself again.
+        const already = amountPaidForCharge(tenant.id, period, tag, weights, isEdit ? existing.id : undefined);
         status = (already + amountPaid) >= expectedForTag ? 'paid' : 'partial';
       }
       const obj = {
-        id: uid(), tenantId: tenant.id, unitId: unit.id, tag,
+        id: isEdit ? existing.id : uid(), tenantId: tenant.id, unitId: unit.id, tag,
         amountPaid, dueDate: tag === 'deposit' ? datePaid : `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
         datePaid,
         method: document.getElementById('f-method').value,
@@ -2150,11 +2161,12 @@ function openPaymentForm(tenant, unit) {
         notes: document.getElementById('f-notes').value.trim(),
         updatedAt: Date.now(),
       };
+      if (isEdit && existing.proof) obj.proof = existing.proof;
       await dbPut('payments', obj);
       queueRecordSync('payments', obj);
       await refreshCache();
       closeSheet();
-      showToast('Payment logged');
+      showToast(isEdit ? 'Payment updated' : 'Payment logged');
       render();
     });
   });
