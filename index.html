@@ -365,7 +365,7 @@
     background:var(--paper); flex-direction:column;
   }
   #contractDoc{
-    padding:20px 20px calc(28px + var(--safe-b));
+    padding:1in;
     font-family:'Times New Roman', Georgia, serif;
     font-size:.92rem; line-height:1.55; color:#111;
   }
@@ -374,9 +374,11 @@
     letter-spacing:.04em; margin:0 0 18px; text-transform:uppercase;
   }
   #contractDoc p{margin:0 0 14px;}
-  #contractDoc .cd-witnesseth{text-align:center; font-weight:700; margin:18px 0; text-transform:uppercase;}
+  #contractDoc .cd-witnesseth{text-align:center; font-weight:700; margin:18px 0;}
   #contractDoc .cd-clause{display:flex; gap:8px; margin:0 0 14px;}
   #contractDoc .cd-clause .cd-num{flex-shrink:0;}
+  #contractDoc .cd-page + .cd-page{ margin-top:24px; padding-top:24px; border-top:1px dashed var(--line); }
+  #contractDoc .cd-page-label{ text-align:center; font-size:.7rem; color:var(--slate); text-transform:uppercase; letter-spacing:.06em; margin-bottom:16px; }
   #contractDoc .cd-sig-row{display:flex; gap:24px; margin-top:44px;}
   #contractDoc .cd-sig{flex:1; text-align:center;}
   #contractDoc .cd-sig .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-weight:700;}
@@ -387,11 +389,14 @@
   #contractDoc .cd-witness .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-size:.8rem; font-weight:700;}
 
   @media print{
+    @page{ size: letter; margin: 1in; }
     #app, #tenantPortal, .sheet-backdrop, .toast, .update-banner, #imgLightboxBackdrop, .no-print{
       display:none !important;
     }
     #contractView{ display:block !important; max-width:none; }
     #contractDoc{ padding:0; }
+    #contractDoc .cd-page + .cd-page{ margin-top:0; padding-top:0; border-top:none; page-break-before:always; }
+    #contractDoc .cd-page-label{ display:none; }
     body{ background:#fff; }
   }
 </style>
@@ -2197,44 +2202,58 @@ function fmtLongDate(iso) {
 }
 
 /* Renders the filled-in contract into #contractDoc and swaps #app out for
-   #contractView (see @media print rules in <style>). Clause text mirrors a
-   standard PH residential lease; only the bracketed values are dynamic. */
+   #contractView (see @media print rules in <style>). Wording below is
+   transcribed verbatim from the reference contract (photos supplied by the
+   admin) — including its original phrasing/quirks (e.g. "above-describe",
+   "the lesser is also willing", "prior farmer's procession", "shall
+   responsible") — so the printed output matches that template exactly.
+   Split into two .cd-page blocks (clauses 1–5 on page 1, 6–11 + signatures
+   on page 2) to mirror the two-page source, with a hard page-break between
+   them when printed. */
 function renderContractDoc(tenant, c) {
   const rentalWords = numberToWords(c.monthlyRental);
-  const clauses = [
-    `That the duration of this lease shall be from ${fmtLongDate(c.durationFrom)} until ${fmtLongDate(c.durationUntil)};`,
-    `That the monthly rental for the premises shall be ${rentalWords} Pesos only (Php${Number(c.monthlyRental).toLocaleString('en-PH')});`,
-    `That the lessee shall pay the lessor ${c.advanceMonths} month(s) advance, and ${c.depositMonths} month(s) deposit prior to the lessee's occupancy of the premises;`,
-    `That all electricity, water, telephone, TV cable and other charges upon the premises, incurred during the period of this contract, shall be for the account of the lessee;`,
-    `That the lessee is prohibited from subleasing the premises without the consent of the lessor;`,
-    `That no concrete construction or major renovation shall be made by the lessee without the consent of the lessor;`,
-    `That the lessee shall notify the lessor in writing at least 30 days prior to the lessee's intention to vacate the premises;`,
-    `That the deposit is consumable and non-refundable;`,
-    `That the lessor shall be responsible for the repair of the premises, except for damage due to the lessee's negligence;`,
-    `That the violation of any of the above terms and conditions shall produce, ipso facto, the rescission of this contract;`,
-    `That other terms not expressly provided under this contract shall be governed by the Civil Code of the Philippines.`,
-  ];
+  const unitNo = escapeHTML(c.unitNo || '____');
+  const day = c.dateSigned ? ordinalDay(new Date(c.dateSigned + 'T00:00:00').getDate()) : '____';
+  const month = c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').toLocaleDateString('en-US', { month: 'long' }) : '________';
+  const year = c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').getFullYear() : '____';
+
   document.getElementById('contractDoc').innerHTML = `
-    <h1>Contract of Lease</h1>
-    <p>KNOWN ALL MEN BY THESE PRESENT:</p>
-    <p>This is a contract entered into between:</p>
-    <p><strong>${escapeHTML(c.lessorName)}</strong>, Filipino, ${escapeHTML(c.lessorCivilStatus)} of legal age${c.lessorAddress ? ` and resident of ${escapeHTML(c.lessorAddress)}` : ''}, hereinafter referred to as "Lessor".</p>
-    <p style="text-align:center;">And</p>
-    <p><strong>${escapeHTML(tenant.fullName)}</strong>, Filipino, ${escapeHTML(c.lesseeCivilStatus)} of legal age and resident of ${escapeHTML(c.lesseeAddress)}, hereinafter referred to as "Lessee".</p>
-    <p>That the Lessor is the owner of a unit specifically located at Unit ${escapeHTML(c.unitNo || '____')}, ${escapeHTML(c.propertyAddress)}.</p>
-    <p>That the Lessor is willing and able to have the above-described property leased for the period and consideration as herein below provided;</p>
-    <p>That the Lessee is also willing and able to lease the said property for the period and consideration as herein below provided;</p>
-    <div class="cd-witnesseth">Witnesseth</div>
-    ${clauses.map((text, i) => `<div class="cd-clause"><span class="cd-num">${i + 1})</span><span>${text}</span></div>`).join('')}
-    <p style="margin-top:24px;">Done in the Municipality/City of ${escapeHTML(c.municipality || '________')}, this ${c.dateSigned ? ordinalDay(new Date(c.dateSigned + 'T00:00:00').getDate()) : '____'} day of ${c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').toLocaleDateString('en-US', { month: 'long' }) : '________'}, ${c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').getFullYear() : '____'}.</p>
-    <div class="cd-sig-row">
-      <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(c.lessorName)}</div><div class="cd-sig-role">LESSOR</div></div>
-      <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div></div>
+    <div class="cd-page">
+      <div class="cd-page-label">Page 1</div>
+      <h1>Contract of Lease</h1>
+      <p>KNOWN ALL MEN BY THESE PRESENT:</p>
+      <p>This is contract entered into between:</p>
+      <p><strong>${escapeHTML(c.lessorName)}</strong>, Filipino, ${escapeHTML(c.lessorCivilStatus)} of legal age and resident of ${escapeHTML(c.lessorAddress || '____')}, hereinafter referred to as "lessor".</p>
+      <p style="text-align:center;">And</p>
+      <p><strong>${escapeHTML(tenant.fullName)}</strong>, Filipino, ${escapeHTML(c.lesseeCivilStatus)} of legal age and resident of ${escapeHTML(c.lesseeAddress)}, hereinafter referred to as "lessee".</p>
+      <p>That the lessor is the owner of a UNIT specifically located at UNIT ${unitNo} ${escapeHTML(c.propertyAddress)}.</p>
+      <p>That the lessor is willing and able to have the above-describe property leased for the period and consideration as herein below provided.</p>
+      <p>That the lesser is also willing and able to lease the said property for the period and consideration as herein below provided;</p>
+      <div class="cd-witnesseth">WITNESSETH</div>
+      <div class="cd-clause"><span class="cd-num">1)</span><span>That the duration of this lease shall be from ${fmtLongDate(c.durationFrom)} until ${fmtLongDate(c.durationUntil)}</span></div>
+      <div class="cd-clause"><span class="cd-num">2)</span><span>That the monthly rental for the premises shall be ${rentalWords} only (Php${Number(c.monthlyRental).toLocaleString('en-PH')})</span></div>
+      <div class="cd-clause"><span class="cd-num">3)</span><span>That the lessee shall pay the lessor, ${c.advanceMonths} month(s) advance, and ${c.depositMonths} month(s) deposit prior farmer's procession of the premises;</span></div>
+      <div class="cd-clause"><span class="cd-num">4)</span><span>That all electricity, water, telephone, TV cable and chargers upon the premises, incurred during the period of this contract shall be on the account of the lessee;</span></div>
+      <div class="cd-clause"><span class="cd-num">5)</span><span>That the lessee is prohibited to sublease the premises without the consent of the lessor;</span></div>
     </div>
-    <div class="cd-witness-hdr">Signed in the presence of:</div>
-    <div class="cd-witness-row">
-      <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>Witness</div></div>
-      <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>Witness</div></div>
+    <div class="cd-page">
+      <div class="cd-page-label">Page 2</div>
+      <div class="cd-clause"><span class="cd-num">6)</span><span>That no concrete construction to sublease the premises without the consent of the lessor;</span></div>
+      <div class="cd-clause"><span class="cd-num">7)</span><span>That the lessee shall notify the lessor in writing at least 30 days prior to the of the farmer's intention to vacate the premises;</span></div>
+      <div class="cd-clause"><span class="cd-num">8)</span><span>That the deposits are consumable non-refundable;</span></div>
+      <div class="cd-clause"><span class="cd-num">9)</span><span>That the lessor shall responsible for the repair of the premises due to the lessee's negligence;</span></div>
+      <div class="cd-clause"><span class="cd-num">10)</span><span>That the violation of any of the above terms and conditions shall produce IPSO FACTO the rescission of this contract;</span></div>
+      <div class="cd-clause"><span class="cd-num">11)</span><span>That the other terms whict are not expressly provided under this contract shall be governed by Civil Code of the Philippines</span></div>
+      <p style="margin-top:24px;">Done in the Municipality of the ${escapeHTML(c.municipality || '________')}, and this ${day} day of ${month}, ${year}.</p>
+      <div class="cd-sig-row">
+        <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(c.lessorName)}</div><div class="cd-sig-role">LESSOR</div></div>
+        <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div></div>
+      </div>
+      <div class="cd-witness-hdr">SIGNED IN THE PRESENCE OF:</div>
+      <div class="cd-witness-row">
+        <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>WITNESS</div></div>
+        <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>WITNESS</div></div>
+      </div>
     </div>
   `;
   document.getElementById('app').style.display = 'none';
