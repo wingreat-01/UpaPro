@@ -374,6 +374,7 @@
     letter-spacing:.04em; margin:0 0 18px; text-transform:uppercase;
   }
   #contractDoc p{margin:0 0 14px;}
+  #contractDoc p.cd-indent{text-indent:0.5in;}
   #contractDoc .cd-witnesseth{text-align:center; font-weight:700; margin:18px 0;}
   #contractDoc .cd-clause{display:flex; gap:8px; margin:0 0 14px;}
   #contractDoc .cd-clause .cd-num{flex-shrink:0;}
@@ -2223,9 +2224,9 @@ function renderContractDoc(tenant, c) {
       <h1>Contract of Lease</h1>
       <p>KNOWN ALL MEN BY THESE PRESENT:</p>
       <p>This is contract entered into between:</p>
-      <p><strong>${escapeHTML(c.lessorName)}</strong>, Filipino, ${escapeHTML(c.lessorCivilStatus)} of legal age and resident of ${escapeHTML(c.lessorAddress || '____')}, hereinafter referred to as "lessor".</p>
+      <p class="cd-indent"><strong>${escapeHTML(c.lessorName)}</strong>, Filipino, ${escapeHTML(c.lessorCivilStatus)} of legal age and resident of ${escapeHTML(c.lessorAddress || '____')}, hereinafter referred to as "lessor".</p>
       <p style="text-align:center;">And</p>
-      <p><strong>${escapeHTML(tenant.fullName)}</strong>, Filipino, ${escapeHTML(c.lesseeCivilStatus)} of legal age and resident of ${escapeHTML(c.lesseeAddress)}, hereinafter referred to as "lessee".</p>
+      <p class="cd-indent"><strong>${escapeHTML(tenant.fullName)}</strong>, Filipino, ${escapeHTML(c.lesseeCivilStatus)} of legal age and resident of ${escapeHTML(c.lesseeAddress)}, hereinafter referred to as "lessee".</p>
       <p>That the lessor is the owner of a UNIT specifically located at UNIT ${unitNo} ${escapeHTML(c.propertyAddress)}.</p>
       <p>That the lessor is willing and able to have the above-describe property leased for the period and consideration as herein below provided.</p>
       <p>That the lesser is also willing and able to lease the said property for the period and consideration as herein below provided;</p>
