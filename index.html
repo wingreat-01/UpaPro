@@ -357,6 +357,43 @@
   .portal-tabs{display:flex; gap:6px; margin-bottom:16px; background:var(--paper-2); border-radius:12px; padding:4px;}
   .portal-tabs button{flex:1; border:none; background:none; padding:9px 4px; border-radius:9px; font-size:.8rem; font-weight:600; color:var(--slate); cursor:pointer;}
   .portal-tabs button.active{background:var(--card); color:var(--ink); box-shadow:0 1px 3px rgba(0,0,0,.08);}
+
+  /* ---------- Lease contract print view ---------- */
+  #contractView{
+    display:none;
+    max-width:480px; margin:0 auto; min-height:100vh;
+    background:var(--paper); flex-direction:column;
+  }
+  #contractDoc{
+    padding:20px 20px calc(28px + var(--safe-b));
+    font-family:'Times New Roman', Georgia, serif;
+    font-size:.92rem; line-height:1.55; color:#111;
+  }
+  #contractDoc h1{
+    font-family:inherit; text-align:center; font-size:1.15rem;
+    letter-spacing:.04em; margin:0 0 18px; text-transform:uppercase;
+  }
+  #contractDoc p{margin:0 0 14px;}
+  #contractDoc .cd-witnesseth{text-align:center; font-weight:700; margin:18px 0; text-transform:uppercase;}
+  #contractDoc .cd-clause{display:flex; gap:8px; margin:0 0 14px;}
+  #contractDoc .cd-clause .cd-num{flex-shrink:0;}
+  #contractDoc .cd-sig-row{display:flex; gap:24px; margin-top:44px;}
+  #contractDoc .cd-sig{flex:1; text-align:center;}
+  #contractDoc .cd-sig .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-weight:700;}
+  #contractDoc .cd-sig .cd-sig-role{font-size:.8rem;}
+  #contractDoc .cd-witness-hdr{text-align:center; font-weight:700; margin:36px 0 24px; text-transform:uppercase;}
+  #contractDoc .cd-witness-row{display:flex; gap:24px;}
+  #contractDoc .cd-witness{flex:1; text-align:center;}
+  #contractDoc .cd-witness .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-size:.8rem; font-weight:700;}
+
+  @media print{
+    #app, #tenantPortal, .sheet-backdrop, .toast, .update-banner, #imgLightboxBackdrop, .no-print{
+      display:none !important;
+    }
+    #contractView{ display:block !important; max-width:none; }
+    #contractDoc{ padding:0; }
+    body{ background:#fff; }
+  }
 </style>
 </head>
 <body>
@@ -478,6 +515,23 @@
 <div class="img-lightbox-backdrop" id="imgLightboxBackdrop">
   <button class="img-lightbox-close" id="imgLightboxCloseBtn" aria-label="Close">✕</button>
   <img id="imgLightboxImg" src="" alt="Document preview">
+</div>
+
+<!-- ============================================================
+     LEASE CONTRACT — printable view. Filled in from the tenant's
+     leaseContract data (see openLeaseContractForm/renderContractDoc
+     in the JS below). Hidden on screen behind #app; when the admin
+     opens it, #app hides and this becomes the only visible thing,
+     so window.print()/"Save as PDF" only picks up the contract —
+     see the @media print rules in <style>.
+     ============================================================ -->
+<div id="contractView">
+  <header class="topbar no-print">
+    <button class="back-btn show" id="contractBackBtn" aria-label="Close">←</button>
+    <h1>Lease Contract</h1>
+    <button class="icon-btn" id="contractPrintBtn" aria-label="Print / Save as PDF">🖨️</button>
+  </header>
+  <div id="contractDoc"></div>
 </div>
 
 <script>
@@ -1678,6 +1732,7 @@ function renderUnitDetail(unitId) {
         </div>
         <div style="display:flex; gap:8px; margin-top:8px;">
           <button class="btn btn-primary btn-sm" id="editTenantBtn">✏️ Edit tenant</button>
+          <button class="btn btn-outline btn-sm" id="genContractBtn">📃 Contract</button>
           <button class="btn btn-danger btn-sm" id="moveOutBtn">Move out</button>
         </div>
       </div>`;
@@ -1685,6 +1740,7 @@ function renderUnitDetail(unitId) {
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
     document.getElementById('viewTenantDocsBtn').addEventListener('click', () => openTenantDocumentsSheet(tenant));
+    document.getElementById('genContractBtn').addEventListener('click', () => openLeaseContractForm(tenant, unit, loc));
     renderPortalAccessBlock(tenant);
     renderUnitUtilityBlock(tenant, unit);
   } else {
@@ -1991,6 +2047,207 @@ function openTenantDocumentsSheet(tenant) {
       img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox)));
   });
 }
+
+/* --------------------------- LEASE CONTRACT GENERATOR ---------------------------
+   Builds a printable "Contract of Lease" from data the admin types once per
+   tenant (stored on tenant.leaseContract, so re-opening the form later just
+   edits the same record). The output is a plain HTML document rendered into
+   #contractView/#contractDoc; the admin uses the browser's own Print →
+   "Save as PDF" to get a file, so there's no PDF library dependency and it
+   works the same offline as online. Clause wording is fixed (mirrors a
+   standard PH residential lease template) — only the bracketed details below
+   are filled in per contract. */
+
+/* Small Philippine-peso amount-in-words helper, e.g. 7000 -> "Seven Thousand".
+   Only needs to handle whole-peso amounts up to the hundreds of millions,
+   which comfortably covers residential rent figures. */
+function numberToWords(n) {
+  n = Math.round(Number(n) || 0);
+  if (n === 0) return 'Zero';
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+    'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  function threeDigits(num) {
+    let s = '';
+    if (num >= 100) { s += ones[Math.floor(num / 100)] + ' Hundred '; num %= 100; }
+    if (num >= 20) { s += tens[Math.floor(num / 10)] + ' '; num %= 10; }
+    if (num > 0) s += ones[num] + ' ';
+    return s.trim();
+  }
+  const scales = [['Billion', 1e9], ['Million', 1e6], ['Thousand', 1e3]];
+  let words = '';
+  for (const [label, val] of scales) {
+    if (n >= val) {
+      words += threeDigits(Math.floor(n / val)) + ' ' + label + ' ';
+      n %= val;
+    }
+  }
+  if (n > 0) words += threeDigits(n);
+  return words.trim();
+}
+
+/* Ordinal day, e.g. 1 -> "1st" — reuses the same suffix logic as due-day
+   elsewhere in the app (see nth()), but inlined here since dateSigned is
+   a full ISO date, not a bare day-of-month. */
+function ordinalDay(d) {
+  const day = Number(d);
+  return day + nth(day);
+}
+
+function openLeaseContractForm(tenant, unit, loc) {
+  const existing = tenant.leaseContract || {};
+  const nextYearISO = (isoStr) => {
+    if (!isoStr) return '';
+    const d = new Date(isoStr);
+    d.setFullYear(d.getFullYear() + 1);
+    return d.toISOString().slice(0, 10);
+  };
+  const durationFrom = existing.durationFrom || tenant.moveInDate || todayISO();
+  const durationUntil = existing.durationUntil || nextYearISO(durationFrom);
+  openSheet(`
+    <h2>Lease contract — ${escapeHTML(tenant.fullName)}</h2>
+    <div class="section-label" style="margin-top:0;">Lessor</div>
+    <div class="field"><label>Lessor full name</label><input id="lc-lessorname" value="${escapeAttr(existing.lessorName || '')}" placeholder="e.g. Juan D. Santos"></div>
+    <div class="field-row">
+      <div class="field"><label>Civil status</label>
+        <select id="lc-lessorcivil">
+          ${['Single', 'Married', 'Widowed', 'Separated'].map(s => `<option value="${s}" ${(existing.lessorCivilStatus || 'Married') === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Lessor address</label><input id="lc-lessoraddr" value="${escapeAttr(existing.lessorAddress || '')}" placeholder="Street, Barangay, City"></div>
+    </div>
+
+    <div class="section-label">Lessee</div>
+    <div class="field-row">
+      <div class="field"><label>Civil status</label>
+        <select id="lc-lesseecivil">
+          ${['Single', 'Married', 'Widowed', 'Separated'].map(s => `<option value="${s}" ${(existing.lesseeCivilStatus || 'Single') === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Lessee address</label><input id="lc-lesseeaddr" value="${escapeAttr(existing.lesseeAddress || '')}" placeholder="Street, Barangay, City"></div>
+    </div>
+
+    <div class="section-label">Property &amp; term</div>
+    <div class="field"><label>Unit no.</label><input id="lc-unitno" value="${escapeAttr(existing.unitNo || unit.unitLabel || '')}" placeholder="e.g. 24L"></div>
+    <div class="field"><label>Property address</label><input id="lc-propaddr" value="${escapeAttr(existing.propertyAddress || (loc ? loc.address || loc.name : '') || '')}" placeholder="Full address of the building/lot"></div>
+    <div class="field-row">
+      <div class="field"><label>Lease from</label><input id="lc-from" type="date" value="${durationFrom}"></div>
+      <div class="field"><label>Lease until</label><input id="lc-until" type="date" value="${durationUntil}"></div>
+    </div>
+
+    <div class="section-label">Money terms</div>
+    <div class="field"><label>Monthly rental (₱)</label><input id="lc-rental" type="number" inputmode="decimal" value="${existing.monthlyRental || unit.monthlyRent || ''}" placeholder="7000"></div>
+    <div class="field-row">
+      <div class="field"><label>Advance (months)</label><input id="lc-advance" type="number" inputmode="numeric" min="0" value="${existing.advanceMonths ?? 2}"></div>
+      <div class="field"><label>Deposit (months)</label><input id="lc-deposit" type="number" inputmode="numeric" min="0" value="${existing.depositMonths ?? 1}"></div>
+    </div>
+
+    <div class="section-label">Signing details</div>
+    <div class="field-row">
+      <div class="field"><label>Municipality/City</label><input id="lc-municipality" value="${escapeAttr(existing.municipality || (loc ? loc.name : '') || '')}" placeholder="e.g. Caloocan City"></div>
+      <div class="field"><label>Date signed</label><input id="lc-datesigned" type="date" value="${existing.dateSigned || todayISO()}"></div>
+    </div>
+
+    <div class="sheet-actions">
+      <button class="btn btn-primary" id="btnGenerateContract">Generate contract</button>
+    </div>
+  `, () => {
+    document.getElementById('btnGenerateContract').addEventListener('click', async () => {
+      const lessorName = document.getElementById('lc-lessorname').value.trim();
+      const lessorAddress = document.getElementById('lc-lessoraddr').value.trim();
+      const lesseeAddress = document.getElementById('lc-lesseeaddr').value.trim();
+      const unitNo = document.getElementById('lc-unitno').value.trim();
+      const propertyAddress = document.getElementById('lc-propaddr').value.trim();
+      const rental = Number(document.getElementById('lc-rental').value) || 0;
+      if (!lessorName) return showToast('Lessor name is required');
+      if (!lesseeAddress) return showToast('Lessee address is required');
+      if (!propertyAddress) return showToast('Property address is required');
+      if (!rental) return showToast('Monthly rental is required');
+
+      const contract = {
+        lessorName,
+        lessorCivilStatus: document.getElementById('lc-lessorcivil').value,
+        lessorAddress,
+        lesseeCivilStatus: document.getElementById('lc-lesseecivil').value,
+        lesseeAddress,
+        unitNo,
+        propertyAddress,
+        durationFrom: document.getElementById('lc-from').value,
+        durationUntil: document.getElementById('lc-until').value,
+        monthlyRental: rental,
+        advanceMonths: Number(document.getElementById('lc-advance').value) || 0,
+        depositMonths: Number(document.getElementById('lc-deposit').value) || 0,
+        municipality: document.getElementById('lc-municipality').value.trim(),
+        dateSigned: document.getElementById('lc-datesigned').value,
+      };
+
+      const updatedTenant = { ...tenant, leaseContract: contract, updatedAt: Date.now() };
+      await dbPut('tenants', updatedTenant);
+      queueRecordSync('tenants', updatedTenant);
+      await refreshCache();
+      closeSheet();
+      renderContractDoc(updatedTenant, contract);
+    });
+  });
+}
+
+function fmtLongDate(iso) {
+  if (!iso) return '________';
+  return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+/* Renders the filled-in contract into #contractDoc and swaps #app out for
+   #contractView (see @media print rules in <style>). Clause text mirrors a
+   standard PH residential lease; only the bracketed values are dynamic. */
+function renderContractDoc(tenant, c) {
+  const rentalWords = numberToWords(c.monthlyRental);
+  const clauses = [
+    `That the duration of this lease shall be from ${fmtLongDate(c.durationFrom)} until ${fmtLongDate(c.durationUntil)};`,
+    `That the monthly rental for the premises shall be ${rentalWords} Pesos only (Php${Number(c.monthlyRental).toLocaleString('en-PH')});`,
+    `That the lessee shall pay the lessor ${c.advanceMonths} month(s) advance, and ${c.depositMonths} month(s) deposit prior to the lessee's occupancy of the premises;`,
+    `That all electricity, water, telephone, TV cable and other charges upon the premises, incurred during the period of this contract, shall be for the account of the lessee;`,
+    `That the lessee is prohibited from subleasing the premises without the consent of the lessor;`,
+    `That no concrete construction or major renovation shall be made by the lessee without the consent of the lessor;`,
+    `That the lessee shall notify the lessor in writing at least 30 days prior to the lessee's intention to vacate the premises;`,
+    `That the deposit is consumable and non-refundable;`,
+    `That the lessor shall be responsible for the repair of the premises, except for damage due to the lessee's negligence;`,
+    `That the violation of any of the above terms and conditions shall produce, ipso facto, the rescission of this contract;`,
+    `That other terms not expressly provided under this contract shall be governed by the Civil Code of the Philippines.`,
+  ];
+  document.getElementById('contractDoc').innerHTML = `
+    <h1>Contract of Lease</h1>
+    <p>KNOWN ALL MEN BY THESE PRESENT:</p>
+    <p>This is a contract entered into between:</p>
+    <p><strong>${escapeHTML(c.lessorName)}</strong>, Filipino, ${escapeHTML(c.lessorCivilStatus)} of legal age${c.lessorAddress ? ` and resident of ${escapeHTML(c.lessorAddress)}` : ''}, hereinafter referred to as "Lessor".</p>
+    <p style="text-align:center;">And</p>
+    <p><strong>${escapeHTML(tenant.fullName)}</strong>, Filipino, ${escapeHTML(c.lesseeCivilStatus)} of legal age and resident of ${escapeHTML(c.lesseeAddress)}, hereinafter referred to as "Lessee".</p>
+    <p>That the Lessor is the owner of a unit specifically located at Unit ${escapeHTML(c.unitNo || '____')}, ${escapeHTML(c.propertyAddress)}.</p>
+    <p>That the Lessor is willing and able to have the above-described property leased for the period and consideration as herein below provided;</p>
+    <p>That the Lessee is also willing and able to lease the said property for the period and consideration as herein below provided;</p>
+    <div class="cd-witnesseth">Witnesseth</div>
+    ${clauses.map((text, i) => `<div class="cd-clause"><span class="cd-num">${i + 1})</span><span>${text}</span></div>`).join('')}
+    <p style="margin-top:24px;">Done in the Municipality/City of ${escapeHTML(c.municipality || '________')}, this ${c.dateSigned ? ordinalDay(new Date(c.dateSigned + 'T00:00:00').getDate()) : '____'} day of ${c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').toLocaleDateString('en-US', { month: 'long' }) : '________'}, ${c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').getFullYear() : '____'}.</p>
+    <div class="cd-sig-row">
+      <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(c.lessorName)}</div><div class="cd-sig-role">LESSOR</div></div>
+      <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div></div>
+    </div>
+    <div class="cd-witness-hdr">Signed in the presence of:</div>
+    <div class="cd-witness-row">
+      <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>Witness</div></div>
+      <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>Witness</div></div>
+    </div>
+  `;
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('contractView').style.display = 'flex';
+}
+
+function closeContractView() {
+  document.getElementById('contractView').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+}
+
+document.getElementById('contractBackBtn').addEventListener('click', closeContractView);
+document.getElementById('contractPrintBtn').addEventListener('click', () => window.print());
 
 /* --------------------------- TENANT PORTAL ACCESS (admin side) ---------------------------
    A tenant portal account is a *separate* Firebase Auth user (their own email+password),
