@@ -75,14 +75,17 @@ service cloud.firestore {
 
       // A tenant is allowed to update ONLY their own tenant doc, and ONLY
       // the fields the portal ever actually writes: `documents` (ID
-      // photo/contract uploads), or claiming `portalUid`/`portalEmail`
-      // one time at signup (guarded so it can't be reassigned later).
+      // photo uploads), `leaseSignature` (e-signing their lease contract,
+      // written to Supabase Storage with only the {url, storagePath,
+      // signedAt} reference saved here), or claiming `portalUid`/
+      // `portalEmail` one time at signup (guarded so it can't be
+      // reassigned later).
       allow update: if request.auth != null && store == 'tenants'
         && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
         && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
         && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.tenantId == docId
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['documents', 'portalUid', 'portalEmail', 'updatedAt']);
+             .hasOnly(['documents', 'leaseSignature', 'portalUid', 'portalEmail', 'updatedAt']);
     }
 
     /* ---------------------------------------------------------------

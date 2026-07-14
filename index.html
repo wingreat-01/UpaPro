@@ -3452,8 +3452,13 @@ function portalRenderDocSlots(tenant) {
 }
 
 /* Lightweight canvas-based signature pad — no library, since a plain 2D
-   canvas + pointer events covers this fine. Returns clear()/isEmpty()/
-   toDataURL() so callers don't need to touch the canvas directly. */
+   canvas + pointer events covers this fine. Strokes are drawn as quadratic
+   curves through the midpoints of consecutive points (rather than straight
+   lineTo segments) so fast strokes come out smooth instead of jagged/
+   polygonal — a plain point-to-point lineTo only has as many segments as
+   pointer events fired, which is visibly sharp on quick movements.
+   Returns clear()/isEmpty()/toDataURL() so callers don't need to touch the
+   canvas directly. */
 function initSignaturePad(canvasEl) {
   const ctx = canvasEl.getContext('2d');
   const ratio = window.devicePixelRatio || 1;
@@ -3465,21 +3470,40 @@ function initSignaturePad(canvasEl) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.strokeStyle = '#1C2B33';
-  let drawing = false, last = null, hasInk = false;
+  let drawing = false, hasInk = false, points = [];
   function pos(e) {
     const r = canvasEl.getBoundingClientRect();
     const t = e.touches && e.touches.length ? e.touches[0] : e;
     return { x: t.clientX - r.left, y: t.clientY - r.top };
   }
-  function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+  function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+  function start(e) {
+    e.preventDefault();
+    drawing = true;
+    const p = pos(e);
+    points = [p, p];
+    // Dot on tap-and-release-without-moving so a single click still marks ink.
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fill();
+  }
   function move(e) {
     if (!drawing) return;
     e.preventDefault();
-    const p = pos(e);
-    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
-    last = p; hasInk = true;
+    points.push(pos(e));
+    if (points.length > 2) {
+      const [p0, p1, p2] = points.slice(-3);
+      const m1 = midpoint(p0, p1);
+      const m2 = midpoint(p1, p2);
+      ctx.beginPath();
+      ctx.moveTo(m1.x, m1.y);
+      ctx.quadraticCurveTo(p1.x, p1.y, m2.x, m2.y);
+      ctx.stroke();
+    }
+    hasInk = true;
   }
-  function end() { drawing = false; }
+  function end() { drawing = false; points = []; }
   canvasEl.addEventListener('mousedown', start);
   canvasEl.addEventListener('mousemove', move);
   window.addEventListener('mouseup', end);
