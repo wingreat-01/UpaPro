@@ -2199,6 +2199,7 @@ function openLeaseContractForm(tenant, unit, loc) {
       <div class="field"><label>Municipality/City</label><input id="lc-municipality" value="${escapeAttr(existing.municipality || (loc ? loc.name : '') || '')}" placeholder="e.g. Caloocan City"></div>
       <div class="field"><label>Date signed</label><input id="lc-datesigned" type="date" value="${existing.dateSigned || todayISO()}"></div>
     </div>
+    <div class="field"><label>Witness name</label><input id="lc-witnessname" value="${escapeAttr(existing.witnessName || '')}" placeholder="e.g. Maria L. Cruz"></div>
 
     <div class="sheet-actions">
       <button class="btn btn-primary" id="btnGenerateContract">Generate contract</button>
@@ -2231,6 +2232,7 @@ function openLeaseContractForm(tenant, unit, loc) {
         depositMonths: Number(document.getElementById('lc-deposit').value) || 0,
         municipality: document.getElementById('lc-municipality').value.trim(),
         dateSigned: document.getElementById('lc-datesigned').value,
+        witnessName: document.getElementById('lc-witnessname').value.trim(),
       };
 
       const updatedTenant = { ...tenant, leaseContract: contract, updatedAt: Date.now() };
@@ -2256,8 +2258,11 @@ function fmtLongDate(iso) {
    output matches that template exactly.
    If `signature` ({url, storagePath, signedAt}) is passed, it's drawn in as
    the Lessee's actual signature (fetched from Supabase Storage, same pattern
-   as the ID photo) with a "signed on" caption; otherwise the Lessee line
-   just shows the printed name, same as before e-signing. */
+   as the ID photo), with just the "LESSEE" role label underneath — same
+   styling as the LESSOR/WITNESS lines, no separate signed-on date shown.
+   `signature.signedAt` is still stored and used elsewhere (e.g. the portal
+   doc-slot status text). If no signature is passed, the Lessee line just
+   shows the printed name, same as before e-signing. */
 function buildContractMarkup(tenant, c, signature) {
   const rentalWords = numberToWords(c.monthlyRental);
   const unitNo = escapeHTML(c.unitNo || '____');
@@ -2267,7 +2272,7 @@ function buildContractMarkup(tenant, c, signature) {
   const lesseeSigBlock = signature
     ? `<div class="cd-sig-imgwrap"><img src="${signature.url}" alt="Lessee e-signature" class="cd-sig-img"></div>
        <div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div>
-       <div class="cd-sig-role">LESSEE · signed digitally ${signature.signedAt ? new Date(signature.signedAt).toLocaleDateString('en-PH') : ''}</div>`
+       <div class="cd-sig-role">LESSEE</div>`
     : `<div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div>`;
 
   return `
@@ -2305,7 +2310,7 @@ function buildContractMarkup(tenant, c, signature) {
       <div class="cd-witness-hdr">SIGNED IN THE PRESENCE OF:</div>
       <div class="cd-witness-row">
         <div class="cd-witness"><div class="cd-sig-line">ELLEN G. ESCOBAR</div><div>WITNESS</div></div>
-        <div class="cd-witness"><div class="cd-sig-line">&nbsp;</div><div>WITNESS</div></div>
+        <div class="cd-witness"><div class="cd-sig-line">${c.witnessName ? escapeHTML(c.witnessName) : '&nbsp;'}</div><div>WITNESS</div></div>
       </div>
     </div>
   `;
