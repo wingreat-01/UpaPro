@@ -364,30 +364,49 @@
     max-width:480px; margin:0 auto; min-height:100vh;
     background:var(--paper); flex-direction:column;
   }
-  #contractDoc{
-    padding:1in;
+  /* .contract-doc is shared by: the admin print view (#contractDoc), the
+     admin's read-only tenant-documents sheet, and the tenant portal's
+     sign-the-contract preview — so wording/layout always match. Each
+     context sets its own padding/scroll box around it. */
+  .contract-doc{
     font-family:'Times New Roman', Georgia, serif;
     font-size:.92rem; line-height:1.55; color:#111;
   }
-  #contractDoc h1{
+  #contractDoc{ padding:1in; }
+  .contract-doc h1{
     font-family:inherit; text-align:center; font-size:1.15rem;
     letter-spacing:.04em; margin:0 0 18px; text-transform:uppercase;
   }
-  #contractDoc p{margin:0 0 14px;}
-  #contractDoc p.cd-indent{text-indent:0.5in;}
-  #contractDoc .cd-witnesseth{text-align:center; font-weight:700; margin:18px 0;}
-  #contractDoc .cd-clause{display:flex; gap:8px; margin:0 0 14px;}
-  #contractDoc .cd-clause .cd-num{flex-shrink:0;}
-  #contractDoc .cd-page + .cd-page{ margin-top:24px; padding-top:24px; border-top:1px dashed var(--line); }
-  #contractDoc .cd-page-label{ text-align:center; font-size:.7rem; color:var(--slate); text-transform:uppercase; letter-spacing:.06em; margin-bottom:16px; }
-  #contractDoc .cd-sig-row{display:flex; gap:24px; margin-top:44px;}
-  #contractDoc .cd-sig{flex:1; text-align:center;}
-  #contractDoc .cd-sig .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-weight:700;}
-  #contractDoc .cd-sig .cd-sig-role{font-size:.8rem;}
-  #contractDoc .cd-witness-hdr{text-align:center; font-weight:700; margin:36px 0 24px; text-transform:uppercase;}
-  #contractDoc .cd-witness-row{display:flex; gap:24px;}
-  #contractDoc .cd-witness{flex:1; text-align:center;}
-  #contractDoc .cd-witness .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-size:.8rem; font-weight:700;}
+  .contract-doc p{margin:0 0 14px;}
+  .contract-doc p.cd-indent{text-indent:0.5in;}
+  .contract-doc .cd-witnesseth{text-align:center; font-weight:700; margin:18px 0;}
+  .contract-doc .cd-clause{display:flex; gap:8px; margin:0 0 14px;}
+  .contract-doc .cd-clause .cd-num{flex-shrink:0;}
+  .contract-doc .cd-page + .cd-page{ margin-top:24px; padding-top:24px; border-top:1px dashed var(--line); }
+  .contract-doc .cd-page-label{ text-align:center; font-size:.7rem; color:var(--slate); text-transform:uppercase; letter-spacing:.06em; margin-bottom:16px; }
+  .contract-doc .cd-sig-row{display:flex; gap:24px; margin-top:44px;}
+  .contract-doc .cd-sig{flex:1; text-align:center;}
+  .contract-doc .cd-sig .cd-sig-imgwrap{height:52px; display:flex; align-items:flex-end; justify-content:center;}
+  .contract-doc .cd-sig .cd-sig-img{max-height:50px; max-width:100%; object-fit:contain;}
+  .contract-doc .cd-sig .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-weight:700;}
+  .contract-doc .cd-sig .cd-sig-imgwrap + .cd-sig-line{margin-top:2px;}
+  .contract-doc .cd-sig .cd-sig-role{font-size:.8rem;}
+  .contract-doc .cd-witness-hdr{text-align:center; font-weight:700; margin:36px 0 24px; text-transform:uppercase;}
+  .contract-doc .cd-witness-row{display:flex; gap:24px;}
+  .contract-doc .cd-witness{flex:1; text-align:center;}
+  .contract-doc .cd-witness .cd-sig-line{border-top:1px solid #111; margin-top:40px; padding-top:4px; font-size:.8rem; font-weight:700;}
+
+  /* Read-only scroll box used to preview the contract inside a sheet
+     (admin's tenant-documents view, tenant portal sign flow). */
+  .cd-preview-box{
+    border:1px solid var(--line); border-radius:12px; background:#fff;
+    padding:16px; max-height:320px; overflow-y:auto; margin-top:6px;
+  }
+
+  /* ---------- Digital signature pad (tenant portal) ---------- */
+  .sigpad-wrap{ position:relative; border:1px solid var(--line); border-radius:12px; background:#fff; margin-top:8px; overflow:hidden; }
+  .sigpad-canvas{ width:100%; height:160px; display:block; touch-action:none; }
+  .sigpad-hint{ position:absolute; left:14px; right:14px; bottom:30px; border-top:1px dashed var(--line); font-size:.7rem; color:var(--slate); text-align:center; padding-top:3px; pointer-events:none; }
 
   @media print{
     @page{ size: letter; margin: 1in; }
@@ -537,7 +556,7 @@
     <h1>Lease Contract</h1>
     <button class="icon-btn" id="contractPrintBtn" aria-label="Print / Save as PDF">🖨️</button>
   </header>
-  <div id="contractDoc"></div>
+  <div id="contractDoc" class="contract-doc"></div>
 </div>
 
 <script>
@@ -2027,9 +2046,31 @@ const MAX_DOC_BYTES = 15 * 1024 * 1024;
    portal (see comment above — admin never uploads/replaces these, only
    views). Mirrors the thumbnail/lightbox-or-file-chip pattern used for
    payment proof elsewhere in this file. */
+/* Contract status shown in the admin's read-only tenant-documents sheet,
+   replacing the old generic file-upload slot for 'contract' — this now
+   reflects the lease contract the admin generated (tenant.leaseContract)
+   and whether the tenant has e-signed it in their portal
+   (tenant.leaseSignature), instead of expecting a manually uploaded file. */
+function adminContractStatusBlock(tenant) {
+  const c = tenant.leaseContract;
+  const sig = tenant.leaseSignature;
+  if (!c) {
+    return `<div class="field"><label>Signed contract</label>
+      <div class="muted" style="font-size:.82rem; margin-top:4px;">No lease contract generated yet — use the 📃 Contract button above to create one.</div></div>`;
+  }
+  if (!sig) {
+    return `<div class="field"><label>Signed contract</label>
+      <div class="muted" style="font-size:.82rem; margin-top:4px;">Contract generated — waiting for the tenant to sign it in their portal.</div></div>`;
+  }
+  return `<div class="field"><label>Signed contract · signed ${new Date(sig.signedAt).toLocaleDateString('en-PH')}</label>
+    <button class="btn btn-outline btn-sm" id="viewSignedContractBtn" style="margin-top:4px; width:100%;">📄 View signed contract</button>
+  </div>`;
+}
+
 function openTenantDocumentsSheet(tenant) {
   const docs = tenant.documents || {};
   const blocks = Object.entries(DOC_SLOTS).map(([slot, label]) => {
+    if (slot === 'contract') return adminContractStatusBlock(tenant);
     const doc = docs[slot];
     if (!doc) {
       return `<div class="field"><label>${escapeHTML(label)}</label>
@@ -2051,6 +2092,11 @@ function openTenantDocumentsSheet(tenant) {
   `, () => {
     document.querySelectorAll('#sheetBody [data-lightbox]').forEach(img =>
       img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox)));
+    const viewBtn = document.getElementById('viewSignedContractBtn');
+    if (viewBtn) viewBtn.addEventListener('click', () => {
+      closeSheet();
+      renderContractDoc(tenant, tenant.leaseContract);
+    });
   });
 }
 
@@ -2202,23 +2248,29 @@ function fmtLongDate(iso) {
   return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
-/* Renders the filled-in contract into #contractDoc and swaps #app out for
-   #contractView (see @media print rules in <style>). Wording below is
-   transcribed verbatim from the reference contract (photos supplied by the
-   admin) — including its original phrasing/quirks (e.g. "above-describe",
-   "the lesser is also willing", "prior farmer's procession", "shall
-   responsible") — so the printed output matches that template exactly.
-   Split into two .cd-page blocks (clauses 1–5 on page 1, 6–11 + signatures
-   on page 2) to mirror the two-page source, with a hard page-break between
-   them when printed. */
-function renderContractDoc(tenant, c) {
+/* Builds the two-page contract markup (shared by the admin print view,
+   the admin's read-only tenant-documents sheet, and the tenant portal's
+   sign-the-contract preview) so all three always show identical wording.
+   Wording is transcribed verbatim from the reference contract (photos
+   supplied by the admin) — including its original phrasing/quirks — so the
+   output matches that template exactly.
+   If `signature` ({url, storagePath, signedAt}) is passed, it's drawn in as
+   the Lessee's actual signature (fetched from Supabase Storage, same pattern
+   as the ID photo) with a "signed on" caption; otherwise the Lessee line
+   just shows the printed name, same as before e-signing. */
+function buildContractMarkup(tenant, c, signature) {
   const rentalWords = numberToWords(c.monthlyRental);
   const unitNo = escapeHTML(c.unitNo || '____');
   const day = c.dateSigned ? ordinalDay(new Date(c.dateSigned + 'T00:00:00').getDate()) : '____';
   const month = c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').toLocaleDateString('en-US', { month: 'long' }) : '________';
   const year = c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').getFullYear() : '____';
+  const lesseeSigBlock = signature
+    ? `<div class="cd-sig-imgwrap"><img src="${signature.url}" alt="Lessee e-signature" class="cd-sig-img"></div>
+       <div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div>
+       <div class="cd-sig-role">LESSEE · signed digitally ${signature.signedAt ? new Date(signature.signedAt).toLocaleDateString('en-PH') : ''}</div>`
+    : `<div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div>`;
 
-  document.getElementById('contractDoc').innerHTML = `
+  return `
     <div class="cd-page">
       <div class="cd-page-label">Page 1</div>
       <h1>Contract of Lease</h1>
@@ -2248,7 +2300,7 @@ function renderContractDoc(tenant, c) {
       <p style="margin-top:24px;">Done in the Municipality of the ${escapeHTML(c.municipality || '________')}, and this ${day} day of ${month}, ${year}.</p>
       <div class="cd-sig-row">
         <div class="cd-sig"><div class="cd-sig-line">ZOILO P. ESCOBAR</div><div class="cd-sig-role">LESSOR</div></div>
-        <div class="cd-sig"><div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div></div>
+        <div class="cd-sig">${lesseeSigBlock}</div>
       </div>
       <div class="cd-witness-hdr">SIGNED IN THE PRESENCE OF:</div>
       <div class="cd-witness-row">
@@ -2257,6 +2309,15 @@ function renderContractDoc(tenant, c) {
       </div>
     </div>
   `;
+}
+
+/* Renders the filled-in contract into #contractDoc and swaps #app out for
+   #contractView (see @media print rules in <style>). Automatically embeds
+   the tenant's e-signature (tenant.leaseSignature) if they've already
+   signed via the portal, so the admin's printed/PDF copy shows the real
+   signature, not just a blank line. */
+function renderContractDoc(tenant, c) {
+  document.getElementById('contractDoc').innerHTML = buildContractMarkup(tenant, c, tenant.leaseSignature || null);
   document.getElementById('app').style.display = 'none';
   document.getElementById('contractView').style.display = 'flex';
 }
@@ -3329,15 +3390,42 @@ async function portalDeletePaymentClaim(claim) {
 function portalRenderDocuments() {
   const t = portal.tenant || {};
   document.getElementById('portalMain').innerHTML = `
-    <p class="muted">Upload these before you move in, or any time your landlord needs a fresh copy.</p>
+    <p class="muted">Upload your ID before you move in. Your lease contract shows up here once your landlord prepares it — review it and sign digitally.</p>
     <div id="p-docs-wrap" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;"></div>
   `;
   portalRenderDocSlots(t);
+}
+/* Renders the 'contract' slot card based on tenant.leaseContract (set by
+   the admin's Contract generator) and tenant.leaseSignature (set once the
+   tenant signs below) — replacing the old generic file-upload slot, since
+   the contract is now generated in-app rather than uploaded as a photo. */
+function portalContractSlotHTML(tenant, label) {
+  const c = tenant.leaseContract;
+  const sig = tenant.leaseSignature;
+  if (!c) {
+    return `<div class="doc-slot">
+      <div class="doc-icon">⏳</div><div class="doc-label">${escapeHTML(label)}</div>
+      <div class="doc-name">Not ready yet — your landlord hasn't prepared this yet.</div>
+    </div>`;
+  }
+  if (sig) {
+    return `<div class="doc-slot has-file">
+      <div class="doc-icon">✅</div><div class="doc-label">${escapeHTML(label)}</div>
+      <div class="doc-name">Signed ${new Date(sig.signedAt).toLocaleDateString('en-PH')}</div>
+      <div class="doc-actions"><button class="btn btn-outline btn-sm" id="p-contract-view">View</button></div>
+    </div>`;
+  }
+  return `<div class="doc-slot has-file">
+    <div class="doc-icon">📃</div><div class="doc-label">${escapeHTML(label)}</div>
+    <div class="doc-name">Ready — please review and sign.</div>
+    <div class="doc-actions"><button class="btn btn-primary btn-sm" id="p-contract-sign">Review &amp; sign</button></div>
+  </div>`;
 }
 function portalRenderDocSlots(tenant) {
   const wrap = document.getElementById('p-docs-wrap');
   if (!wrap) return;
   wrap.innerHTML = Object.entries(DOC_SLOTS).map(([slot, label]) => {
+    if (slot === 'contract') return portalContractSlotHTML(tenant, label);
     const doc = tenant.documents && tenant.documents[slot];
     if (doc) {
       const icon = /\.pdf$/i.test(doc.name || '') ? '📄' : '🖼️';
@@ -3357,7 +3445,123 @@ function portalRenderDocSlots(tenant) {
   wrap.querySelectorAll('button[data-slot]').forEach(btn => {
     btn.addEventListener('click', () => portalPickAndUploadDoc(btn.dataset.slot));
   });
+  const signBtn = document.getElementById('p-contract-sign');
+  if (signBtn) signBtn.addEventListener('click', () => portalOpenContractSign(tenant));
+  const viewBtn = document.getElementById('p-contract-view');
+  if (viewBtn) viewBtn.addEventListener('click', () => portalOpenContractView(tenant));
 }
+
+/* Lightweight canvas-based signature pad — no library, since a plain 2D
+   canvas + pointer events covers this fine. Returns clear()/isEmpty()/
+   toDataURL() so callers don't need to touch the canvas directly. */
+function initSignaturePad(canvasEl) {
+  const ctx = canvasEl.getContext('2d');
+  const ratio = window.devicePixelRatio || 1;
+  const rect = canvasEl.getBoundingClientRect();
+  canvasEl.width = rect.width * ratio;
+  canvasEl.height = rect.height * ratio;
+  ctx.scale(ratio, ratio);
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#1C2B33';
+  let drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    const r = canvasEl.getBoundingClientRect();
+    const t = e.touches && e.touches.length ? e.touches[0] : e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p; hasInk = true;
+  }
+  function end() { drawing = false; }
+  canvasEl.addEventListener('mousedown', start);
+  canvasEl.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvasEl.addEventListener('touchstart', start, { passive: false });
+  canvasEl.addEventListener('touchmove', move, { passive: false });
+  canvasEl.addEventListener('touchend', end);
+  return {
+    clear() { ctx.clearRect(0, 0, canvasEl.width, canvasEl.height); hasInk = false; },
+    isEmpty() { return !hasInk; },
+    toDataURL() { return canvasEl.toDataURL('image/png'); },
+    /* Promise-wrapped canvas.toBlob — used to upload the signature PNG to
+       Supabase Storage instead of inlining it as a data URL. */
+    toBlob() { return new Promise(resolve => canvasEl.toBlob(resolve, 'image/png')); },
+  };
+}
+
+/* Read-only view of the (unsigned or already-signed) contract — same
+   markup the admin sees, via buildContractMarkup, so wording always
+   matches what the admin generated. */
+function portalOpenContractView(tenant) {
+  const c = tenant.leaseContract;
+  if (!c) return portalShowToast('Your lease contract isn\'t ready yet');
+  portalOpenSheet(`
+    <h2>Your lease contract</h2>
+    <div class="cd-preview-box"><div class="contract-doc">${buildContractMarkup(tenant, c, tenant.leaseSignature || null)}</div></div>
+  `);
+}
+
+/* Review-then-sign flow: shows the same contract read-only, then a
+   canvas signature pad. On submit, the drawn PNG is uploaded to Supabase
+   Storage (same bucket/path pattern as the ID photo) and only the resulting
+   { url, storagePath, signedAt } reference is saved on tenant.leaseSignature
+   (synced via Firestore like the rest of the tenant record), which the
+   admin's print view and documents sheet both pick up automatically. Note:
+   like ID photo upload, this requires being online at the moment of
+   signing. */
+function portalOpenContractSign(tenant) {
+  const c = tenant.leaseContract;
+  if (!c) return portalShowToast('Your lease contract isn\'t ready yet');
+  portalOpenSheet(`
+    <h2>Review &amp; sign your lease</h2>
+    <div class="cd-preview-box"><div class="contract-doc">${buildContractMarkup(tenant, c, null)}</div></div>
+    <div class="section-label" style="margin-top:16px;">Your signature</div>
+    <p class="muted" style="font-size:.78rem; margin-top:-4px;">By signing below, you confirm you've read and agree to the terms above.</p>
+    <div class="sigpad-wrap">
+      <canvas id="sigCanvas" class="sigpad-canvas"></canvas>
+      <div class="sigpad-hint">Sign above</div>
+    </div>
+    <div class="sheet-actions" style="margin-top:8px;">
+      <button class="btn btn-outline btn-sm" id="sigClearBtn">Clear</button>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-primary" id="sigSubmitBtn">Submit signature</button>
+    </div>
+  `, () => {
+    const pad = initSignaturePad(document.getElementById('sigCanvas'));
+    document.getElementById('sigClearBtn').addEventListener('click', () => pad.clear());
+    document.getElementById('sigSubmitBtn').addEventListener('click', async () => {
+      if (pad.isEmpty()) return portalShowToast('Please sign before submitting');
+      portalShowToast('Saving signature…');
+      try {
+        if (!sb) throw new Error('SUPABASE_NOT_CONFIGURED');
+        const blob = await pad.toBlob();
+        if (!blob) throw new Error('SIGNATURE_BLOB_FAILED');
+        const path = `portalUploads/${portal.user.uid}/signature-${Date.now()}.png`;
+        const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, blob, { upsert: true, contentType: 'image/png' });
+        if (uploadErr) throw uploadErr;
+        const leaseSignature = { url: docPublicUrl(path), storagePath: path, signedAt: Date.now() };
+        await portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId)
+          .update({ leaseSignature, updatedAt: Date.now() });
+        portal.tenant = { ...portal.tenant, leaseSignature };
+        portalCloseSheet();
+        portalRenderDocSlots(portal.tenant);
+        portalShowToast('Contract signed');
+      } catch (err) {
+        console.warn('Signature save failed', err);
+        portalShowToast('Could not save signature — check your connection');
+      }
+    });
+  });
+}
+
 function portalPickAndUploadDoc(slot) {
   const input = document.createElement('input');
   input.type = 'file'; input.accept = 'image/*,application/pdf';
