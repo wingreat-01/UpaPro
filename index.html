@@ -1890,6 +1890,8 @@ function openPaymentDetailSheet(paymentId) {
          </div>`
       : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
 
+  const isTenantSubmitted = p.source === 'portal';
+
   openSheet(`
     <h2>Payment details</h2>
     <div class="field-row">
@@ -1910,13 +1912,16 @@ function openPaymentDetailSheet(paymentId) {
     <div class="field"><label>Method</label><div class="rc-title">${escapeHTML(p.method || '—')}</div></div>
     ${p.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(p.notes)}</div></div>` : ''}
     <div class="field"><label>Proof of payment</label>${proofBlock}</div>
-    <div class="sheet-actions">
+    ${isTenantSubmitted
+      ? `<p class="muted" style="font-size:.8rem; margin-top:10px;">Submitted and approved through the tenant portal — not editable or deletable from here.</p>`
+      : `<div class="sheet-actions">
       ${tenant && unit ? `<button class="btn btn-outline" id="btnEditPayment">Edit</button>` : ''}
       <button class="btn btn-danger" id="btnDeletePayment">Delete this record</button>
-    </div>
+    </div>`}
   `, () => {
     const img = document.querySelector('#sheetBody [data-lightbox]');
     if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+    if (isTenantSubmitted) return; // no edit/delete wiring needed
     const editBtn = document.getElementById('btnEditPayment');
     if (editBtn) editBtn.addEventListener('click', () => {
       closeSheet();
@@ -2214,6 +2219,7 @@ function openPaymentForm(tenant, unit, existing) {
         method: document.getElementById('f-method').value,
         coveredPeriod: period, status,
         notes: document.getElementById('f-notes').value.trim(),
+        source: isEdit ? (existing.source || 'admin') : 'admin',
         updatedAt: Date.now(),
       };
       if (isEdit && existing.proof) obj.proof = existing.proof;
@@ -2344,6 +2350,7 @@ async function approvePendingPayment(id) {
     coveredPeriod: p.coveredPeriod, status,
     notes: p.notes ? `Tenant-submitted: ${p.notes}` : 'Submitted via tenant portal',
     proof: p.proof || null,
+    source: 'portal', // came from a tenant's approved claim — not editable/deletable admin-side, see openPaymentDetailSheet
     updatedAt: Date.now(),
   };
   await dbPut('payments', payment);
