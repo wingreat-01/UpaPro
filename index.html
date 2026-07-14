@@ -238,6 +238,9 @@
   .field-row .field{flex:1;}
   .sheet-actions{display:flex; gap:10px; margin-top:18px;}
   .sheet-actions .btn{flex:1;}
+  .auth-loading-bar{height:3px; width:100%; background:var(--paper-2); border-radius:2px; overflow:hidden; margin-top:10px; display:none;}
+  .auth-loading-bar.show{display:block;}
+  .auth-loading-bar-fill{height:100%; width:0%; background:var(--peso); border-radius:2px;}
 
   /* ---------- SEARCH SHEET ---------- */
   .search-input-wrap{
@@ -959,6 +962,7 @@ function openCloudSyncSheet() {
         <button class="btn btn-outline" id="cs-signup-btn">Create account</button>
         <button class="btn btn-primary" id="cs-signin-btn">Sign in</button>
       </div>
+      <div class="auth-loading-bar" id="cs-auth-loading-bar"><div class="auth-loading-bar-fill"></div></div>
     </div>
     <div id="cs-signed-in" style="display:none;">
       <div style="font-weight:600; margin-bottom:8px;" id="cs-account-email">—</div>
@@ -986,13 +990,20 @@ function openCloudSyncSheet() {
       const email = document.getElementById('cs-email').value.trim();
       const password = document.getElementById('cs-password').value;
       const errEl = document.getElementById('cs-auth-error');
+      const btn = document.getElementById('cs-signin-btn');
+      const bar = document.getElementById('cs-auth-loading-bar');
       errEl.textContent = '';
       if (!email || !password) { errEl.textContent = 'Enter your email and password.'; return; }
+      authLoadingStart(bar, btn);
       try {
         await fbAuth.signInWithEmailAndPassword(email, password);
+        authLoadingEnd(bar, btn, true);
         showToast('Signed in — syncing your data');
         closeSheet();
-      } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
+      } catch (err) {
+        authLoadingEnd(bar, btn, false);
+        errEl.textContent = cloudAuthErrorMessage(err);
+      }
     });
     document.getElementById('cs-signout-btn').addEventListener('click', async () => {
       await fbAuth.signOut();
@@ -1002,6 +1013,48 @@ function openCloudSyncSheet() {
     });
     document.getElementById('cs-sync-now-btn').addEventListener('click', () => runFullCloudSync(true));
   });
+}
+
+/* --------------------------- AUTH LOADING BAR ------------------------------ */
+// Drives a thin green bar that fills left-to-right while a sign-in call is
+// in flight, then snaps to full and fades out on success, or resets on error.
+function authLoadingStart(barEl, btnEl) {
+  if (!barEl) return;
+  if (btnEl) btnEl.disabled = true;
+  clearInterval(barEl._crawlTimer);
+  const fill = barEl.querySelector('.auth-loading-bar-fill');
+  fill.style.transition = 'none';
+  fill.style.width = '0%';
+  barEl.classList.add('show');
+  // Force reflow so the transition below actually animates from 0%.
+  void fill.offsetWidth;
+  fill.style.transition = 'width .5s ease';
+  requestAnimationFrame(() => { fill.style.width = '70%'; });
+  // Slow crawl the rest of the way while we wait on the network call.
+  barEl._crawlTimer = setInterval(() => {
+    const w = parseFloat(fill.style.width) || 0;
+    if (w < 92) fill.style.width = (w + 2) + '%';
+  }, 250);
+}
+function authLoadingEnd(barEl, btnEl, success) {
+  if (!barEl) return;
+  clearInterval(barEl._crawlTimer);
+  const fill = barEl.querySelector('.auth-loading-bar-fill');
+  if (success) {
+    fill.style.transition = 'width .2s ease';
+    fill.style.width = '100%';
+    setTimeout(() => {
+      barEl.classList.remove('show');
+      fill.style.transition = 'none';
+      fill.style.width = '0%';
+      if (btnEl) btnEl.disabled = false;
+    }, 280);
+  } else {
+    fill.style.transition = 'width .2s ease';
+    fill.style.width = '0%';
+    barEl.classList.remove('show');
+    if (btnEl) btnEl.disabled = false;
+  }
 }
 
 /* ------------------------------- APP STATE -------------------------------- */
@@ -2984,6 +3037,7 @@ function portalRenderLogin() {
     <div class="field"><label>Password</label><input id="p-password" type="password" autocomplete="current-password"></div>
     <div id="p-login-error" style="color:var(--rust); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
     <button class="btn btn-primary" id="p-login-btn">Sign in</button>
+    <div class="auth-loading-bar" id="p-auth-loading-bar"><div class="auth-loading-bar-fill"></div></div>
     <div class="divider"></div>
     <p class="muted" style="text-align:center;">First time here? Your landlord gave you an invite code.</p>
     <button class="btn btn-outline" id="p-goto-signup">Redeem invite code</button>
@@ -2992,11 +3046,20 @@ function portalRenderLogin() {
     const email = document.getElementById('p-email').value.trim();
     const password = document.getElementById('p-password').value;
     const errEl = document.getElementById('p-login-error');
+    const btn = document.getElementById('p-login-btn');
+    const bar = document.getElementById('p-auth-loading-bar');
     errEl.textContent = '';
     if (!email || !password) { errEl.textContent = 'Enter your email and password.'; return; }
+    authLoadingStart(bar, btn);
     try {
       await portal.auth.signInWithEmailAndPassword(email, password);
-    } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
+      // onPortalAuthChanged takes it from here (loads data + re-renders),
+      // so just let the bar complete; no explicit success re-render needed.
+      authLoadingEnd(bar, btn, true);
+    } catch (err) {
+      authLoadingEnd(bar, btn, false);
+      errEl.textContent = cloudAuthErrorMessage(err);
+    }
   });
   document.getElementById('p-goto-signup').addEventListener('click', () => { portal.view = 'signup'; portalRender(); });
 }
@@ -3417,7 +3480,10 @@ function portalContractSlotHTML(tenant, label) {
     return `<div class="doc-slot has-file">
       <div class="doc-icon">✅</div><div class="doc-label">${escapeHTML(label)}</div>
       <div class="doc-name">Signed ${new Date(sig.signedAt).toLocaleDateString('en-PH')}</div>
-      <div class="doc-actions"><button class="btn btn-outline btn-sm" id="p-contract-view">View</button></div>
+      <div class="doc-actions">
+        <button class="btn btn-outline btn-sm" id="p-contract-view">View</button>
+        <button class="btn btn-outline btn-sm" id="p-contract-edit-sig">Edit signature</button>
+      </div>
     </div>`;
   }
   return `<div class="doc-slot has-file">
@@ -3452,6 +3518,8 @@ function portalRenderDocSlots(tenant) {
   });
   const signBtn = document.getElementById('p-contract-sign');
   if (signBtn) signBtn.addEventListener('click', () => portalOpenContractSign(tenant));
+  const editSigBtn = document.getElementById('p-contract-edit-sig');
+  if (editSigBtn) editSigBtn.addEventListener('click', () => portalOpenContractSign(tenant, true));
   const viewBtn = document.getElementById('p-contract-view');
   if (viewBtn) viewBtn.addEventListener('click', () => portalOpenContractView(tenant));
 }
@@ -3545,14 +3613,14 @@ function portalOpenContractView(tenant) {
    admin's print view and documents sheet both pick up automatically. Note:
    like ID photo upload, this requires being online at the moment of
    signing. */
-function portalOpenContractSign(tenant) {
+function portalOpenContractSign(tenant, isEdit) {
   const c = tenant.leaseContract;
   if (!c) return portalShowToast('Your lease contract isn\'t ready yet');
   portalOpenSheet(`
-    <h2>Review &amp; sign your lease</h2>
+    <h2>${isEdit ? 'Update your signature' : 'Review &amp; sign your lease'}</h2>
     <div class="cd-preview-box"><div class="contract-doc">${buildContractMarkup(tenant, c, null)}</div></div>
     <div class="section-label" style="margin-top:16px;">Your signature</div>
-    <p class="muted" style="font-size:.78rem; margin-top:-4px;">By signing below, you confirm you've read and agree to the terms above.</p>
+    <p class="muted" style="font-size:.78rem; margin-top:-4px;">${isEdit ? 'Clear the pad below and draw your new signature, then submit to replace the one on file.' : 'By signing below, you confirm you\'ve read and agree to the terms above.'}</p>
     <div class="sigpad-wrap">
       <canvas id="sigCanvas" class="sigpad-canvas"></canvas>
       <div class="sigpad-hint">Sign above</div>
@@ -3561,7 +3629,7 @@ function portalOpenContractSign(tenant) {
       <button class="btn btn-outline btn-sm" id="sigClearBtn">Clear</button>
     </div>
     <div class="sheet-actions">
-      <button class="btn btn-primary" id="sigSubmitBtn">Submit signature</button>
+      <button class="btn btn-primary" id="sigSubmitBtn">${isEdit ? 'Save new signature' : 'Submit signature'}</button>
     </div>
   `, () => {
     const pad = initSignaturePad(document.getElementById('sigCanvas'));
@@ -3582,7 +3650,7 @@ function portalOpenContractSign(tenant) {
         portal.tenant = { ...portal.tenant, leaseSignature };
         portalCloseSheet();
         portalRenderDocSlots(portal.tenant);
-        portalShowToast('Contract signed');
+        portalShowToast(isEdit ? 'Signature updated' : 'Contract signed');
       } catch (err) {
         console.warn('Signature save failed', err);
         portalShowToast('Could not save signature — check your connection');
