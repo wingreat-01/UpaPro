@@ -2537,8 +2537,10 @@ async function portalLoadData() {
   portal.tenant = tSnap.exists ? tSnap.data() : null;
   portal.unit = uSnap.exists ? uSnap.data() : null;
   portal.payments = []; paySnap.forEach(d => portal.payments.push(d.data()));
+  portal.payments = portal.payments.filter(p => !p.deleted);
   portal.payments.sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
   portal.pendingPayments = []; pendSnap.forEach(d => portal.pendingPayments.push(d.data()));
+  portal.pendingPayments = portal.pendingPayments.filter(p => !p.deleted);
   portal.pendingPayments.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
   portal.utilityBills = []; billSnap.forEach(d => portal.utilityBills.push(d.data()));
   portal.utilityBills = portal.utilityBills.filter(b => !b.deleted);
@@ -2815,18 +2817,24 @@ function portalRenderHistory() {
       </div>`;
     }
     const chip = r.status === 'pending' ? 'pending' : 'rejected';
-    return `<div class="row-card" data-portal-claim="${r.id}">
+    return `<div class="row-card" data-portal-claim="${r.id}" style="align-items:center;">
       <div class="rc-main">
         <div class="rc-title">${escapeHTML(r.coveredPeriod)} · ${escapeHTML(r.method)} <span class="portal-status-chip ${chip}">${chip}</span></div>
         <div class="rc-sub">Submitted ${new Date(r.submittedAt).toLocaleDateString('en-PH')}${r.status === 'rejected' && r.reviewNote ? ' · ' + escapeHTML(r.reviewNote) : ''}${r.proof ? ' · 📎 proof attached' : ''}</div>
       </div>
       <div class="rc-amt">${peso(r.amountClaimed)}</div>
+      <button class="icon-btn" data-portal-claim-delete="${r.id}" aria-label="Delete this submission" style="margin-left:4px; flex-shrink:0;">🗑️</button>
     </div>`;
   }).join('')}</div>` : emptyHTML('🧾', 'No payments yet', 'Submit your first payment from the dashboard.');
   document.querySelectorAll('#portalMain [data-portal-payment]').forEach(row =>
     row.addEventListener('click', () => portalOpenPaymentDetailSheet(portal.payments.find(p => p.id === row.dataset.portalPayment))));
   document.querySelectorAll('#portalMain [data-portal-claim]').forEach(row =>
     row.addEventListener('click', () => portalOpenPaymentDetailSheet(portal.pendingPayments.find(p => p.id === row.dataset.portalClaim), true)));
+  document.querySelectorAll('#portalMain [data-portal-claim-delete]').forEach(btn =>
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't also trigger the row's open-detail click
+      portalDeletePaymentClaim(portal.pendingPayments.find(p => p.id === btn.dataset.portalClaimDelete));
+    }));
 }
 
 /* ---------------------------- UTILITY BILLS (tenant) ---------------------------- */
@@ -2941,7 +2949,15 @@ async function portalDeletePaymentClaim(claim) {
   if (!claim || claim.status === 'approved') return;
   if (!confirm('Delete this submission? This can\'t be undone — you\'ll need to submit again.')) return;
   try {
-    await portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(claim.id).delete();
+    // Tombstone instead of a hard delete. A hard delete here made this the one
+    // record type that skipped the app's usual delete convention — the admin
+    // device's own local IndexedDB copy of the claim never learns it's gone, so
+    // the next pullAndMergeCollection() sees "exists locally, missing in the
+    // cloud" and pushes it right back up, resurrecting exactly what was just
+    // deleted. Writing a tombstone (same shape admin-side deletes use) lets
+    // that sync see it as an update to merge, not a gap to fill.
+    const tombstone = { ...claim, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+    await portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(claim.id).set(tombstone);
     if (claim.proof && claim.proof.storagePath && sb) {
       // Best-effort cleanup of the uploaded file — a failure here shouldn't block
       // the delete itself, the claim record is already gone either way.
