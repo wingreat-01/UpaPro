@@ -361,6 +361,35 @@
   .portal-tabs button{flex:1; border:none; background:none; padding:9px 4px; border-radius:9px; font-size:.8rem; font-weight:600; color:var(--slate); cursor:pointer;}
   .portal-tabs button.active{background:var(--card); color:var(--ink); box-shadow:0 1px 3px rgba(0,0,0,.08);}
 
+  /* ---------- MESSAGES (admin<->tenant chat) — shared by both the admin
+     thread sheet and the tenant portal's message view. */
+  .msg-thread{
+    display:flex; flex-direction:column; gap:8px; max-height:52vh; overflow-y:auto;
+    padding:2px 2px 6px; margin-bottom:12px;
+  }
+  .msg-bubble{
+    max-width:78%; padding:9px 12px; border-radius:14px; font-size:.88rem; line-height:1.35;
+    word-break:break-word; white-space:pre-wrap;
+  }
+  .msg-bubble .m-time{display:block; font-size:.62rem; opacity:.65; margin-top:3px; letter-spacing:.02em;}
+  .msg-bubble.me{align-self:flex-end; background:var(--peso); color:#fff; border-bottom-right-radius:4px;}
+  .msg-bubble.them{align-self:flex-start; background:var(--paper-2); color:var(--ink); border-bottom-left-radius:4px;}
+  .msg-input-row{display:flex; gap:8px; align-items:flex-end;}
+  .msg-input-row textarea{
+    flex:1; resize:none; min-height:42px; max-height:110px; border:1.5px solid var(--line);
+    border-radius:12px; padding:10px 12px; font-size:.9rem; font-family:inherit;
+    background:var(--card); color:var(--ink);
+  }
+  .msg-input-row button{
+    flex-shrink:0; width:42px; height:42px; border-radius:50%; border:none;
+    background:var(--peso); color:#fff; font-size:1.05rem; cursor:pointer;
+  }
+  .msg-unread-badge{
+    display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px;
+    padding:0 5px; border-radius:99px; background:var(--rust); color:#fff;
+    font-size:.66rem; font-weight:700; margin-left:6px;
+  }
+
   /* ---------- Lease contract print view ---------- */
   #contractView{
     display:none;
@@ -580,7 +609,7 @@
 
 const APP_ID = 'upaPro';
 const DB_NAME = 'upapro_db';
-const DB_VERSION = 4; // v4: + utilityBills store (monthly electricity/water charges per tenant)
+const DB_VERSION = 5; // v5: + messages store (admin<->tenant chat)
 let db;
 
 const uid = () => 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -654,6 +683,15 @@ function openDB() {
         s.createIndex('unitId', 'unitId');
         s.createIndex('period', 'period');
       }
+      // v5 — admin↔tenant messages. One doc per message, `sender` is
+      // 'admin' or 'tenant'. Synced the same generic way as every other
+      // store (see SYNCED_STORES) — the admin side pushes/pulls through the
+      // outbox, the portal side reads/writes straight to Firestore under
+      // the admin's uid, same as pendingPayments claims.
+      if (!d.objectStoreNames.contains('messages')) {
+        const s = d.createObjectStore('messages', { keyPath: 'id' });
+        s.createIndex('tenantId', 'tenantId');
+      }
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = (e) => reject(e.target.error);
@@ -720,7 +758,7 @@ const firebaseConfig = {
   appId: "1:177340239376:web:80806c92272103f4770495"
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
-const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills'];
+const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages'];
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
 
 /* Supabase — Storage ONLY. Auth and the Firestore database stay on Firebase;
@@ -1060,14 +1098,14 @@ function authLoadingEnd(barEl, btnEl, success) {
 /* ------------------------------- APP STATE -------------------------------- */
 const state = {
   navStack: [{ view: 'dashboard' }],
-  cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [], utilityBills: [] },
+  cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [], utilityBills: [], messages: [] },
 };
 
 function currentRoute() { return state.navStack[state.navStack.length - 1]; }
 
 async function refreshCache() {
-  const [locations, units, tenants, payments, pendingPayments, utilityBills] = await Promise.all([
-    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills')
+  const [locations, units, tenants, payments, pendingPayments, utilityBills, messages] = await Promise.all([
+    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills'), dbGetAll('messages')
   ]);
   // Filter out soft-deleted (tombstoned) records here — the single place
   // all rendering reads from state.cache. Raw dbGetAll() calls elsewhere
@@ -1080,6 +1118,7 @@ async function refreshCache() {
     payments: payments.filter(r => !r.deleted),
     pendingPayments: pendingPayments.filter(r => !r.deleted),
     utilityBills: utilityBills.filter(r => !r.deleted),
+    messages: messages.filter(r => !r.deleted),
   };
 }
 
@@ -1131,6 +1170,18 @@ function pendingReviewCount() {
 function pendingPaymentsForTenant(tenantId) {
   return state.cache.pendingPayments.filter(p => p.tenantId === tenantId)
     .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+}
+/* ------------------------------- MESSAGES -------------------------------- */
+function messagesForTenant(tenantId) {
+  return state.cache.messages.filter(m => m.tenantId === tenantId)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+// Unread FROM the tenant, i.e. what the admin still needs to read.
+function unreadMessagesCountForTenant(tenantId) {
+  return state.cache.messages.filter(m => m.tenantId === tenantId && m.sender === 'tenant' && !m.readByAdmin).length;
+}
+function totalUnreadMessagesCount() {
+  return state.cache.messages.filter(m => m.sender === 'tenant' && !m.readByAdmin).length;
 }
 
 /* ------------------------------ UTILITY BILLS ------------------------------
@@ -1792,7 +1843,10 @@ function renderUnitDetail(unitId) {
       <div class="detail-hero">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
           <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
-          <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn" style="flex-shrink:0;">📄 Documents</button>
+          <div style="display:flex; gap:6px; flex-shrink:0;">
+            <button class="btn btn-outline btn-sm" id="msgTenantBtn">💬 Messages${unreadMessagesCountForTenant(tenant.id) ? `<span class="msg-unread-badge">${unreadMessagesCountForTenant(tenant.id)}</span>` : ''}</button>
+            <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn">📄 Documents</button>
+          </div>
         </div>
         <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
         <div class="kv-grid">
@@ -1818,6 +1872,7 @@ function renderUnitDetail(unitId) {
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
     document.getElementById('viewTenantDocsBtn').addEventListener('click', () => openTenantDocumentsSheet(tenant));
+    document.getElementById('msgTenantBtn').addEventListener('click', () => openMessageThreadSheet(tenant));
     document.getElementById('genContractBtn').addEventListener('click', () => openLeaseContractForm(tenant, unit, loc));
     renderPortalAccessBlock(tenant);
     renderUnitUtilityBlock(tenant, unit);
@@ -2151,6 +2206,82 @@ function openTenantDocumentsSheet(tenant) {
       renderContractDoc(tenant, tenant.leaseContract);
     });
   });
+}
+
+/* ------------------------------- MESSAGES ---------------------------------
+   A simple two-way thread per tenant. Synced generically through
+   SYNCED_STORES like every other store — admin writes go local-first
+   (dbPut + queueRecordSync, durable via the outbox), tenant writes land
+   straight in Firestore under the admin's uid (see portalSendMessage) and
+   get pulled down on the next sync tick same as a payment claim would. */
+function msgTimeLabel(ts) {
+  const d = new Date(ts);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' });
+}
+function msgThreadHTML(messages, meSender) {
+  if (!messages.length) {
+    return `<div class="empty" style="padding:24px 16px;"><div class="e-icon">💬</div><p>No messages yet — say hi.</p></div>`;
+  }
+  return messages.map(m => `
+    <div class="msg-bubble ${m.sender === meSender ? 'me' : 'them'}">
+      ${escapeHTML(m.text)}<span class="m-time">${msgTimeLabel(m.createdAt)}</span>
+    </div>`).join('');
+}
+
+function openMessageThreadSheet(tenant) {
+  openSheet(`
+    <h2>💬 ${escapeHTML(tenant.fullName)}</h2>
+    <div class="msg-thread" id="msgThread">${msgThreadHTML(messagesForTenant(tenant.id), 'admin')}</div>
+    <div class="msg-input-row">
+      <textarea id="msg-input" placeholder="Type a message…" rows="1"></textarea>
+      <button id="msg-send-btn" aria-label="Send">➤</button>
+    </div>
+  `, () => {
+    const thread = document.getElementById('msgThread');
+    thread.scrollTop = thread.scrollHeight;
+    document.getElementById('msg-send-btn').addEventListener('click', () => adminSendMessage(tenant));
+    document.getElementById('msg-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); adminSendMessage(tenant); }
+    });
+    markTenantMessagesRead(tenant.id);
+  });
+}
+
+async function adminSendMessage(tenant) {
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const msg = {
+    id: uid(), tenantId: tenant.id, unitId: tenant.unitId, sender: 'admin',
+    text, createdAt: Date.now(), readByAdmin: true, readByTenant: false,
+  };
+  input.value = '';
+  await dbPut('messages', msg);
+  queueRecordSync('messages', msg);
+  await refreshCache();
+  const thread = document.getElementById('msgThread');
+  if (thread) {
+    thread.innerHTML = msgThreadHTML(messagesForTenant(tenant.id), 'admin');
+    thread.scrollTop = thread.scrollHeight;
+  }
+  render(); // refresh any unread badges showing elsewhere (e.g. tenant detail)
+}
+
+// Marks the tenant's messages as read by the admin, both locally and pushed
+// to Firestore, so the unread badge clears and stays clear across devices.
+async function markTenantMessagesRead(tenantId) {
+  const unread = messagesForTenant(tenantId).filter(m => m.sender === 'tenant' && !m.readByAdmin);
+  if (!unread.length) return;
+  for (const m of unread) {
+    const updated = { ...m, readByAdmin: true };
+    await dbPut('messages', updated);
+    queueRecordSync('messages', updated);
+  }
+  await refreshCache();
+  render();
 }
 
 /* --------------------------- LEASE CONTRACT GENERATOR ---------------------------
@@ -2913,8 +3044,8 @@ document.getElementById('searchBtn').addEventListener('click', () => {
 const portal = {
   app: null, auth: null, store: null,
   user: null, adminUid: null, tenantId: null, unitId: null,
-  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [],
-  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents'
+  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [], messages: [],
+  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents' | 'messages'
 };
 // True while portalRedeemInvite() is setting up a fresh account — see onPortalAuthChanged.
 let portalRedeeming = false;
@@ -2997,12 +3128,13 @@ async function onPortalAuthChanged(user) {
 }
 
 async function portalLoadData() {
-  const [tSnap, uSnap, paySnap, pendSnap, billSnap] = await Promise.all([
+  const [tSnap, uSnap, paySnap, pendSnap, billSnap, msgSnap] = await Promise.all([
     portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('units').doc(portal.unitId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('payments').where('tenantId', '==', portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').where('portalUid', '==', portal.user.uid).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('utilityBills').where('tenantId', '==', portal.tenantId).get(),
+    portal.store.collection('users').doc(portal.adminUid).collection('messages').where('tenantId', '==', portal.tenantId).get(),
   ]);
   portal.tenant = tSnap.exists ? tSnap.data() : null;
   portal.unit = uSnap.exists ? uSnap.data() : null;
@@ -3015,11 +3147,17 @@ async function portalLoadData() {
   portal.utilityBills = []; billSnap.forEach(d => portal.utilityBills.push(d.data()));
   portal.utilityBills = portal.utilityBills.filter(b => !b.deleted);
   portal.utilityBills.sort((a, b) => (b.period || '').localeCompare(a.period || ''));
+  portal.messages = []; msgSnap.forEach(d => portal.messages.push(d.data()));
+  portal.messages = portal.messages.filter(m => !m.deleted);
+  portal.messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+function portalUnreadMessageCount() {
+  return portal.messages.filter(m => m.sender === 'admin' && !m.readByTenant).length;
 }
 
 function portalRender() {
   document.getElementById('portalBackBtn').classList.toggle('show', portal.view !== 'login' && portal.view !== 'signup');
-  const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', utilities: 'Utility bills', documents: 'My documents' };
+  const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', utilities: 'Utility bills', documents: 'My documents', messages: 'Messages' };
   document.getElementById('portalPageTitle').textContent = titles[portal.view] || 'Tenant Portal';
   if (portal.view === 'login') return portalRenderLogin();
   if (portal.view === 'signup') return portalRenderSignup();
@@ -3027,6 +3165,7 @@ function portalRender() {
   if (portal.view === 'history') return portalRenderHistory();
   if (portal.view === 'utilities') return portalRenderUtilities();
   if (portal.view === 'documents') return portalRenderDocuments();
+  if (portal.view === 'messages') return portalRenderMessages();
 }
 
 /* ---------------------------- LOGIN / SIGNUP ---------------------------- */
@@ -3186,13 +3325,71 @@ function portalRenderDashboard() {
       <button class="btn btn-accent" id="p-submit-payment-btn">Submit payment</button>
       <button class="btn btn-outline" id="p-history-btn">History</button>
     </div>
+    <div class="settings-item" id="p-messages-btn"><div><div class="si-title">Messages${portalUnreadMessageCount() ? `<span class="msg-unread-badge">${portalUnreadMessageCount()}</span>` : ''}</div><div class="si-sub">Chat with your landlord</div></div><span>💬</span></div>
     <div class="settings-item" id="p-utilities-btn"><div><div class="si-title">Utility bills</div><div class="si-sub">Electricity &amp; water, by month</div></div><span>⚡</span></div>
     <div class="settings-item" id="p-documents-btn"><div><div class="si-title">My documents</div><div class="si-sub">ID photo &amp; signed contract</div></div><span>📄</span></div>
   `;
   document.getElementById('p-submit-payment-btn').addEventListener('click', portalOpenSubmitPaymentSheet);
   document.getElementById('p-history-btn').addEventListener('click', () => { portal.view = 'history'; portalRender(); });
+  document.getElementById('p-messages-btn').addEventListener('click', () => { portal.view = 'messages'; portalRender(); });
   document.getElementById('p-utilities-btn').addEventListener('click', () => { portal.view = 'utilities'; portalRender(); });
   document.getElementById('p-documents-btn').addEventListener('click', () => { portal.view = 'documents'; portalRender(); });
+}
+
+/* -------------------------------- MESSAGES -------------------------------- */
+function portalRenderMessages() {
+  document.getElementById('portalMain').innerHTML = `
+    <div class="msg-thread" id="portalMsgThread">${msgThreadHTML(portal.messages, 'tenant')}</div>
+    <div class="msg-input-row">
+      <textarea id="p-msg-input" placeholder="Message your landlord…" rows="1"></textarea>
+      <button id="p-msg-send-btn" aria-label="Send">➤</button>
+    </div>
+  `;
+  const thread = document.getElementById('portalMsgThread');
+  thread.scrollTop = thread.scrollHeight;
+  document.getElementById('p-msg-send-btn').addEventListener('click', portalSendMessage);
+  document.getElementById('p-msg-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); portalSendMessage(); }
+  });
+  portalMarkAdminMessagesRead();
+}
+
+async function portalSendMessage() {
+  const input = document.getElementById('p-msg-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const id = uid();
+  const msg = {
+    id, tenantId: portal.tenantId, unitId: portal.unitId, sender: 'tenant',
+    text, createdAt: Date.now(), readByAdmin: false, readByTenant: true,
+  };
+  input.value = '';
+  try {
+    await portal.store.collection('users').doc(portal.adminUid).collection('messages').doc(id).set(msg);
+    portal.messages.push(msg);
+    const thread = document.getElementById('portalMsgThread');
+    thread.innerHTML = msgThreadHTML(portal.messages, 'tenant');
+    thread.scrollTop = thread.scrollHeight;
+  } catch (err) {
+    console.warn('Message send failed', err);
+    input.value = text; // give the text back so nothing is lost
+    portalShowToast('Could not send — check your connection');
+  }
+}
+
+// Marks the admin's messages as read by the tenant, straight to Firestore
+// (mirrors adminSendMessage's read-receipt pattern on the admin side).
+async function portalMarkAdminMessagesRead() {
+  const unread = portal.messages.filter(m => m.sender === 'admin' && !m.readByTenant);
+  if (!unread.length) return;
+  for (const m of unread) {
+    m.readByTenant = true;
+    try {
+      await portal.store.collection('users').doc(portal.adminUid).collection('messages').doc(m.id).set(m);
+    } catch (err) {
+      console.warn('Could not mark message read', err);
+    }
+  }
 }
 
 function portalOpenSubmitPaymentSheet() {
