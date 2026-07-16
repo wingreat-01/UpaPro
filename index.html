@@ -1493,51 +1493,59 @@ function lastInactiveTenantForUnit(unitId) {
     .sort((a, b) => (b.moveOutDate || '').localeCompare(a.moveOutDate || ''))[0] || null;
 }
 function settlementTotals(settlement) {
-  const totalDeductions = (settlement.items || []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const totalDeductions = ['rent', 'electricity', 'water', 'damage', 'other']
+    .reduce((s, cat) => s + (Number((settlement.items || {})[cat]) || 0), 0);
   const netAmount = (Number(settlement.depositAmount) || 0) - totalDeductions;
   return { totalDeductions, netAmount };
 }
-/** Inclusive list of "YYYY-MM" periods from `from` to `to`. Capped so a
- *  bad/garbled date on a tenant record can't spin this into a near-infinite
- *  loop. */
+/** Inclusive list of "YYYY-MM" periods from `from` to `to`, done with plain
+ *  y/m integer arithmetic — NOT by round-tripping through Date/toISOString
+ *  (that's what monthOffset()/monthKey() do, and in a UTC+8 timezone like
+ *  the Philippines, a local midnight can land on the previous UTC day and
+ *  silently get sliced back into the *same* month, so a naive walk using
+ *  those helpers can loop on one period 240 times instead of advancing).
+ *  Capped anyway so a bad/garbled date on a tenant record still can't spin
+ *  this into a runaway loop. */
 function periodsBetween(fromPeriod, toPeriod) {
   const periods = [];
-  let p = fromPeriod;
+  let [y, m] = (fromPeriod || monthKey()).split('-').map(Number);
+  const [y2, m2] = (toPeriod || monthKey()).split('-').map(Number);
   let guard = 0;
-  while (p <= toPeriod && guard < 240) {
-    periods.push(p);
-    p = monthOffset(p, 1);
+  while ((y < y2 || (y === y2 && m <= m2)) && guard < 240) {
+    periods.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++;
+    if (m > 12) { m = 1; y++; }
     guard++;
   }
   return periods;
 }
-/** Walks every period from move-in through move-out (or today, if move-out
- *  hasn't happened yet) and lists any rent/electricity/water balance that's
- *  still outstanding — reusing the exact same tag-aware balance math
- *  computeRentStatus() uses for the current period, just applied across
- *  the tenant's whole stay instead of only this month. This is what
- *  auto-fills a fresh settlement's deduction lines; damage/other lines
- *  aren't detectable from data and stay manual. */
-function outstandingChargesForTenant(tenant, unit) {
-  if (!tenant || !unit) return [];
+/** Sums up whatever rent/electricity/water balance is still outstanding
+ *  across the tenant's whole stay (move-in through move-out, or today if
+ *  they haven't moved out yet) — reusing the exact same tag-aware balance
+ *  math computeRentStatus() uses for the current period, just totalled
+ *  across every period instead of only this month. This is what
+ *  auto-fills a fresh settlement's Rent/Electricity/Water lines; Damage
+ *  and Other aren't detectable from data and are always entered by hand. */
+function outstandingTotalsForTenant(tenant, unit) {
+  const totals = { rent: 0, electricity: 0, water: 0 };
+  if (!tenant || !unit) return totals;
   const fromPeriod = tenant.moveInDate ? monthKey(new Date(tenant.moveInDate + 'T00:00:00')) : monthKey();
   const toDate = tenant.moveOutDate ? new Date(tenant.moveOutDate + 'T00:00:00') : new Date();
   const toPeriod = monthKey(toDate);
-  const items = [];
   for (const period of periodsBetween(fromPeriod, toPeriod)) {
     const bill = utilityBillFor(tenant.id, period);
     const rentAmt = Number(unit.monthlyRent) || 0;
     const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
     const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
     const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
-    const rentBal = Math.max(0, rentAmt - amountPaidForCharge(tenant.id, period, 'rent', weights));
-    const elecBal = Math.max(0, elecAmt - amountPaidForCharge(tenant.id, period, 'electricity', weights));
-    const waterBal = Math.max(0, waterAmt - amountPaidForCharge(tenant.id, period, 'water', weights));
-    if (rentBal > 0.5) items.push({ id: uid(), category: 'rent', label: `Unpaid rent — ${monthLabel(period)}`, amount: Math.round(rentBal) });
-    if (elecBal > 0.5) items.push({ id: uid(), category: 'utility', label: `Unpaid electricity — ${monthLabel(period)}`, amount: Math.round(elecBal) });
-    if (waterBal > 0.5) items.push({ id: uid(), category: 'utility', label: `Unpaid water — ${monthLabel(period)}`, amount: Math.round(waterBal) });
+    totals.rent += Math.max(0, rentAmt - amountPaidForCharge(tenant.id, period, 'rent', weights));
+    totals.electricity += Math.max(0, elecAmt - amountPaidForCharge(tenant.id, period, 'electricity', weights));
+    totals.water += Math.max(0, waterAmt - amountPaidForCharge(tenant.id, period, 'water', weights));
   }
-  return items;
+  totals.rent = Math.round(totals.rent);
+  totals.electricity = Math.round(totals.electricity);
+  totals.water = Math.round(totals.water);
+  return totals;
 }
 
 /* --------------------------------- TOAST ---------------------------------- */
@@ -2993,64 +3001,43 @@ async function archiveMovedOutTenant(tenant, unit) {
   return updatedTenant;
 }
 
-/** One row's worth of markup for the settlement editor — a category picker,
- *  a free-text label, an amount, and a remove button. Re-rendered wholesale
- *  on add/remove; per-keystroke edits just patch the in-memory `items`
- *  array (see openMoveOutSettlementSheet) so typing never loses focus. */
-function settlementRowHTML(item, idx) {
-  const categories = [
-    ['rent', 'Rent'], ['utility', 'Utility'], ['damage', 'Damage'], ['other', 'Other'],
-  ];
-  return `
-    <div class="row-card settlement-row" style="align-items:flex-start; flex-wrap:wrap; gap:8px;">
-      <select class="st-cat" data-idx="${idx}" style="flex:0 0 auto; width:auto;">
-        ${categories.map(([v, l]) => `<option value="${v}" ${item.category === v ? 'selected' : ''}>${l}</option>`).join('')}
-      </select>
-      <input class="st-label" data-idx="${idx}" value="${escapeAttr(item.label || '')}" placeholder="Description" style="flex:1 1 140px; min-width:0;">
-      <input class="st-amount" type="number" inputmode="decimal" data-idx="${idx}" value="${item.amount || ''}" placeholder="0" style="width:100px; flex:0 0 auto;">
-      <button class="icon-btn" data-remove-idx="${idx}" aria-label="Remove line">🗑️</button>
-    </div>`;
-}
+/** The 5 fixed deduction categories shown in the settlement editor, in
+ *  display order. Rent/Electricity/Water default to whatever's actually
+ *  outstanding (see outstandingTotalsForTenant); Damage/Other always start
+ *  at 0 since they're never detectable from data. */
+const SETTLEMENT_CATEGORIES = [
+  ['rent', 'Rent'],
+  ['electricity', 'Electricity'],
+  ['water', 'Water'],
+  ['damage', 'Damage'],
+  ['other', 'Other'],
+];
 
-/** Admin-side move-out settlement editor. Loads an existing draft/finalized
- *  settlement if one exists, otherwise auto-suggests deduction lines from
- *  whatever rent/utility balances are actually outstanding
- *  (outstandingChargesForTenant). "Save draft" just persists the
- *  breakdown — the tenant stays active and the unit stays occupied, so the
- *  admin can walk over, inspect the unit, and keep editing over the next
- *  day or two before anything is final. "Finalize move-out" is the only
- *  action that actually archives the tenant/vacates the unit, and only
- *  fires once (re-opening an already-finalized settlement to fix a number
- *  just re-saves it, it won't re-archive). */
+/** Admin-side move-out settlement editor: deposit on top, then one amount
+ *  field per fixed category (Rent/Electricity/Water/Damage/Other), and a
+ *  live total. Loads an existing draft/finalized settlement if one
+ *  exists, otherwise pre-fills Rent/Electricity/Water from whatever
+ *  balance is actually outstanding (outstandingTotalsForTenant) and
+ *  leaves Damage/Other at 0 for the admin to fill in by hand. "Save
+ *  draft" just persists the numbers — the tenant stays active and the
+ *  unit stays occupied, so the admin can walk over, inspect the unit,
+ *  and keep editing over the next day or two before anything is final.
+ *  "Finalize move-out" is the only action that actually archives the
+ *  tenant/vacates the unit, and only fires once (re-opening an
+ *  already-finalized settlement to fix a number just re-saves it, it
+ *  won't re-archive). */
 function openMoveOutSettlementSheet(tenant, unit) {
   const existing = settlementForTenant(tenant.id);
-  let items = existing ? existing.items.map(i => ({ ...i })) : outstandingChargesForTenant(tenant, unit);
+  const suggested = outstandingTotalsForTenant(tenant, unit);
+  const items = existing
+    ? { rent: 0, electricity: 0, water: 0, damage: 0, other: 0, ...existing.items }
+    : { rent: suggested.rent, electricity: suggested.electricity, water: suggested.water, damage: 0, other: 0 };
   const depositAmount0 = existing ? existing.depositAmount : (Number(tenant.depositAmount) || 0);
   const alreadyFinalized = !!(existing && existing.status === 'finalized');
 
-  const renderRows = () => {
-    document.getElementById('st-items').innerHTML = items.length
-      ? items.map(settlementRowHTML).join('')
-      : `<p class="muted" style="margin:6px 0;">No deduction lines yet. Add a damage charge or unpaid balance below.</p>`;
-    document.querySelectorAll('#st-items .st-cat').forEach(el => el.addEventListener('change', (e) => {
-      items[Number(e.target.dataset.idx)].category = e.target.value;
-    }));
-    document.querySelectorAll('#st-items .st-label').forEach(el => el.addEventListener('input', (e) => {
-      items[Number(e.target.dataset.idx)].label = e.target.value;
-    }));
-    document.querySelectorAll('#st-items .st-amount').forEach(el => el.addEventListener('input', (e) => {
-      items[Number(e.target.dataset.idx)].amount = Number(e.target.value) || 0;
-      updateTotals();
-    }));
-    document.querySelectorAll('#st-items [data-remove-idx]').forEach(btn => btn.addEventListener('click', (e) => {
-      items.splice(Number(e.currentTarget.dataset.removeIdx), 1);
-      renderRows();
-      updateTotals();
-    }));
-  };
   const updateTotals = () => {
     const deposit = Number(document.getElementById('st-deposit').value) || 0;
-    const totalDeductions = items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const totalDeductions = SETTLEMENT_CATEGORIES.reduce((s, [key]) => s + (Number(document.getElementById(`st-${key}`).value) || 0), 0);
     const net = deposit - totalDeductions;
     document.getElementById('st-total').textContent = peso(totalDeductions);
     const netEl = document.getElementById('st-net');
@@ -3064,8 +3051,11 @@ function openMoveOutSettlementSheet(tenant, unit) {
       : `<p class="muted" style="margin-top:-6px;">Saving as draft keeps the tenant active and the unit occupied — inspect the unit and keep editing before finalizing.</p>`}
     <div class="field"><label>Deposit on file (₱)</label><input id="st-deposit" type="number" inputmode="decimal" value="${depositAmount0}"></div>
     <div class="section-label">Deductions</div>
-    <div id="st-items"></div>
-    <button class="btn btn-outline btn-sm" id="st-add-line" style="margin-top:4px;">+ Add line</button>
+    ${SETTLEMENT_CATEGORIES.map(([key, label]) => `
+      <div class="field-row">
+        <label style="flex:0 0 110px;">${label}</label>
+        <input id="st-${key}" type="number" inputmode="decimal" value="${items[key] || ''}" placeholder="0" style="flex:1;">
+      </div>`).join('')}
     <div class="kv-grid" style="margin-top:16px;">
       <div class="kv"><div class="k">Total deductions</div><div class="v" id="st-total">${peso(0)}</div></div>
       <div class="kv"><div class="k">Net</div><div class="v" id="st-net" style="font-weight:600;"></div></div>
@@ -3075,19 +3065,13 @@ function openMoveOutSettlementSheet(tenant, unit) {
       ${alreadyFinalized ? '' : '<button class="btn btn-danger" id="st-finalize">Finalize move-out</button>'}
     </div>
   `, () => {
-    renderRows();
     updateTotals();
     document.getElementById('st-deposit').addEventListener('input', updateTotals);
-    document.getElementById('st-add-line').addEventListener('click', () => {
-      items.push({ id: uid(), category: 'other', label: '', amount: 0 });
-      renderRows();
-      updateTotals();
-    });
+    SETTLEMENT_CATEGORIES.forEach(([key]) => document.getElementById(`st-${key}`).addEventListener('input', updateTotals));
     const buildSettlement = (status) => {
       const depositAmount = Number(document.getElementById('st-deposit').value) || 0;
-      const cleanItems = items
-        .filter(i => (i.label || '').trim() || Number(i.amount))
-        .map(i => ({ id: i.id || uid(), category: i.category || 'other', label: (i.label || '').trim(), amount: Number(i.amount) || 0, note: i.note || '' }));
+      const cleanItems = {};
+      SETTLEMENT_CATEGORIES.forEach(([key]) => { cleanItems[key] = Number(document.getElementById(`st-${key}`).value) || 0; });
       const { totalDeductions, netAmount } = settlementTotals({ depositAmount, items: cleanItems });
       return {
         id: existing ? existing.id : uid(),
@@ -3734,17 +3718,17 @@ function portalRenderSettlement() {
     return;
   }
   const net = settlement.netAmount;
-  const categoryLabel = { rent: 'Rent', utility: 'Utility', damage: 'Damage', other: 'Other' };
+  const lines = SETTLEMENT_CATEGORIES.filter(([key]) => Number((settlement.items || {})[key]) > 0);
   document.getElementById('portalMain').innerHTML = `
     ${settlement.status === 'draft' ? `<div class="muted" style="margin-bottom:12px;">⏳ Pending final review — your landlord may still adjust this while inspecting the unit.</div>` : `<div class="muted" style="margin-bottom:12px;">✅ Finalized${settlement.finalizedAt ? ' on ' + new Date(settlement.finalizedAt).toLocaleDateString('en-PH') : ''}.</div>`}
     <div class="kv-grid" style="margin-bottom:16px;">
       <div class="kv"><div class="k">Deposit on file</div><div class="v">${peso(settlement.depositAmount)}</div></div>
     </div>
     <div class="section-label">Deductions</div>
-    ${(settlement.items || []).length ? `<div class="card-list">${settlement.items.map(i => `
+    ${lines.length ? `<div class="card-list">${lines.map(([key, label]) => `
       <div class="row-card">
-        <div class="rc-main"><div class="rc-title">${escapeHTML(i.label)}</div><div class="rc-sub">${categoryLabel[i.category] || 'Other'}</div></div>
-        <div class="rc-amt">${peso(i.amount)}</div>
+        <div class="rc-main"><div class="rc-title">${label}</div></div>
+        <div class="rc-amt">${peso(settlement.items[key])}</div>
       </div>`).join('')}</div>` : `<p class="muted">No deductions.</p>`}
     <div class="kv-grid" style="margin-top:16px;">
       <div class="kv"><div class="k">Total deductions</div><div class="v">${peso(settlement.totalDeductions)}</div></div>
