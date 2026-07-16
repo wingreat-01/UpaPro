@@ -383,17 +383,26 @@
     display:flex; flex-direction:column; gap:8px; max-height:52vh; overflow-y:auto;
     padding:2px 2px 6px; margin-bottom:12px;
   }
+  .msg-row{display:flex; align-items:flex-end; gap:6px;}
+  .msg-row.me{justify-content:flex-end;}
+  .msg-row.them{justify-content:flex-start;}
+  .msg-avatar{
+    width:24px; height:24px; border-radius:50%; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    font-size:.7rem; font-weight:700; background:var(--peso-soft); color:var(--peso);
+  }
   .msg-bubble{
-    display:inline-block; width:fit-content; max-width:78%; padding:8px 12px 6px; border-radius:14px; font-size:.88rem; line-height:1.28;
+    display:inline-block; width:fit-content; max-width:calc(78% - 30px); padding:8px 12px 6px; border-radius:14px; font-size:.88rem; line-height:1.28;
     word-break:break-word; white-space:pre-wrap;
   }
   .msg-bubble .m-time{display:block; font-size:.62rem; line-height:1.1; opacity:.65; margin-top:3px; letter-spacing:.02em;}
-  .msg-bubble.me{align-self:flex-end; background:var(--peso); color:#fff; border-bottom-right-radius:4px;}
-  .msg-bubble.them{align-self:flex-start; background:var(--paper-2); color:var(--ink); border-bottom-left-radius:4px;}
+  .msg-bubble.me{background:var(--peso); color:#fff; border-bottom-right-radius:4px;}
+  .msg-bubble.them{background:var(--paper-2); color:var(--ink); border-bottom-left-radius:4px;}
   .msg-input-row{display:flex; gap:8px; align-items:flex-end;}
   .msg-input-row textarea{
-    flex:1; resize:none; min-height:42px; max-height:110px; border:1.5px solid var(--line);
-    border-radius:12px; padding:10px 12px; font-size:.9rem; font-family:inherit;
+    flex:1; resize:none; min-height:38px; max-height:110px; height:38px; overflow-y:hidden;
+    border:1.5px solid var(--line); line-height:1.3;
+    border-radius:12px; padding:8px 12px; font-size:.9rem; font-family:inherit;
     background:var(--card); color:var(--ink);
   }
   .msg-input-row button{
@@ -2317,20 +2326,40 @@ function msgTimeLabel(ts) {
     ? d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' })
     : d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' });
 }
-function msgThreadHTML(messages, meSender) {
+// First letter of a name, uppercased, for use inside a circular avatar —
+// falls back to '?' for blank/missing names.
+function initials(name) {
+  const n = (name || '').trim();
+  return n ? n[0].toUpperCase() : '?';
+}
+function msgThreadHTML(messages, meSender, theirAvatar) {
   if (!messages.length) {
     return `<div class="empty" style="padding:24px 16px;"><div class="e-icon">💬</div><p>No messages yet — say hi.</p></div>`;
   }
-  return messages.map(m => `
-    <div class="msg-bubble ${m.sender === meSender ? 'me' : 'them'}">
-      ${escapeHTML(m.text)}<span class="m-time">${msgTimeLabel(m.createdAt)}</span>
-    </div>`).join('');
+  return messages.map(m => {
+    const mine = m.sender === meSender;
+    return `
+    <div class="msg-row ${mine ? 'me' : 'them'}">
+      ${mine ? '' : `<div class="msg-avatar">${theirAvatar}</div>`}
+      <div class="msg-bubble ${mine ? 'me' : 'them'}">
+        ${escapeHTML(m.text)}<span class="m-time">${msgTimeLabel(m.createdAt)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+// Keeps a message textarea at a compact one-line height by default, growing
+// only as far as the typed content actually needs (capped by the CSS
+// max-height, which then takes over with its own scrollbar). Shared by both
+// the admin thread sheet and the tenant portal's message view.
+function autoGrowMsgInput(el) {
+  el.style.height = '38px';
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
 }
 
 function openMessageThreadSheet(tenant) {
   openSheet(`
     <h2>💬 ${escapeHTML(tenant.fullName)}</h2>
-    <div class="msg-thread" id="msgThread">${msgThreadHTML(messagesForTenant(tenant.id), 'admin')}</div>
+    <div class="msg-thread" id="msgThread">${msgThreadHTML(messagesForTenant(tenant.id), 'admin', initials(tenant.fullName))}</div>
     <div class="msg-input-row">
       <textarea id="msg-input" placeholder="Type a message…" rows="1"></textarea>
       <button id="msg-send-btn" aria-label="Send">➤</button>
@@ -2342,6 +2371,7 @@ function openMessageThreadSheet(tenant) {
     document.getElementById('msg-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); adminSendMessage(tenant); }
     });
+    document.getElementById('msg-input').addEventListener('input', (e) => autoGrowMsgInput(e.target));
     markTenantMessagesRead(tenant.id);
   });
 }
@@ -2355,12 +2385,13 @@ async function adminSendMessage(tenant) {
     text, createdAt: Date.now(), readByAdmin: true, readByTenant: false,
   };
   input.value = '';
+  autoGrowMsgInput(input);
   await dbPut('messages', msg);
   queueRecordSync('messages', msg);
   await refreshCache();
   const thread = document.getElementById('msgThread');
   if (thread) {
-    thread.innerHTML = msgThreadHTML(messagesForTenant(tenant.id), 'admin');
+    thread.innerHTML = msgThreadHTML(messagesForTenant(tenant.id), 'admin', initials(tenant.fullName));
     thread.scrollTop = thread.scrollHeight;
   }
   render(); // refresh any unread badges showing elsewhere (e.g. tenant detail)
@@ -3456,7 +3487,8 @@ function portalRenderDashboard() {
 /* -------------------------------- MESSAGES -------------------------------- */
 function portalRenderMessages() {
   document.getElementById('portalMain').innerHTML = `
-    <div class="msg-thread" id="portalMsgThread">${msgThreadHTML(portal.messages, 'tenant')}</div>
+    <div class="section-label">💬 Chat with your landlord</div>
+    <div class="msg-thread" id="portalMsgThread">${msgThreadHTML(portal.messages, 'tenant', '🏠')}</div>
     <div class="msg-input-row">
       <textarea id="p-msg-input" placeholder="Message your landlord…" rows="1"></textarea>
       <button id="p-msg-send-btn" aria-label="Send">➤</button>
@@ -3468,6 +3500,7 @@ function portalRenderMessages() {
   document.getElementById('p-msg-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); portalSendMessage(); }
   });
+  document.getElementById('p-msg-input').addEventListener('input', (e) => autoGrowMsgInput(e.target));
   portalMarkAdminMessagesRead();
 }
 
@@ -3481,15 +3514,17 @@ async function portalSendMessage() {
     text, createdAt: Date.now(), readByAdmin: false, readByTenant: true,
   };
   input.value = '';
+  autoGrowMsgInput(input);
   try {
     await portal.store.collection('users').doc(portal.adminUid).collection('messages').doc(id).set(msg);
     portal.messages.push(msg);
     const thread = document.getElementById('portalMsgThread');
-    thread.innerHTML = msgThreadHTML(portal.messages, 'tenant');
+    thread.innerHTML = msgThreadHTML(portal.messages, 'tenant', '🏠');
     thread.scrollTop = thread.scrollHeight;
   } catch (err) {
     console.warn('Message send failed', err);
     input.value = text; // give the text back so nothing is lost
+    autoGrowMsgInput(input);
     portalShowToast('Could not send — check your connection');
   }
 }
