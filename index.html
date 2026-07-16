@@ -234,6 +234,7 @@
     font-size:.95rem; font-family:inherit; background:var(--card); color:var(--ink);
   }
   .field textarea{resize:vertical; min-height:60px;}
+  .field-deduction input{background:var(--amber-soft);}
   .field-row{display:flex; gap:10px;}
   .field-row .field{flex:1;}
   .sheet-actions{display:flex; gap:10px; margin-top:18px;}
@@ -3033,8 +3034,13 @@ function openMoveOutSettlementSheet(tenant, unit) {
     ? { rent: 0, electricity: 0, water: 0, damage: 0, other: 0, ...existing.items }
     : { rent: suggested.rent, electricity: suggested.electricity, water: suggested.water, damage: 0, other: 0 };
   const depositAmount0 = existing ? existing.depositAmount : (Number(tenant.depositAmount) || 0);
+  const otherNote0 = existing ? (existing.otherNote || '') : '';
   const alreadyFinalized = !!(existing && existing.status === 'finalized');
 
+  const toggleOtherNote = () => {
+    const otherAmt = Number(document.getElementById('st-other').value) || 0;
+    document.getElementById('st-other-note-field').style.display = otherAmt > 0 ? '' : 'none';
+  };
   const updateTotals = () => {
     const deposit = Number(document.getElementById('st-deposit').value) || 0;
     const totalDeductions = SETTLEMENT_CATEGORIES.reduce((s, [key]) => s + (Number(document.getElementById(`st-${key}`).value) || 0), 0);
@@ -3052,10 +3058,11 @@ function openMoveOutSettlementSheet(tenant, unit) {
     <div class="field"><label>Deposit on file (₱)</label><input id="st-deposit" type="number" inputmode="decimal" value="${depositAmount0}"></div>
     <div class="section-label">Deductions</div>
     ${SETTLEMENT_CATEGORIES.map(([key, label]) => `
-      <div class="field-row">
-        <label style="flex:0 0 110px;">${label}</label>
-        <input id="st-${key}" type="number" inputmode="decimal" value="${items[key] || ''}" placeholder="0" style="flex:1;">
-      </div>`).join('')}
+      <div class="field field-deduction"><label>${label}</label><input id="st-${key}" type="number" inputmode="decimal" value="${items[key] || ''}" placeholder="0"></div>`).join('')}
+    <div class="field" id="st-other-note-field" style="display:${Number(items.other) > 0 ? '' : 'none'};">
+      <label>What's the "Other" charge for?</label>
+      <input id="st-other-note" value="${escapeAttr(otherNote0)}" placeholder="e.g. Cleaning fee">
+    </div>
     <div class="kv-grid" style="margin-top:16px;">
       <div class="kv"><div class="k">Total deductions</div><div class="v" id="st-total">${peso(0)}</div></div>
       <div class="kv"><div class="k">Net</div><div class="v" id="st-net" style="font-weight:600;"></div></div>
@@ -3068,15 +3075,17 @@ function openMoveOutSettlementSheet(tenant, unit) {
     updateTotals();
     document.getElementById('st-deposit').addEventListener('input', updateTotals);
     SETTLEMENT_CATEGORIES.forEach(([key]) => document.getElementById(`st-${key}`).addEventListener('input', updateTotals));
+    document.getElementById('st-other').addEventListener('input', toggleOtherNote);
     const buildSettlement = (status) => {
       const depositAmount = Number(document.getElementById('st-deposit').value) || 0;
       const cleanItems = {};
       SETTLEMENT_CATEGORIES.forEach(([key]) => { cleanItems[key] = Number(document.getElementById(`st-${key}`).value) || 0; });
+      const otherNote = document.getElementById('st-other-note').value.trim();
       const { totalDeductions, netAmount } = settlementTotals({ depositAmount, items: cleanItems });
       return {
         id: existing ? existing.id : uid(),
         tenantId: tenant.id, unitId: unit.id, locationId: unit.locationId,
-        depositAmount, items: cleanItems, totalDeductions, netAmount, status,
+        depositAmount, items: cleanItems, otherNote, totalDeductions, netAmount, status,
         moveOutDate: (existing && existing.moveOutDate) || todayISO(),
         createdAt: existing ? existing.createdAt : Date.now(),
         updatedAt: Date.now(),
@@ -3727,7 +3736,7 @@ function portalRenderSettlement() {
     <div class="section-label">Deductions</div>
     ${lines.length ? `<div class="card-list">${lines.map(([key, label]) => `
       <div class="row-card">
-        <div class="rc-main"><div class="rc-title">${label}</div></div>
+        <div class="rc-main"><div class="rc-title">${label}</div>${key === 'other' && settlement.otherNote ? `<div class="rc-sub">${escapeHTML(settlement.otherNote)}</div>` : ''}</div>
         <div class="rc-amt">${peso(settlement.items[key])}</div>
       </div>`).join('')}</div>` : `<p class="muted">No deductions.</p>`}
     <div class="kv-grid" style="margin-top:16px;">
