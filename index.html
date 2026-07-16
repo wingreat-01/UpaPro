@@ -1,25 +1,25 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
+<!-- saved from url=(0045)file:///C:/Users/USER/Downloads/index_15.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>UpaPro — Admin</title>
 <meta name="theme-color" content="#1C2B33">
-<link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="icon" href="icon-192.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="manifest" href="file:///C:/Users/USER/Downloads/manifest.json">
+<link rel="apple-touch-icon" href="file:///C:/Users/USER/Downloads/icon-192.png">
+<link rel="icon" href="file:///C:/Users/USER/Downloads/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
+<link href="./index_files/css2" rel="stylesheet">
 <!-- Cloud sync (M4) — Firebase Auth + Firestore, same compat SDK as Pautang Pro.
      Pautang Pro self-hosts these under vendor/; CDN works identically if you'd
      rather not vendor them locally. -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="./index_files/firebase-app-compat.js.download"></script>
+<script src="./index_files/firebase-auth-compat.js.download"></script>
+<script src="./index_files/firebase-firestore-compat.js.download"></script>
 <!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
      now lives on Supabase Storage instead of Firebase Storage. -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="./index_files/supabase.min.js.download"></script>
 <style>
   :root{
     --ink:#1C2B33;
@@ -182,6 +182,14 @@
   .btn-outline{background:transparent; color:var(--ink); border:1.5px solid var(--line);}
   .btn-danger{background:transparent; color:var(--rust); border:1.5px solid var(--rust-soft);}
   .btn-sm{padding:9px 12px; font-size:.8rem; width:auto;}
+  .share-btn{
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:4px; padding:9px 4px 7px; border:1.5px solid var(--line); border-radius:11px;
+    background:var(--card); cursor:pointer; color:var(--ink); font-size:.62rem;
+    font-weight:600; letter-spacing:.01em;
+  }
+  .share-btn:active{background:var(--paper-2);}
+  .share-btn svg{width:20px; height:20px;}
   .fab{
     position:fixed; right:calc(50% - 240px + 18px); bottom:calc(84px + var(--safe-b));
     z-index:25; width:54px; height:54px; border-radius:50%;
@@ -489,16 +497,16 @@
      this deployment, the gate never shows and the app boots
      straight into local-only mode, same as before this change.
      ============================================================ -->
-<div id="adminGate">
+<div id="adminGate" style="display: flex;">
   <div class="admin-gate-card">
     <div class="admin-gate-logo">UpaPro</div>
 
-    <div id="ag-checking">
+    <div id="ag-checking" style="display: none;">
       <p class="muted" style="text-align:center;">Checking your session…</p>
     </div>
 
-    <div id="ag-forms" style="display:none;">
-      <div id="ag-login-view">
+    <div id="ag-forms" style="display: block;">
+      <div id="ag-login-view" style="display: block;">
         <p class="muted" style="margin:0 0 14px;">Sign in to access your dashboard.</p>
         <div class="field"><label>Email</label><input id="ag-email" type="email" autocomplete="email" inputmode="email"></div>
         <div class="field"><label>Password</label><input id="ag-password" type="password" autocomplete="current-password"></div>
@@ -534,12 +542,21 @@
   <main>
 
     <!-- DASHBOARD -->
-    <section class="view" id="view-dashboard">
+    <section class="view active" id="view-dashboard">
       <div class="section-label">Overview</div>
-      <div class="stat-grid" id="dashStats"></div>
+      <div class="stat-grid" id="dashStats">
+    <div class="stat-card"><div class="val">0</div><div class="lbl">Total units · 0 locations</div></div>
+    <div class="stat-card ok"><div class="val">0/0</div><div class="lbl">Occupied</div></div>
+    <div class="stat-card ok"><div class="val">₱0</div><div class="lbl">Collected · Jul 2026</div></div>
+    <div class="stat-card"><div class="val">₱0</div><div class="lbl">Expected this month</div></div>
+    <div class="stat-card wide ok">
+      <div><div class="lbl" style="margin-bottom:2px;">Overdue right now</div><div class="val">0 tenants</div></div>
+      <div class="stamp  small">CLEAR</div>
+    </div>
+  </div>
 
       <div class="section-label">Due soon &amp; overdue</div>
-      <div class="card-list" id="dashOverdue"></div>
+      <div class="card-list" id="dashOverdue"><div class="empty"><div class="e-icon">✅</div><p><strong>Nothing due soon</strong></p><p>Every occupied unit is settled for now.</p></div></div>
     </section>
 
     <!-- LOCATIONS LIST -->
@@ -582,7 +599,7 @@
       <input type="file" id="importFile" accept="application/json" style="display:none;">
 
       <div class="section-label">Cloud sync</div>
-      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
+      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not signed in</div></div><span class="badge-dot" id="firebaseDot"></span></div>
 
       <div class="section-label">Tenant portal</div>
       <div class="settings-item" id="btnPendingReviews"><div><div class="si-title">Pending payment reviews</div><div class="si-sub" id="pendingReviewsSub">Nothing waiting</div></div><span class="badge-dot" id="pendingReviewsDot"></span></div>
@@ -594,7 +611,7 @@
 
   </main>
 
-  <button class="fab" id="fabAdd" title="Quick add">+</button>
+  <button class="fab" id="fabAdd" title="Quick add" style="display: none;">+</button>
 
   <nav class="bottomnav">
     <button data-nav="dashboard" class="active"><span class="ic">🏠</span>Dashboard</button>
@@ -641,7 +658,7 @@
 </div>
 <div class="img-lightbox-backdrop" id="imgLightboxBackdrop">
   <button class="img-lightbox-close" id="imgLightboxCloseBtn" aria-label="Close">✕</button>
-  <img id="imgLightboxImg" src="" alt="Document preview">
+  <img id="imgLightboxImg" src="file:///C:/Users/USER/Downloads/index_15.html" alt="Document preview">
 </div>
 
 <!-- ============================================================
@@ -1557,6 +1574,113 @@ function showToast(msg) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+/* ---------------------------- COPY TO CLIPBOARD ---------------------------- */
+async function copyInviteCode(code, inputEl) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(code);
+    } else {
+      inputEl.select();
+      inputEl.setSelectionRange(0, code.length);
+      document.execCommand('copy');
+      inputEl.blur();
+    }
+    showToast('Invite code copied');
+  } catch (err) {
+    console.warn('Copy failed', err);
+    showToast('Could not copy — select and copy manually');
+  }
+}
+
+/* ------------------------------ INVITE SHARE ------------------------------
+   Deep-links to share the invite code + portal link via common chat apps.
+   SMS, WhatsApp, and Viber accept pre-filled text through their share URLs.
+   Messenger and WeChat don't accept free text through a public URL scheme,
+   so for those we copy the message to the clipboard and open the app so
+   it can be pasted into a chat there. */
+async function copyTextSilently(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) { /* fall through to legacy path */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function inviteShareMessage(tenant) {
+  const portalUrl = location.origin + location.pathname + '?portal=1';
+  return `Hi ${tenant.fullName}, here's your tenant portal invite.\nCode: ${tenant.portalInvite.id}\nLink: ${portalUrl}`;
+}
+
+const INVITE_SHARE_APPS = [
+  { id: 'sms', label: 'SMS', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v12H7l-3 3V4Z"/></svg>` },
+  { id: 'whatsapp', label: 'WhatsApp', icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.6 15L2 22l5.2-1.4A10 10 0 1 0 12 2Zm0 2a8 8 0 0 1 6.9 12.1l.6 2.2-2.3-.6A8 8 0 1 1 12 4Zm-3.4 3.7c-.2 0-.5 0-.7.3-.2.3-.9.9-.9 2.1s.9 2.4 1 2.6c.1.2 1.8 2.9 4.5 4 2.2 1 2.7.8 3.2.7.5-.1 1.6-.6 1.8-1.3.2-.6.2-1.2.2-1.3-.1-.1-.3-.2-.6-.4l-1.9-.9c-.3-.1-.5-.1-.7.1l-.7 1c-.1.2-.3.2-.5.1-.3-.1-1.2-.5-2.3-1.4-.9-.8-1.4-1.7-1.6-2-.2-.3 0-.5.1-.6l.5-.6c.1-.2.2-.3.3-.5s0-.4 0-.5c0-.1-.7-1.7-.9-2.3-.2-.5-.5-.5-.7-.5h-.4Z"/></svg>` },
+  { id: 'viber', label: 'Viber', icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.9 2 3 5.4 3 9.7c0 2.6 1.5 4.9 3.9 6.3-.1.9-.5 2.4-1.6 3.9 0 0 2.4-.3 4.5-2 .7.1 1.5.2 2.2.2 5.1 0 9-3.4 9-7.7S17.1 2 12 2Zm4.6 10.4c-.2.5-1 1-1.4 1-.4 0-1-.1-2.7-1.1-1.9-1.1-3.1-3-3.2-3.1-.1-.1-.7-.9-.7-1.7 0-.8.4-1.2.6-1.4.2-.2.4-.2.5-.2h.4c.1 0 .3 0 .5.4l.6 1.5c.1.1.1.3 0 .4l-.3.4c-.1.1-.2.2 0 .4.2.3.7 1.1 1.5 1.7.9.7 1.4.9 1.6.9.2 0 .3 0 .4-.1l.5-.6c.2-.2.4-.2.6-.1l1.4.7c.2.1.4.2.4.3.1.1.1.5-.1.9Z"/></svg>` },
+  { id: 'messenger', label: 'Messenger', icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.1 2 11.2c0 2.9 1.4 5.5 3.7 7.2V22l3.4-1.9c.9.3 1.9.4 2.9.4 5.5 0 10-4.1 10-9.3S17.5 2 12 2Zm1 12.5-2.6-2.7-4.9 2.7 5.3-5.6L13 11.4l4.7-2.6L13 14.5Z"/></svg>` },
+  { id: 'wechat', label: 'WeChat', icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.3 3.5C4.9 3.5 1.5 6.5 1.5 10c0 2 1.1 3.8 2.9 5l-.7 2.3 2.5-1.3c.7.2 1.4.3 2.1.3h.3a5.4 5.4 0 0 1-.2-1.5c0-3.5 3.4-6.3 7.6-6.3.3 0 .5 0 .8.1C16.1 5.6 13 3.5 9.3 3.5Zm-2.6 3.4c.6 0 1 .5 1 1s-.4 1-1 1-1-.5-1-1 .4-1 1-1Zm5.2 0c.6 0 1 .5 1 1s-.4 1-1 1-1-.5-1-1 .4-1 1-1ZM16.7 10.9c-3.6 0-6.5 2.4-6.5 5.4s2.9 5.4 6.5 5.4c.6 0 1.2-.1 1.8-.2l2.1 1.1-.6-1.9c1.5-1 2.5-2.6 2.5-4.4 0-3-2.9-5.4-6.5-5.4Zm-2.2 2.9c.5 0 .8.4.8.8 0 .5-.3.9-.8.9s-.9-.4-.9-.9c0-.4.4-.8.9-.8Zm4.4 0c.5 0 .8.4.8.8 0 .5-.3.9-.8.9s-.9-.4-.9-.9c0-.4.4-.8.9-.8Z"/></svg>` },
+];
+
+function renderShareRow(containerId, handler) {
+  const row = document.getElementById(containerId);
+  if (!row) return;
+  row.innerHTML = INVITE_SHARE_APPS.map(app =>
+    `<button type="button" class="share-btn" data-app="${app.id}">${app.icon}<span>${app.label}</span></button>`
+  ).join('');
+  row.querySelectorAll('.share-btn').forEach(btn => {
+    btn.addEventListener('click', () => handler(btn.dataset.app));
+  });
+}
+
+async function shareViaApp(app, message, link) {
+  const encodedMsg = encodeURIComponent(message);
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  switch (app) {
+    case 'sms':
+      window.location.href = isIOS ? `sms:&body=${encodedMsg}` : `sms:?body=${encodedMsg}`;
+      break;
+    case 'whatsapp':
+      window.open(`https://wa.me/?text=${encodedMsg}`, '_blank');
+      break;
+    case 'viber':
+      window.location.href = `viber://forward?text=${encodedMsg}`;
+      break;
+    case 'messenger':
+      // Messenger's share dialog only accepts a link, not free text, so we
+      // copy the full message and open the app for the link to be pasted alongside.
+      await copyTextSilently(message);
+      showToast('Message copied — paste it in Messenger');
+      window.location.href = `fb-messenger://share/?link=${encodeURIComponent(link)}`;
+      setTimeout(() => window.open('https://www.messenger.com/', '_blank'), 700);
+      break;
+    case 'wechat':
+      // WeChat has no public URL scheme for pre-filled text, so we copy the
+      // message and open the app so it can be pasted into a chat.
+      await copyTextSilently(message);
+      showToast('Message copied — paste it in WeChat');
+      window.location.href = 'weixin://';
+      break;
+  }
+}
+
+function renderInviteShareRow(tenant) {
+  const msg = inviteShareMessage(tenant);
+  const portalUrl = location.origin + location.pathname + '?portal=1';
+  renderShareRow('inviteShareRow', (app) => shareViaApp(app, msg, portalUrl));
 }
 
 /* ------------------------------ SHEET (modal) ------------------------------
@@ -2774,9 +2898,14 @@ function renderPortalAccessBlock(tenant) {
         <span class="badge-dot"></span>
       </div>
       <div class="field" style="margin-top:8px;">
-        <input readonly value="${escapeAttr(tenant.portalInvite.id)}" style="font-family:'JetBrains Mono',monospace; text-align:center; font-weight:700; letter-spacing:.06em;">
+        <input readonly value="${escapeAttr(tenant.portalInvite.id)}" id="inviteCodeInput" title="Tap to copy" style="font-family:'JetBrains Mono',monospace; text-align:center; font-weight:700; letter-spacing:.06em; cursor:pointer;">
       </div>
+      <div class="si-sub" style="margin:10px 0 6px;">Send invite via</div>
+      <div id="inviteShareRow" style="display:flex; gap:8px; margin-bottom:10px;"></div>
       <button class="btn btn-outline btn-sm" style="width:100%;" id="regenInviteBtn">Generate a new code</button>`;
+    const inviteCodeInput = document.getElementById('inviteCodeInput');
+    inviteCodeInput.addEventListener('click', () => copyInviteCode(tenant.portalInvite.id, inviteCodeInput));
+    renderInviteShareRow(tenant);
     document.getElementById('regenInviteBtn').addEventListener('click', () => generatePortalInvite(tenant));
   } else {
     wrap.innerHTML = `
@@ -3252,6 +3381,8 @@ function openPortalPreviewSheet() {
     <h2>Tenant portal</h2>
     <p style="color:var(--slate); font-size:.85rem; margin:0 0 14px;">Share this link with any tenant you've invited (see their unit page → Tenant portal access). It's the same site, in tenant mode — they'll sign in with their own email, never see your admin data.</p>
     <div class="field"><input readonly value="${escapeAttr(portalUrl)}" id="portalUrlField"></div>
+    <div class="si-sub" style="margin:8px 0 6px;">Send link via</div>
+    <div id="portalLinkShareRow" style="display:flex; gap:8px; margin-bottom:14px;"></div>
     <div class="sheet-actions">
       <button class="btn btn-outline" id="copyPortalUrlBtn">Copy link</button>
       <button class="btn btn-primary" id="previewPortalBtn">Preview it myself</button>
@@ -3265,6 +3396,7 @@ function openPortalPreviewSheet() {
       closeSheet();
       enterTenantPortalMode();
     });
+    renderShareRow('portalLinkShareRow', (app) => shareViaApp(app, `Here's the tenant portal link: ${portalUrl}`, portalUrl));
   });
 }
 function openAdminNameForm() {
@@ -4656,5 +4788,6 @@ if ('serviceWorker' in navigator) {
   });
 })();
 </script>
-</body>
-</html>
+
+
+</body></html>
