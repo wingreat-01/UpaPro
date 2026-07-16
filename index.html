@@ -678,7 +678,7 @@
 
 const APP_ID = 'upaPro';
 const DB_NAME = 'upapro_db';
-const DB_VERSION = 5; // v5: + messages store (admin<->tenant chat)
+const DB_VERSION = 6; // v6: + moveoutSettlements store (deposit deduction breakdown at move-out)
 let db;
 
 const uid = () => 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -761,6 +761,19 @@ function openDB() {
         const s = d.createObjectStore('messages', { keyPath: 'id' });
         s.createIndex('tenantId', 'tenantId');
       }
+      // v6 — one doc per tenant move-out: itemized deposit deductions
+      // (unpaid rent/utilities pulled from existing balances, plus
+      // free-text damage/other lines the admin adds by hand). Stays in
+      // 'draft' while the admin is still inspecting the unit — the tenant
+      // can already see a draft in their portal, labeled as pending — and
+      // flips to 'finalized' at the same moment the tenant/unit records
+      // actually get archived/vacated. Synced the same generic way as
+      // every other store (see SYNCED_STORES).
+      if (!d.objectStoreNames.contains('moveoutSettlements')) {
+        const s = d.createObjectStore('moveoutSettlements', { keyPath: 'id' });
+        s.createIndex('tenantId', 'tenantId');
+        s.createIndex('unitId', 'unitId');
+      }
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = (e) => reject(e.target.error);
@@ -827,7 +840,7 @@ const firebaseConfig = {
   appId: "1:177340239376:web:80806c92272103f4770495"
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
-const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages'];
+const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages', 'moveoutSettlements'];
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
 // True while a tenant (or the admin, previewing) is inside the tenant
 // portal — see enterTenantPortalMode/exitTenantPortalMode. Stops the admin
@@ -1202,14 +1215,14 @@ function authLoadingEnd(barEl, btnEl, success) {
 /* ------------------------------- APP STATE -------------------------------- */
 const state = {
   navStack: [{ view: 'dashboard' }],
-  cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [], utilityBills: [], messages: [] },
+  cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [], utilityBills: [], messages: [], moveoutSettlements: [] },
 };
 
 function currentRoute() { return state.navStack[state.navStack.length - 1]; }
 
 async function refreshCache() {
-  const [locations, units, tenants, payments, pendingPayments, utilityBills, messages] = await Promise.all([
-    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills'), dbGetAll('messages')
+  const [locations, units, tenants, payments, pendingPayments, utilityBills, messages, moveoutSettlements] = await Promise.all([
+    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills'), dbGetAll('messages'), dbGetAll('moveoutSettlements')
   ]);
   // Filter out soft-deleted (tombstoned) records here — the single place
   // all rendering reads from state.cache. Raw dbGetAll() calls elsewhere
@@ -1223,6 +1236,7 @@ async function refreshCache() {
     pendingPayments: pendingPayments.filter(r => !r.deleted),
     utilityBills: utilityBills.filter(r => !r.deleted),
     messages: messages.filter(r => !r.deleted),
+    moveoutSettlements: moveoutSettlements.filter(r => !r.deleted),
   };
 }
 
@@ -1455,6 +1469,75 @@ function computeRentStatus() {
   }
   rows.sort((a, b) => (order[a.status] - order[b.status]) || (b.daysOverdue - a.daysOverdue));
   return rows;
+}
+
+/* ---------------------------- MOVE-OUT SETTLEMENT ----------------------------
+   A settlement is a single itemized breakdown of a tenant's deposit vs. what
+   they still owe (or are owed back) at move-out — see moveOutFlow(). It's
+   kept in its own store rather than bolted onto the tenant record so it can
+   sit in 'draft' for as long as the admin needs to actually inspect the
+   unit, before 'finalizing' archives the tenant/vacates the unit. */
+function settlementForTenant(tenantId) {
+  const list = state.cache.moveoutSettlements.filter(s => s.tenantId === tenantId);
+  if (!list.length) return null;
+  // A tenant should only ever have one settlement, but if a correction ever
+  // produced two records (e.g. a merge conflict), prefer the newest.
+  return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+}
+/** Most recently moved-out tenant that was assigned to this unit — used to
+ *  surface "view last tenant's settlement" once a unit goes vacant, since
+ *  the vacant-unit view otherwise has no link back to the archived tenant. */
+function lastInactiveTenantForUnit(unitId) {
+  return state.cache.tenants
+    .filter(t => t.unitId === unitId && !t.active)
+    .sort((a, b) => (b.moveOutDate || '').localeCompare(a.moveOutDate || ''))[0] || null;
+}
+function settlementTotals(settlement) {
+  const totalDeductions = (settlement.items || []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const netAmount = (Number(settlement.depositAmount) || 0) - totalDeductions;
+  return { totalDeductions, netAmount };
+}
+/** Inclusive list of "YYYY-MM" periods from `from` to `to`. Capped so a
+ *  bad/garbled date on a tenant record can't spin this into a near-infinite
+ *  loop. */
+function periodsBetween(fromPeriod, toPeriod) {
+  const periods = [];
+  let p = fromPeriod;
+  let guard = 0;
+  while (p <= toPeriod && guard < 240) {
+    periods.push(p);
+    p = monthOffset(p, 1);
+    guard++;
+  }
+  return periods;
+}
+/** Walks every period from move-in through move-out (or today, if move-out
+ *  hasn't happened yet) and lists any rent/electricity/water balance that's
+ *  still outstanding — reusing the exact same tag-aware balance math
+ *  computeRentStatus() uses for the current period, just applied across
+ *  the tenant's whole stay instead of only this month. This is what
+ *  auto-fills a fresh settlement's deduction lines; damage/other lines
+ *  aren't detectable from data and stay manual. */
+function outstandingChargesForTenant(tenant, unit) {
+  if (!tenant || !unit) return [];
+  const fromPeriod = tenant.moveInDate ? monthKey(new Date(tenant.moveInDate + 'T00:00:00')) : monthKey();
+  const toDate = tenant.moveOutDate ? new Date(tenant.moveOutDate + 'T00:00:00') : new Date();
+  const toPeriod = monthKey(toDate);
+  const items = [];
+  for (const period of periodsBetween(fromPeriod, toPeriod)) {
+    const bill = utilityBillFor(tenant.id, period);
+    const rentAmt = Number(unit.monthlyRent) || 0;
+    const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+    const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+    const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+    const rentBal = Math.max(0, rentAmt - amountPaidForCharge(tenant.id, period, 'rent', weights));
+    const elecBal = Math.max(0, elecAmt - amountPaidForCharge(tenant.id, period, 'electricity', weights));
+    const waterBal = Math.max(0, waterAmt - amountPaidForCharge(tenant.id, period, 'water', weights));
+    if (rentBal > 0.5) items.push({ id: uid(), category: 'rent', label: `Unpaid rent — ${monthLabel(period)}`, amount: Math.round(rentBal) });
+    if (elecBal > 0.5) items.push({ id: uid(), category: 'utility', label: `Unpaid electricity — ${monthLabel(period)}`, amount: Math.round(elecBal) });
+    if (waterBal > 0.5) items.push({ id: uid(), category: 'utility', label: `Unpaid water — ${monthLabel(period)}`, amount: Math.round(waterBal) });
+  }
+  return items;
 }
 
 /* --------------------------------- TOAST ---------------------------------- */
@@ -1943,6 +2026,8 @@ function renderUnitDetail(unitId) {
     const colorFor = (c) => c.status === 'overdue' ? 'var(--rust)' : (c.status === 'due-soon' ? 'var(--rust)' : 'var(--peso)');
     const chargeLineHTML = (label, c) => c.amount > 0 ? `
           <div class="kv"><div class="k">${label}</div><div class="v" style="color:${colorFor(c)}">${c.balance > 0 ? peso(c.balance) + ' due ' + c.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Paid'}</div></div>` : '';
+    const tenantSettlement = settlementForTenant(tenant.id);
+    const moveOutLabel = tenantSettlement && tenantSettlement.status === 'draft' ? 'Move-out settlement (draft)' : 'Move out';
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -1970,7 +2055,7 @@ function renderUnitDetail(unitId) {
         <div style="display:flex; gap:8px; margin-top:8px;">
           <button class="btn btn-primary btn-sm" id="editTenantBtn">✏️ Edit tenant</button>
           <button class="btn btn-outline btn-sm" id="genContractBtn">📃 Contract</button>
-          <button class="btn btn-danger btn-sm" id="moveOutBtn">Move out</button>
+          <button class="btn btn-danger btn-sm" id="moveOutBtn">${moveOutLabel}</button>
         </div>
       </div>`;
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
@@ -1982,6 +2067,8 @@ function renderUnitDetail(unitId) {
     renderPortalAccessBlock(tenant);
     renderUnitUtilityBlock(tenant, unit);
   } else {
+    const lastTenant = lastInactiveTenantForUnit(unit.id);
+    const lastSettlement = lastTenant ? settlementForTenant(lastTenant.id) : null;
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Tenant</div>
       <div class="empty">
@@ -1989,9 +2076,11 @@ function renderUnitDetail(unitId) {
         <p><strong>This unit is vacant.</strong></p>
         <p>Assign a tenant to start tracking rent.</p>
         <div style="margin-top:12px;"><button class="btn btn-primary" id="assignTenantBtn">Assign tenant</button></div>
+        ${lastSettlement ? `<div style="margin-top:10px;"><button class="btn btn-outline btn-sm" id="viewLastSettlementBtn">🧾 ${escapeHTML(lastTenant.fullName)}'s move-out settlement</button></div>` : ''}
       </div>`;
     document.getElementById('unitUtilityBlock').innerHTML = '';
     document.getElementById('assignTenantBtn').addEventListener('click', () => openTenantForm(null, unit.id));
+    if (lastSettlement) document.getElementById('viewLastSettlementBtn').addEventListener('click', () => openMoveOutSettlementSheet(lastTenant, unit));
   }
 
   const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' };
@@ -2887,17 +2976,151 @@ function openPaymentForm(tenant, unit, existing) {
   });
 }
 
-async function moveOutFlow(tenant, unit) {
-  if (!confirm(`Mark ${tenant.fullName} as moved out? The unit will become vacant and this tenant record will be archived.`)) return;
-  const updatedTenant = { ...tenant, active: false, moveOutDate: todayISO(), updatedAt: Date.now() };
+function moveOutFlow(tenant, unit) {
+  openMoveOutSettlementSheet(tenant, unit);
+}
+
+/** Flips the tenant inactive and the unit vacant — the actual "move out"
+ *  side effect. Only ever called once, at the moment a settlement is
+ *  finalized (see openMoveOutSettlementSheet), never on a draft save. */
+async function archiveMovedOutTenant(tenant, unit) {
+  const updatedTenant = { ...tenant, active: false, moveOutDate: tenant.moveOutDate || todayISO(), updatedAt: Date.now() };
   const updatedUnit = { ...unit, status: 'vacant', updatedAt: Date.now() };
   await dbPut('tenants', updatedTenant);
   queueRecordSync('tenants', updatedTenant);
   await dbPut('units', updatedUnit);
   queueRecordSync('units', updatedUnit);
-  await refreshCache();
-  showToast('Tenant moved out');
-  render();
+  return updatedTenant;
+}
+
+/** One row's worth of markup for the settlement editor — a category picker,
+ *  a free-text label, an amount, and a remove button. Re-rendered wholesale
+ *  on add/remove; per-keystroke edits just patch the in-memory `items`
+ *  array (see openMoveOutSettlementSheet) so typing never loses focus. */
+function settlementRowHTML(item, idx) {
+  const categories = [
+    ['rent', 'Rent'], ['utility', 'Utility'], ['damage', 'Damage'], ['other', 'Other'],
+  ];
+  return `
+    <div class="row-card settlement-row" style="align-items:flex-start; flex-wrap:wrap; gap:8px;">
+      <select class="st-cat" data-idx="${idx}" style="flex:0 0 auto; width:auto;">
+        ${categories.map(([v, l]) => `<option value="${v}" ${item.category === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+      <input class="st-label" data-idx="${idx}" value="${escapeAttr(item.label || '')}" placeholder="Description" style="flex:1 1 140px; min-width:0;">
+      <input class="st-amount" type="number" inputmode="decimal" data-idx="${idx}" value="${item.amount || ''}" placeholder="0" style="width:100px; flex:0 0 auto;">
+      <button class="icon-btn" data-remove-idx="${idx}" aria-label="Remove line">🗑️</button>
+    </div>`;
+}
+
+/** Admin-side move-out settlement editor. Loads an existing draft/finalized
+ *  settlement if one exists, otherwise auto-suggests deduction lines from
+ *  whatever rent/utility balances are actually outstanding
+ *  (outstandingChargesForTenant). "Save draft" just persists the
+ *  breakdown — the tenant stays active and the unit stays occupied, so the
+ *  admin can walk over, inspect the unit, and keep editing over the next
+ *  day or two before anything is final. "Finalize move-out" is the only
+ *  action that actually archives the tenant/vacates the unit, and only
+ *  fires once (re-opening an already-finalized settlement to fix a number
+ *  just re-saves it, it won't re-archive). */
+function openMoveOutSettlementSheet(tenant, unit) {
+  const existing = settlementForTenant(tenant.id);
+  let items = existing ? existing.items.map(i => ({ ...i })) : outstandingChargesForTenant(tenant, unit);
+  const depositAmount0 = existing ? existing.depositAmount : (Number(tenant.depositAmount) || 0);
+  const alreadyFinalized = !!(existing && existing.status === 'finalized');
+
+  const renderRows = () => {
+    document.getElementById('st-items').innerHTML = items.length
+      ? items.map(settlementRowHTML).join('')
+      : `<p class="muted" style="margin:6px 0;">No deduction lines yet. Add a damage charge or unpaid balance below.</p>`;
+    document.querySelectorAll('#st-items .st-cat').forEach(el => el.addEventListener('change', (e) => {
+      items[Number(e.target.dataset.idx)].category = e.target.value;
+    }));
+    document.querySelectorAll('#st-items .st-label').forEach(el => el.addEventListener('input', (e) => {
+      items[Number(e.target.dataset.idx)].label = e.target.value;
+    }));
+    document.querySelectorAll('#st-items .st-amount').forEach(el => el.addEventListener('input', (e) => {
+      items[Number(e.target.dataset.idx)].amount = Number(e.target.value) || 0;
+      updateTotals();
+    }));
+    document.querySelectorAll('#st-items [data-remove-idx]').forEach(btn => btn.addEventListener('click', (e) => {
+      items.splice(Number(e.currentTarget.dataset.removeIdx), 1);
+      renderRows();
+      updateTotals();
+    }));
+  };
+  const updateTotals = () => {
+    const deposit = Number(document.getElementById('st-deposit').value) || 0;
+    const totalDeductions = items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const net = deposit - totalDeductions;
+    document.getElementById('st-total').textContent = peso(totalDeductions);
+    const netEl = document.getElementById('st-net');
+    netEl.textContent = net >= 0 ? `${peso(net)} — refund to tenant` : `${peso(Math.abs(net))} — tenant still owes`;
+    netEl.style.color = net >= 0 ? 'var(--peso)' : 'var(--rust)';
+  };
+
+  openSheet(`
+    <h2>Move-out settlement — ${escapeHTML(tenant.fullName)}</h2>
+    ${alreadyFinalized ? `<p class="muted" style="margin-top:-6px;">Finalized ${existing.finalizedAt ? new Date(existing.finalizedAt).toLocaleDateString('en-PH') : ''} — the tenant has already been archived. You can still correct the numbers below.</p>`
+      : `<p class="muted" style="margin-top:-6px;">Saving as draft keeps the tenant active and the unit occupied — inspect the unit and keep editing before finalizing.</p>`}
+    <div class="field"><label>Deposit on file (₱)</label><input id="st-deposit" type="number" inputmode="decimal" value="${depositAmount0}"></div>
+    <div class="section-label">Deductions</div>
+    <div id="st-items"></div>
+    <button class="btn btn-outline btn-sm" id="st-add-line" style="margin-top:4px;">+ Add line</button>
+    <div class="kv-grid" style="margin-top:16px;">
+      <div class="kv"><div class="k">Total deductions</div><div class="v" id="st-total">${peso(0)}</div></div>
+      <div class="kv"><div class="k">Net</div><div class="v" id="st-net" style="font-weight:600;"></div></div>
+    </div>
+    <div class="sheet-actions" style="flex-direction:column; gap:8px;">
+      <button class="btn btn-outline" id="st-save-draft">${alreadyFinalized ? 'Save changes' : 'Save as draft'}</button>
+      ${alreadyFinalized ? '' : '<button class="btn btn-danger" id="st-finalize">Finalize move-out</button>'}
+    </div>
+  `, () => {
+    renderRows();
+    updateTotals();
+    document.getElementById('st-deposit').addEventListener('input', updateTotals);
+    document.getElementById('st-add-line').addEventListener('click', () => {
+      items.push({ id: uid(), category: 'other', label: '', amount: 0 });
+      renderRows();
+      updateTotals();
+    });
+    const buildSettlement = (status) => {
+      const depositAmount = Number(document.getElementById('st-deposit').value) || 0;
+      const cleanItems = items
+        .filter(i => (i.label || '').trim() || Number(i.amount))
+        .map(i => ({ id: i.id || uid(), category: i.category || 'other', label: (i.label || '').trim(), amount: Number(i.amount) || 0, note: i.note || '' }));
+      const { totalDeductions, netAmount } = settlementTotals({ depositAmount, items: cleanItems });
+      return {
+        id: existing ? existing.id : uid(),
+        tenantId: tenant.id, unitId: unit.id, locationId: unit.locationId,
+        depositAmount, items: cleanItems, totalDeductions, netAmount, status,
+        moveOutDate: (existing && existing.moveOutDate) || todayISO(),
+        createdAt: existing ? existing.createdAt : Date.now(),
+        updatedAt: Date.now(),
+        finalizedAt: status === 'finalized' ? (existing && existing.finalizedAt) || Date.now() : (existing ? existing.finalizedAt : null),
+      };
+    };
+    document.getElementById('st-save-draft').addEventListener('click', async () => {
+      const settlement = buildSettlement(alreadyFinalized ? 'finalized' : 'draft');
+      await dbPut('moveoutSettlements', settlement);
+      queueRecordSync('moveoutSettlements', settlement);
+      await refreshCache();
+      closeSheet();
+      showToast('Settlement saved');
+      render();
+    });
+    const finalizeBtn = document.getElementById('st-finalize');
+    if (finalizeBtn) finalizeBtn.addEventListener('click', async () => {
+      if (!confirm(`Finalize move-out for ${tenant.fullName}? The unit will become vacant and the tenant record will be archived.`)) return;
+      const settlement = buildSettlement('finalized');
+      await dbPut('moveoutSettlements', settlement);
+      queueRecordSync('moveoutSettlements', settlement);
+      await archiveMovedOutTenant({ ...tenant, moveOutDate: settlement.moveOutDate }, unit);
+      await refreshCache();
+      closeSheet();
+      showToast('Tenant moved out');
+      render();
+    });
+  });
 }
 
 /* --------------------------------- OVERDUE ---------------------------------- */
@@ -3177,8 +3400,8 @@ document.getElementById('searchBtn').addEventListener('click', () => {
 const portal = {
   app: null, auth: null, store: null,
   user: null, adminUid: null, tenantId: null, unitId: null,
-  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [], messages: [],
-  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents' | 'messages'
+  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [], messages: [], settlements: [],
+  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents' | 'messages' | 'settlement'
 };
 // True while portalRedeemInvite() is setting up a fresh account — see onPortalAuthChanged.
 let portalRedeeming = false;
@@ -3276,13 +3499,14 @@ async function onPortalAuthChanged(user) {
 }
 
 async function portalLoadData() {
-  const [tSnap, uSnap, paySnap, pendSnap, billSnap, msgSnap] = await Promise.all([
+  const [tSnap, uSnap, paySnap, pendSnap, billSnap, msgSnap, setSnap] = await Promise.all([
     portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('units').doc(portal.unitId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('payments').where('tenantId', '==', portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').where('portalUid', '==', portal.user.uid).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('utilityBills').where('tenantId', '==', portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('messages').where('tenantId', '==', portal.tenantId).get(),
+    portal.store.collection('users').doc(portal.adminUid).collection('moveoutSettlements').where('tenantId', '==', portal.tenantId).get(),
   ]);
   portal.tenant = tSnap.exists ? tSnap.data() : null;
   portal.unit = uSnap.exists ? uSnap.data() : null;
@@ -3298,14 +3522,22 @@ async function portalLoadData() {
   portal.messages = []; msgSnap.forEach(d => portal.messages.push(d.data()));
   portal.messages = portal.messages.filter(m => !m.deleted);
   portal.messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  portal.settlements = []; setSnap.forEach(d => portal.settlements.push(d.data()));
+  portal.settlements = portal.settlements.filter(s => !s.deleted).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 function portalUnreadMessageCount() {
   return portal.messages.filter(m => m.sender === 'admin' && !m.readByTenant).length;
 }
+/** A tenant only ever has (at most) one settlement — surfaced as soon as
+ *  the admin saves a draft, not just once it's finalized, so the tenant
+ *  isn't blindsided at the very end. See openMoveOutSettlementSheet. */
+function portalActiveSettlement() {
+  return portal.settlements[0] || null;
+}
 
 function portalRender() {
   document.getElementById('portalBackBtn').classList.toggle('show', portal.view !== 'login' && portal.view !== 'signup');
-  const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', utilities: 'Utility bills', documents: 'My documents', messages: 'Messages' };
+  const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', utilities: 'Utility bills', documents: 'My documents', messages: 'Messages', settlement: 'Move-out settlement' };
   document.getElementById('portalPageTitle').textContent = titles[portal.view] || 'Tenant Portal';
   if (portal.view === 'login') return portalRenderLogin();
   if (portal.view === 'signup') return portalRenderSignup();
@@ -3314,6 +3546,7 @@ function portalRender() {
   if (portal.view === 'utilities') return portalRenderUtilities();
   if (portal.view === 'documents') return portalRenderDocuments();
   if (portal.view === 'messages') return portalRenderMessages();
+  if (portal.view === 'settlement') return portalRenderSettlement();
 }
 
 /* ---------------------------- LOGIN / SIGNUP ---------------------------- */
@@ -3454,6 +3687,7 @@ function portalRenderDashboard() {
   const cardClass = balance <= 0 ? 'clear' : (isOverdue(rentBalance, rentDueDate) || isOverdue(elecBalance, elecDueDate) || isOverdue(waterBalance, waterDueDate) ? 'overdue' : '');
   const pendingCount = portal.pendingPayments.filter(p => p.status === 'pending').length;
   const hasUtilities = elecAmt > 0 || waterAmt > 0;
+  const settlement = portalActiveSettlement();
 
   document.getElementById('portalMain').innerHTML = `
     <div class="portal-balance-card ${cardClass}">
@@ -3469,6 +3703,7 @@ function portalRenderDashboard() {
       ${!hasUtilities ? `<div class="pb-sub">Rent is ${peso(rentAmt)}/mo</div>` : ''}
     </div>
     ${pendingCount ? `<div class="muted" style="margin:-10px 0 16px;">⏳ ${pendingCount} payment${pendingCount > 1 ? 's' : ''} waiting on your landlord's review</div>` : ''}
+    ${settlement ? `<div class="settings-item" id="p-settlement-btn" style="border:1px solid var(--rust);"><div><div class="si-title">Move-out settlement</div><div class="si-sub">${settlement.status === 'finalized' ? 'Final — ' + (settlement.netAmount >= 0 ? peso(settlement.netAmount) + ' refund' : peso(Math.abs(settlement.netAmount)) + ' owed') : 'Pending final review'}</div></div><span>🧾</span></div>` : ''}
     <div class="portal-actions">
       <button class="btn btn-accent" id="p-submit-payment-btn">Submit payment</button>
       <button class="btn btn-outline" id="p-history-btn">History</button>
@@ -3482,6 +3717,40 @@ function portalRenderDashboard() {
   document.getElementById('p-messages-btn').addEventListener('click', () => { portal.view = 'messages'; portalRender(); });
   document.getElementById('p-utilities-btn').addEventListener('click', () => { portal.view = 'utilities'; portalRender(); });
   document.getElementById('p-documents-btn').addEventListener('click', () => { portal.view = 'documents'; portalRender(); });
+  if (settlement) document.getElementById('p-settlement-btn').addEventListener('click', () => { portal.view = 'settlement'; portalRender(); });
+}
+
+/* -------------------------- MOVE-OUT SETTLEMENT (tenant) --------------------------
+   Read-only breakdown of the deposit vs. deductions — see
+   openMoveOutSettlementSheet on the admin side, which is the only thing
+   that ever writes to this. Shown as soon as a draft exists (labeled
+   "Pending final review") so the tenant isn't blindsided at the end, and
+   stays reachable even after the tenant's been archived, since
+   portalLoadData fetches straight by tenantId regardless of `active`. */
+function portalRenderSettlement() {
+  const settlement = portalActiveSettlement();
+  if (!settlement) {
+    document.getElementById('portalMain').innerHTML = emptyHTML('🧾', 'No settlement yet', 'Your landlord hasn\'t started a move-out settlement.');
+    return;
+  }
+  const net = settlement.netAmount;
+  const categoryLabel = { rent: 'Rent', utility: 'Utility', damage: 'Damage', other: 'Other' };
+  document.getElementById('portalMain').innerHTML = `
+    ${settlement.status === 'draft' ? `<div class="muted" style="margin-bottom:12px;">⏳ Pending final review — your landlord may still adjust this while inspecting the unit.</div>` : `<div class="muted" style="margin-bottom:12px;">✅ Finalized${settlement.finalizedAt ? ' on ' + new Date(settlement.finalizedAt).toLocaleDateString('en-PH') : ''}.</div>`}
+    <div class="kv-grid" style="margin-bottom:16px;">
+      <div class="kv"><div class="k">Deposit on file</div><div class="v">${peso(settlement.depositAmount)}</div></div>
+    </div>
+    <div class="section-label">Deductions</div>
+    ${(settlement.items || []).length ? `<div class="card-list">${settlement.items.map(i => `
+      <div class="row-card">
+        <div class="rc-main"><div class="rc-title">${escapeHTML(i.label)}</div><div class="rc-sub">${categoryLabel[i.category] || 'Other'}</div></div>
+        <div class="rc-amt">${peso(i.amount)}</div>
+      </div>`).join('')}</div>` : `<p class="muted">No deductions.</p>`}
+    <div class="kv-grid" style="margin-top:16px;">
+      <div class="kv"><div class="k">Total deductions</div><div class="v">${peso(settlement.totalDeductions)}</div></div>
+      <div class="kv"><div class="k">${net >= 0 ? 'You\'ll receive back' : 'You still owe'}</div><div class="v" style="color:${net >= 0 ? 'var(--peso)' : 'var(--rust)'}; font-weight:600;">${peso(Math.abs(net))}</div></div>
+    </div>
+  `;
 }
 
 /* -------------------------------- MESSAGES -------------------------------- */
