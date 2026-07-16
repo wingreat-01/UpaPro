@@ -283,6 +283,22 @@
 
   .divider{height:1px; background:var(--line); margin:16px 0;}
   .muted{color:var(--slate); font-size:.82rem;}
+
+  /* ------------------------------ ADMIN GATE -------------------------------
+     Full-screen sign-in shown before the admin dashboard is reachable at all.
+     Mirrors the tenant portal's login card visually. Hidden the moment
+     onCloudAuthStateChanged resolves to a signed-in user; stays up (showing
+     either a brief "checking" state or the login/signup form) otherwise. */
+  #adminGate{
+    position:fixed; inset:0; z-index:200; background:var(--paper);
+    display:flex; align-items:center; justify-content:center;
+    padding:24px 20px calc(24px + var(--safe-b)) 20px;
+  }
+  .admin-gate-card{width:100%; max-width:360px;}
+  .admin-gate-logo{
+    font-family:'Space Grotesk', sans-serif; font-weight:700; font-size:1.5rem;
+    text-align:center; margin-bottom:22px; color:var(--ink);
+  }
   a.settings-link, .settings-item{
     display:flex; align-items:center; justify-content:space-between;
     background:var(--card); border:1px solid var(--line); border-radius:12px;
@@ -454,6 +470,49 @@
 </style>
 </head>
 <body>
+
+<!-- ============================================================
+     ADMIN GATE — full-screen sign-in, shown before #app is ever
+     revealed. Uses the same Firebase Auth account as Cloud sync
+     (fbAuth), so signing in here IS signing in to sync — there's
+     no separate concept anymore. If Firebase isn't configured on
+     this deployment, the gate never shows and the app boots
+     straight into local-only mode, same as before this change.
+     ============================================================ -->
+<div id="adminGate">
+  <div class="admin-gate-card">
+    <div class="admin-gate-logo">UpaPro</div>
+
+    <div id="ag-checking">
+      <p class="muted" style="text-align:center;">Checking your session…</p>
+    </div>
+
+    <div id="ag-forms" style="display:none;">
+      <div id="ag-login-view">
+        <p class="muted" style="margin:0 0 14px;">Sign in to access your dashboard.</p>
+        <div class="field"><label>Email</label><input id="ag-email" type="email" autocomplete="email" inputmode="email"></div>
+        <div class="field"><label>Password</label><input id="ag-password" type="password" autocomplete="current-password"></div>
+        <div id="ag-error" style="color:var(--rust); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
+        <button class="btn btn-primary" id="ag-signin-btn">Sign in</button>
+        <div class="auth-loading-bar" id="ag-auth-loading-bar"><div class="auth-loading-bar-fill"></div></div>
+        <div class="divider"></div>
+        <button class="btn btn-outline" id="ag-goto-signup">Create account</button>
+      </div>
+
+      <div id="ag-signup-view" style="display:none;">
+        <p class="muted" style="margin:0 0 14px;">Create your admin account.</p>
+        <div class="field"><label>Email</label><input id="ag-signup-email" type="email" autocomplete="email" inputmode="email"></div>
+        <div class="field"><label>Password</label><input id="ag-signup-password" type="password" autocomplete="new-password" placeholder="At least 6 characters"></div>
+        <div id="ag-signup-error" style="color:var(--rust); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
+        <button class="btn btn-primary" id="ag-signup-btn">Create account</button>
+        <div class="auth-loading-bar" id="ag-signup-auth-loading-bar"><div class="auth-loading-bar-fill"></div></div>
+        <div class="divider"></div>
+        <button class="btn btn-outline" id="ag-back-to-login">Back to sign in</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="app">
 
   <header class="topbar">
@@ -760,6 +819,10 @@ const firebaseConfig = {
 const firebaseEnabled = !!firebaseConfig.apiKey;
 const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages'];
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
+// True while a tenant (or the admin, previewing) is inside the tenant
+// portal — see enterTenantPortalMode/exitTenantPortalMode. Stops the admin
+// gate from popping up on top of a portal session (see showAdminGateForms).
+let inTenantPortalMode = false;
 
 /* Supabase — Storage ONLY. Auth and the Firestore database stay on Firebase;
    this client is used purely for tenant document uploads (ID photos, signed
@@ -807,6 +870,7 @@ async function onCloudAuthStateChanged(user) {
   updateCloudSyncUI();
   if (cloudAutoTimer) { clearInterval(cloudAutoTimer); cloudAutoTimer = null; }
   if (user) {
+    hideAdminGate();
     // Pull/merge cloud data FIRST, then only seed a starter location if
     // this account genuinely has nothing anywhere yet. Seeding before the
     // pull (the old order) is exactly what caused deleted locations to
@@ -835,15 +899,85 @@ async function onCloudAuthStateChanged(user) {
     render();
     cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
   } else if (firebaseEnabled) {
-    // Signed out / never signed in — this device will never receive cloud
-    // data, so it's safe to seed a starter location right away.
-    await seedIfEmpty();
-    await refreshCache();
-    render();
+    // Signed out / never signed in — the gate is now the only thing on
+    // screen; no local-only fallback here anymore (that used to be the
+    // behavior, but the whole point of the gate is that #app is never
+    // reachable without an account).
+    showAdminGateForms();
   }
 }
 
 window.addEventListener('online', () => { if (fbUser) runFullCloudSync(false); });
+
+/* ------------------------------- ADMIN GATE --------------------------------
+   Full-screen sign-in shown before #app is reachable. Visible by default
+   (see CSS) so there's nothing to flash on load; onCloudAuthStateChanged
+   above hides it once a signed-in user is confirmed, or swaps it from the
+   "checking" placeholder to the login form once we know there isn't one.
+   Firebase Auth persists sessions locally (default LOCAL persistence), so
+   this only prompts again after an explicit sign-out or cleared site data —
+   not on every reload. */
+function hideAdminGate() {
+  document.getElementById('adminGate').style.display = 'none';
+}
+function showAdminGateForms() {
+  // Never let this pop up over a tenant's own portal session — the gate
+  // is only about admin access to #app, and portal auth is a completely
+  // separate Firebase app instance (see portal.app below) that this
+  // listener has no business reacting to.
+  if (inTenantPortalMode) return;
+  document.getElementById('adminGate').style.display = 'flex';
+  document.getElementById('ag-checking').style.display = 'none';
+  document.getElementById('ag-forms').style.display = 'block';
+  document.getElementById('ag-login-view').style.display = 'block';
+  document.getElementById('ag-signup-view').style.display = 'none';
+}
+
+document.getElementById('ag-signin-btn').addEventListener('click', async () => {
+  const email = document.getElementById('ag-email').value.trim();
+  const password = document.getElementById('ag-password').value;
+  const errEl = document.getElementById('ag-error');
+  const btn = document.getElementById('ag-signin-btn');
+  const bar = document.getElementById('ag-auth-loading-bar');
+  errEl.textContent = '';
+  if (!email || !password) { errEl.textContent = 'Enter your email and password.'; return; }
+  authLoadingStart(bar, btn);
+  try {
+    await fbAuth.signInWithEmailAndPassword(email, password);
+    // onCloudAuthStateChanged takes it from here (hides the gate, pulls
+    // cloud data, renders #app) — just let the bar finish.
+    authLoadingEnd(bar, btn, true);
+  } catch (err) {
+    authLoadingEnd(bar, btn, false);
+    errEl.textContent = cloudAuthErrorMessage(err);
+  }
+});
+document.getElementById('ag-goto-signup').addEventListener('click', () => {
+  document.getElementById('ag-login-view').style.display = 'none';
+  document.getElementById('ag-signup-view').style.display = 'block';
+});
+document.getElementById('ag-back-to-login').addEventListener('click', () => {
+  document.getElementById('ag-signup-view').style.display = 'none';
+  document.getElementById('ag-login-view').style.display = 'block';
+});
+document.getElementById('ag-signup-btn').addEventListener('click', async () => {
+  const email = document.getElementById('ag-signup-email').value.trim();
+  const password = document.getElementById('ag-signup-password').value;
+  const errEl = document.getElementById('ag-signup-error');
+  const btn = document.getElementById('ag-signup-btn');
+  const bar = document.getElementById('ag-signup-auth-loading-bar');
+  errEl.textContent = '';
+  if (!email || !password) { errEl.textContent = 'Enter an email and password.'; return; }
+  authLoadingStart(bar, btn);
+  try {
+    await fbAuth.createUserWithEmailAndPassword(email, password);
+    // onCloudAuthStateChanged takes it from here.
+    authLoadingEnd(bar, btn, true);
+  } catch (err) {
+    authLoadingEnd(bar, btn, false);
+    errEl.textContent = cloudAuthErrorMessage(err);
+  }
+});
 
 function updateCloudSyncUI() {
   const statusEl = document.getElementById('firebaseStatus');
@@ -851,20 +985,13 @@ function updateCloudSyncUI() {
   if (statusEl) {
     statusEl.textContent = !firebaseEnabled
       ? 'Not configured — running local-only'
-      : (fbUser ? `Signed in as ${fbUser.email}` : 'Not signed in — data stays on this device');
+      : (fbUser ? `Signed in as ${fbUser.email}` : 'Not signed in');
   }
   if (dotEl) dotEl.classList.toggle('on', !!fbUser);
-  const signedOut = document.getElementById('cs-signed-out');
-  const signedIn = document.getElementById('cs-signed-in');
-  if (!signedOut || !signedIn) return;
-  if (fbUser) {
-    signedOut.style.display = 'none';
-    signedIn.style.display = 'block';
-    document.getElementById('cs-account-email').textContent = fbUser.email;
-  } else {
-    signedOut.style.display = 'block';
-    signedIn.style.display = 'none';
-  }
+  // The Cloud sync sheet (if open) only ever shows the signed-in state now
+  // (see openCloudSyncSheet) — nothing else to toggle here.
+  const emailEl = document.getElementById('cs-account-email');
+  if (emailEl && fbUser) emailEl.textContent = fbUser.email;
 }
 
 /* Push of a single record right after a local write. Unlike the old
@@ -987,66 +1114,25 @@ function cloudAuthErrorMessage(err) {
   }
 }
 
+// Signing in/out now happens up-front at the admin gate (see ADMIN GATE
+// section below), not here — by the time this sheet can even be opened,
+// #app is visible, which means fbUser is guaranteed to be set. This sheet
+// is now just status + sign out + a manual sync trigger.
 function openCloudSyncSheet() {
   if (!firebaseEnabled) return showToast('Cloud sync isn\'t set up yet — see the Firebase Setup Checklist');
+  if (!fbUser) return; // shouldn't happen — the gate guarantees a signed-in user before #app shows
   openSheet(`
     <h2>Cloud sync</h2>
-    <div id="cs-signed-out">
-      <p style="color:var(--slate); font-size:.85rem; margin:0 0 14px;">Sign in to back up your data and keep it in sync across devices. Your data is private to your account.</p>
-      <div class="field"><label>Email</label><input id="cs-email" type="email" autocomplete="email" inputmode="email"></div>
-      <div class="field"><label>Password</label><input id="cs-password" type="password" autocomplete="current-password"></div>
-      <div id="cs-auth-error" style="color:var(--red,#B3261E); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
-      <div class="sheet-actions">
-        <button class="btn btn-outline" id="cs-signup-btn">Create account</button>
-        <button class="btn btn-primary" id="cs-signin-btn">Sign in</button>
-      </div>
-      <div class="auth-loading-bar" id="cs-auth-loading-bar"><div class="auth-loading-bar-fill"></div></div>
-    </div>
-    <div id="cs-signed-in" style="display:none;">
-      <div style="font-weight:600; margin-bottom:8px;" id="cs-account-email">—</div>
-      <div style="font-size:.82rem; color:var(--slate); margin-bottom:14px;" id="cs-sync-status">Not synced yet</div>
-      <div class="sheet-actions">
-        <button class="btn btn-outline" id="cs-signout-btn">Sign out</button>
-        <button class="btn btn-primary" id="cs-sync-now-btn">Sync now</button>
-      </div>
+    <div style="font-weight:600; margin-bottom:8px;" id="cs-account-email">${escapeHTML(fbUser.email)}</div>
+    <div style="font-size:.82rem; color:var(--slate); margin-bottom:14px;" id="cs-sync-status">Not synced yet</div>
+    <div class="sheet-actions">
+      <button class="btn btn-outline" id="cs-signout-btn">Sign out</button>
+      <button class="btn btn-primary" id="cs-sync-now-btn">Sync now</button>
     </div>
   `, () => {
-    updateCloudSyncUI();
-    document.getElementById('cs-signup-btn').addEventListener('click', async () => {
-      const email = document.getElementById('cs-email').value.trim();
-      const password = document.getElementById('cs-password').value;
-      const errEl = document.getElementById('cs-auth-error');
-      errEl.textContent = '';
-      if (!email || !password) { errEl.textContent = 'Enter an email and password.'; return; }
-      try {
-        await fbAuth.createUserWithEmailAndPassword(email, password);
-        showToast('Account created — syncing your data');
-        closeSheet();
-      } catch (err) { errEl.textContent = cloudAuthErrorMessage(err); }
-    });
-    document.getElementById('cs-signin-btn').addEventListener('click', async () => {
-      const email = document.getElementById('cs-email').value.trim();
-      const password = document.getElementById('cs-password').value;
-      const errEl = document.getElementById('cs-auth-error');
-      const btn = document.getElementById('cs-signin-btn');
-      const bar = document.getElementById('cs-auth-loading-bar');
-      errEl.textContent = '';
-      if (!email || !password) { errEl.textContent = 'Enter your email and password.'; return; }
-      authLoadingStart(bar, btn);
-      try {
-        await fbAuth.signInWithEmailAndPassword(email, password);
-        authLoadingEnd(bar, btn, true);
-        showToast('Signed in — syncing your data');
-        closeSheet();
-      } catch (err) {
-        authLoadingEnd(bar, btn, false);
-        errEl.textContent = cloudAuthErrorMessage(err);
-      }
-    });
     document.getElementById('cs-signout-btn').addEventListener('click', async () => {
       await fbAuth.signOut();
-      updateCloudSyncUI();
-      showToast('Signed out — data stays on this device');
+      // onCloudAuthStateChanged -> showAdminGate() takes it from here.
       closeSheet();
     });
     document.getElementById('cs-sync-now-btn').addEventListener('click', () => runFullCloudSync(true));
@@ -3066,14 +3152,28 @@ function initTenantFirebase() {
 
 function enterTenantPortalMode() {
   if (!firebaseEnabled) { showToast('Cloud sync isn\'t set up yet — the tenant portal needs it'); return; }
+  // Tenants opening the shared (?portal=1) link never have — and shouldn't
+  // need — an admin account, so the admin gate (which sits on top of
+  // everything at z-index 200) has to come down here too, not just #app.
+  inTenantPortalMode = true;
+  hideAdminGate();
   document.getElementById('app').style.display = 'none';
   document.getElementById('tenantPortal').style.display = 'block';
   initTenantFirebase();
   portalAuthUnsub = portal.auth.onAuthStateChanged(onPortalAuthChanged);
 }
 function exitTenantPortalMode() {
+  inTenantPortalMode = false;
   document.getElementById('tenantPortal').style.display = 'none';
-  document.getElementById('app').style.display = 'flex';
+  // A real tenant tapping "back" out of their portal has no admin session —
+  // land them on the gate, not the admin's own data. Only an already
+  // signed-in admin (previewing via Settings → "Open tenant portal") skips
+  // straight back to #app.
+  if (firebaseEnabled && !fbUser) {
+    showAdminGateForms();
+  } else {
+    document.getElementById('app').style.display = 'flex';
+  }
 }
 document.getElementById('portalBackBtn').addEventListener('click', () => {
   if (portal.view === 'dashboard') { exitTenantPortalMode(); return; }
@@ -4085,12 +4185,19 @@ async function cleanupPhantomSeed() {
 /* ----------------------------------- BOOT -------------------------------------- */
 (async function boot() {
   db = await openDB();
+  // The admin gate is visible by default (see CSS) so there's no dashboard
+  // flash while Firebase resolves whether anyone's signed in. If Firebase
+  // isn't configured on this deployment at all, there's no gate to show —
+  // drop straight into the old local-only behavior.
+  if (!firebaseEnabled) {
+    hideAdminGate();
+    await seedIfEmpty();
+  }
   // Only seed a starter location here if cloud sync isn't in play at all.
   // When Firebase is enabled, seeding is deferred to onCloudAuthStateChanged
   // — either right away (if this device turns out to be signed out) or
   // after the first pull/merge (if signed in) — so it never races a cloud
   // pull. See onCloudAuthStateChanged for why that race caused duplicates.
-  if (!firebaseEnabled) await seedIfEmpty();
   await refreshCache();
   render();
   initFirebase();
