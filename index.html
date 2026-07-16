@@ -564,6 +564,7 @@
     <section class="view" id="view-settings">
       <div class="section-label">Admin</div>
       <div class="settings-item" id="btnEditAdmin"><div><div class="si-title" id="adminNameDisplay">Owner</div><div class="si-sub">Single admin · v1</div></div><span class="settings-edit-btn">✏️ Edit</span></div>
+      <div class="settings-item" id="btnAdminSignOut" style="display:none;"><div><div class="si-title" style="color:var(--rust);">Sign out</div><div class="si-sub" id="adminSignOutEmail">&nbsp;</div></div><span>⏻</span></div>
 
       <div class="section-label">Data</div>
       <div class="settings-item" id="btnExport"><div><div class="si-title">Export backup (JSON)</div><div class="si-sub">Save a copy of all your data</div></div><span>⬇️</span></div>
@@ -992,6 +993,14 @@ function updateCloudSyncUI() {
   // (see openCloudSyncSheet) — nothing else to toggle here.
   const emailEl = document.getElementById('cs-account-email');
   if (emailEl && fbUser) emailEl.textContent = fbUser.email;
+  // Admin Settings gets its own always-visible "Sign out" row (separate from
+  // the Cloud sync sheet's) so signing out doesn't require drilling into
+  // Cloud sync first. Only shown once actually signed in — local-only mode
+  // has no account to sign out of.
+  const signOutRow = document.getElementById('btnAdminSignOut');
+  const signOutEmail = document.getElementById('adminSignOutEmail');
+  if (signOutRow) signOutRow.style.display = fbUser ? 'flex' : 'none';
+  if (signOutEmail && fbUser) signOutEmail.textContent = fbUser.email;
 }
 
 /* Push of a single record right after a local write. Unlike the old
@@ -3030,6 +3039,12 @@ function openAdminNameForm() {
 }
 document.getElementById('btnEditAdmin').addEventListener('click', openAdminNameForm);
 document.getElementById('btnCloudSync').addEventListener('click', openCloudSyncSheet);
+document.getElementById('btnAdminSignOut').addEventListener('click', async () => {
+  if (!fbUser) return;
+  if (!confirm('Sign out of UpaPro? You\'ll need to sign in again to reach your data.')) return;
+  await fbAuth.signOut();
+  // onCloudAuthStateChanged -> showAdminGateForms() takes it from here.
+});
 document.getElementById('btnExport').addEventListener('click', async () => {
   const data = {
     exportedAt: new Date().toISOString(), app: APP_ID,
@@ -3181,6 +3196,7 @@ document.getElementById('portalBackBtn').addEventListener('click', () => {
   portalRender();
 });
 document.getElementById('portalLogoutBtn').addEventListener('click', async () => {
+  if (!confirm('Sign out of your tenant portal?')) return;
   await portal.auth.signOut();
 });
 
