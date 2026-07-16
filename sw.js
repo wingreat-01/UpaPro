@@ -20,7 +20,7 @@
    simply queues and retries once back online.
    ========================================================= */
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `upapro-${CACHE_VERSION}`;
 
 const APP_SHELL = [
