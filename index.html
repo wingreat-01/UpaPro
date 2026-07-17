@@ -1269,6 +1269,15 @@ function paymentsForTenant(tenantId) {
   return state.cache.payments.filter(p => p.tenantId === tenantId)
     .sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
 }
+/** Sums every deposit-tagged payment logged for a tenant — this is what
+ *  the move-out settlement's "Deposit on file" now pre-fills from, so a
+ *  deposit logged via the payment form actually flows through instead of
+ *  relying on a separately-typed number. */
+function totalDepositPaid(tenantId) {
+  return state.cache.payments
+    .filter(p => p.tenantId === tenantId && p.tag === 'deposit')
+    .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
+}
 function amountPaidThisPeriod(tenantId, period) {
   return state.cache.payments
     .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit')
@@ -2174,7 +2183,7 @@ function renderUnitDetail(unitId) {
         <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
         <div class="kv-grid">
           <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
-          <div class="kv"><div class="k">Deposit</div><div class="v">${peso(tenant.depositAmount)}</div></div>
+          <div class="kv"><div class="k">Deposit</div><div class="v">${peso(totalDepositPaid(tenant.id))}</div></div>
           <div class="kv"><div class="k">${monthLabel(period)} paid</div><div class="v">${peso(paid)}</div></div>
           ${row ? chargeLineHTML('Rent', row.rent) : ''}
           ${row ? chargeLineHTML('⚡ Electricity', row.electricity) : ''}
@@ -2979,10 +2988,7 @@ function openTenantForm(existing, unitId) {
     <h2>${isEdit ? 'Edit tenant' : 'Assign tenant'}</h2>
     <div class="field"><label>Full name</label><input id="f-fullname" value="${isEdit ? escapeAttr(existing.fullName) : ''}" placeholder="Juan Dela Cruz"></div>
     <div class="field"><label>Contact number</label><input id="f-contact" value="${isEdit ? escapeAttr(existing.contactNumber || '') : ''}" placeholder="09xx xxx xxxx" inputmode="tel"></div>
-    <div class="field-row">
-      <div class="field"><label>Move-in date</label><input id="f-movein" type="date" value="${isEdit ? existing.moveInDate || '' : todayISO()}"></div>
-      <div class="field"><label>Deposit</label><input id="f-deposit" type="number" inputmode="decimal" value="${isEdit ? existing.depositAmount || '' : ''}" placeholder="0"></div>
-    </div>
+    <div class="field"><label>Move-in date</label><input id="f-movein" type="date" value="${isEdit ? existing.moveInDate || '' : todayISO()}"></div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
       <button class="btn btn-primary" id="btnSave">${isEdit ? 'Save changes' : 'Assign tenant'}</button>
@@ -2995,7 +3001,7 @@ function openTenantForm(existing, unitId) {
       obj.fullName = fullName;
       obj.contactNumber = document.getElementById('f-contact').value.trim();
       obj.moveInDate = document.getElementById('f-movein').value;
-      obj.depositAmount = Number(document.getElementById('f-deposit').value) || 0;
+      obj.depositAmount = existing ? (Number(existing.depositAmount) || 0) : 0;
       obj.notes = document.getElementById('f-notes').value.trim();
       obj.updatedAt = Date.now();
       await dbPut('tenants', obj);
@@ -3162,7 +3168,7 @@ function openMoveOutSettlementSheet(tenant, unit) {
   const items = existing
     ? { rent: 0, electricity: 0, water: 0, damage: 0, other: 0, ...existing.items }
     : { rent: suggested.rent, electricity: suggested.electricity, water: suggested.water, damage: 0, other: 0 };
-  const depositAmount0 = existing ? existing.depositAmount : (Number(tenant.depositAmount) || 0);
+  const depositAmount0 = existing ? existing.depositAmount : totalDepositPaid(tenant.id);
   const otherNote0 = existing ? (existing.otherNote || '') : '';
   const alreadyFinalized = !!(existing && existing.status === 'finalized');
 
