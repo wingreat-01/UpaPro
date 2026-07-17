@@ -561,7 +561,7 @@
 
     <!-- LOCATIONS LIST -->
     <section class="view" id="view-locations">
-      <div class="section-label">Your paupahan</div>
+      <div class="section-label">Your properties</div>
       <div class="card-list" id="locList"></div>
     </section>
 
@@ -615,7 +615,7 @@
 
   <nav class="bottomnav">
     <button data-nav="dashboard" class="active"><span class="ic">🏠</span>Dashboard</button>
-    <button data-nav="locations"><span class="ic">🏘️</span>Locations</button>
+    <button data-nav="locations"><span class="ic">🏘️</span>Properties</button>
     <button data-nav="overdue"><span class="ic">⏰</span>Overdue</button>
     <button data-nav="settings"><span class="ic">⚙️</span>Settings</button>
   </nav>
@@ -1818,7 +1818,7 @@ window.addEventListener('popstate', () => {
 
 /* --------------------------------- ROUTER ---------------------------------- */
 const TITLES = {
-  dashboard: 'UpaPro', locations: 'Locations', 'location-detail': 'Location',
+  dashboard: 'UpaPro', locations: 'Properties', 'location-detail': 'Location',
   'unit-detail': 'Unit', overdue: 'Overdue &amp; due soon', settings: 'Settings'
 };
 function navigateTo(view, params = {}, replace = false) {
