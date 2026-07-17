@@ -577,6 +577,7 @@
       <div class="detail-hero" id="unitHero"></div>
       <div id="unitTenantBlock"></div>
       <div id="unitUtilityBlock"></div>
+      <div id="unitHistoryBlock"></div>
       <div class="section-label">Payment history</div>
       <div class="card-list" id="unitPayments"></div>
     </section>
@@ -1511,6 +1512,16 @@ function settlementForTenant(tenantId) {
   // produced two records (e.g. a merge conflict), prefer the newest.
   return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
 }
+/** Every past (moved-out) tenant ever assigned to this unit, newest move-out
+ *  first — the full history behind the "Tenant history" sheet. Tenants are
+ *  never deleted on move-out, just flipped to active:false (see
+ *  archiveMovedOutTenant), so this is simply every inactive tenant on the
+ *  unit rather than a separate log. */
+function inactiveTenantsForUnit(unitId) {
+  return state.cache.tenants
+    .filter(t => t.unitId === unitId && !t.active)
+    .sort((a, b) => (b.moveOutDate || '').localeCompare(a.moveOutDate || ''));
+}
 /** Most recently moved-out tenant that was assigned to this unit — used to
  *  surface "view last tenant's settlement" once a unit goes vacant, since
  *  the vacant-unit view otherwise has no link back to the archived tenant. */
@@ -2224,6 +2235,13 @@ function renderUnitDetail(unitId) {
     document.getElementById('assignTenantBtn').addEventListener('click', () => openTenantForm(null, unit.id));
     if (lastSettlement) document.getElementById('viewLastSettlementBtn').addEventListener('click', () => openMoveOutSettlementSheet(lastTenant, unit));
   }
+
+  const history = inactiveTenantsForUnit(unit.id);
+  document.getElementById('unitHistoryBlock').innerHTML = history.length
+    ? `<div style="margin-top:${tenant ? '14px' : '0'};"><button class="btn btn-outline btn-sm" id="viewTenantHistoryBtn">🕑 Tenant history (${history.length})</button></div>`
+    : '';
+  const historyBtn = document.getElementById('viewTenantHistoryBtn');
+  if (historyBtn) historyBtn.addEventListener('click', () => openTenantHistorySheet(unit));
 
   const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' };
   const payments = paymentsForTenant(tenant ? tenant.id : '__none__');
@@ -3248,6 +3266,76 @@ function openMoveOutSettlementSheet(tenant, unit) {
       showToast('Tenant moved out');
       render();
     });
+  });
+}
+
+/* ---------------------------- TENANT HISTORY ----------------------------
+   Read-only look-back at every tenant who has ever moved out of a unit.
+   Tenants are archived in place (active:false) rather than deleted, so this
+   is just every inactive tenant on the unit, newest move-out first — see
+   inactiveTenantsForUnit(). Tapping a row drills into that one tenant's
+   stay: contact, dates, deposit, their move-out settlement (if any), and
+   their full payment log. */
+function openTenantHistorySheet(unit) {
+  const history = inactiveTenantsForUnit(unit.id);
+  openSheet(`
+    <h2>Tenant history — ${escapeHTML(unit.unitLabel)}</h2>
+    <div class="card-list">
+      ${history.length ? history.map(t => {
+        const settlement = settlementForTenant(t.id);
+        const statusChip = settlement
+          ? (settlement.status === 'finalized' ? '🧾 Settled' : '⏳ Draft settlement')
+          : 'No settlement on file';
+        return `
+        <div class="row-card" data-history-tenant="${t.id}">
+          <div class="rc-main">
+            <div class="rc-title">${escapeHTML(t.fullName)}</div>
+            <div class="rc-sub">${t.moveInDate || '—'} → ${t.moveOutDate || '—'} · ${statusChip}</div>
+          </div>
+        </div>`;
+      }).join('') : emptyHTML('🕑', 'No past tenants', 'Tenants who move out of this unit will show up here.')}
+    </div>
+  `, () => {
+    document.querySelectorAll('#sheetBody [data-history-tenant]').forEach(row =>
+      row.addEventListener('click', () => {
+        const t = history.find(x => x.id === row.dataset.historyTenant);
+        if (t) openTenantHistoryDetailSheet(t, unit);
+      }));
+  });
+}
+/** Detail view for a single past tenant, reached from openTenantHistorySheet.
+ *  Read-only summary plus jump-off points into their move-out settlement and
+ *  full payment log — both already keyed off tenantId so they work the same
+ *  for an archived tenant as for an active one. */
+function openTenantHistoryDetailSheet(tenant, unit) {
+  const settlement = settlementForTenant(tenant.id);
+  const payments = paymentsForTenant(tenant.id);
+  const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' };
+  openSheet(`
+    <h2>${escapeHTML(tenant.fullName)}</h2>
+    <div class="kv-grid">
+      <div class="kv"><div class="k">Contact</div><div class="v">${escapeHTML(tenant.contactNumber || '—')}</div></div>
+      <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
+      <div class="kv"><div class="k">Moved out</div><div class="v">${tenant.moveOutDate || '—'}</div></div>
+      <div class="kv"><div class="k">Deposit paid</div><div class="v">${peso(totalDepositPaid(tenant.id))}</div></div>
+    </div>
+    ${tenant.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(tenant.notes)}</div></div>` : ''}
+    ${settlement ? `<div style="margin-top:12px;"><button class="btn btn-outline btn-sm" id="hist-view-settlement">🧾 View move-out settlement</button></div>` : ''}
+    <div class="section-label" style="margin-top:16px;">Payment history</div>
+    <div class="card-list">
+      ${payments.length ? payments.map(p => `
+        <div class="row-card">
+          <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
+          <div class="rc-main">
+            <div class="rc-title">${p.tag === 'deposit' ? 'Deposit' : escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
+            <div class="rc-sub">${tagLabel[p.tag] || 'Rent'} · Paid ${p.datePaid || '—'}</div>
+          </div>
+          <div class="rc-amt">${peso(p.amountPaid)}</div>
+        </div>`).join('') : emptyHTML('🧾', 'No payments logged', '')}
+    </div>
+  `, () => {
+    const btn = document.getElementById('hist-view-settlement');
+    if (btn) btn.addEventListener('click', () => openMoveOutSettlementSheet(tenant, unit));
   });
 }
 
