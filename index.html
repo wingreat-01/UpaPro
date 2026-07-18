@@ -2026,7 +2026,7 @@ function renderLocations() {
 function openLocationForm(existing) {
   const isEdit = !!existing;
   openSheet(`
-    <h2>${isEdit ? 'Edit location' : 'Add location'}</h2>
+    <h2>${isEdit ? 'Edit property' : 'Add location'}</h2>
     <div class="field"><label>Name</label><input id="f-name" value="${isEdit ? escapeAttr(existing.name) : ''}" placeholder="e.g. Paupahan sa Maligaya St."></div>
     <div class="field"><label>Address</label><input id="f-address" value="${isEdit ? escapeAttr(existing.address || '') : ''}" placeholder="Street, barangay, city"></div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
@@ -2084,7 +2084,7 @@ function renderLocationDetail(locationId) {
       <div class="kv"><div class="k">Units</div><div class="v">${units.length}</div></div>
       <div class="kv"><div class="k">Occupied</div><div class="v">${occ} / ${units.length}</div></div>
     </div>
-    <div style="margin-top:12px;"><button class="btn btn-primary btn-sm" id="editLocBtn">✏️ Edit location</button></div>
+    <div style="margin-top:12px;"><button class="btn btn-primary btn-sm" id="editLocBtn">✏️ Edit property</button></div>
   `;
   document.getElementById('editLocBtn').addEventListener('click', () => openLocationForm(loc));
 
@@ -2386,6 +2386,12 @@ function openUtilityBillForm(tenant, unit, existingBill) {
   const waterRateDefault = water.rate != null ? water.rate : (lastUtilityRate(tenant.id, 'water') ?? unit.waterRate ?? 0);
   const elecDueDefault = existingBill && existingBill.electricityDueDate ? existingBill.electricityDueDate : defaultUtilityDueDate(tenant.id, 'electricityDueDate', period);
   const waterDueDefault = existingBill && existingBill.waterDueDate ? existingBill.waterDueDate : defaultUtilityDueDate(tenant.id, 'waterDueDate', period);
+  const elecInitialAmt = elecMode === 'submeter'
+    ? Math.round(Math.max(0, (elec.currReading != null ? elec.currReading : 0) - elecPrevDefault) * elecRateDefault)
+    : (elec.amount != null ? elec.amount : 0);
+  const waterInitialAmt = waterMode === 'submeter'
+    ? Math.round(Math.max(0, (water.currReading != null ? water.currReading : 0) - waterPrevDefault) * waterRateDefault)
+    : (water.amount != null ? water.amount : 0);
 
   const lineFieldsHTML = (kind, mode, line, prevDefault, rateDefault, unitLabel, rateLabel) => mode === 'submeter' ? `
     <div class="field-row">
@@ -2406,10 +2412,16 @@ function openUtilityBillForm(tenant, unit, existingBill) {
     <div class="field"><label>Period</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
     <div class="section-label" style="margin-top:4px;">⚡ Electricity ${elecMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
     ${lineFieldsHTML('elec', elecMode, elec, elecPrevDefault, elecRateDefault, 'kWh', "Meralco's rate (₱/kWh)")}
-    <div class="field"><label>Electricity due date</label><input id="f-elec-duedate" type="date" value="${elecDueDefault}"></div>
+    <div class="field-row">
+      <div class="field"><label>Total amount</label><input id="f-elec-total" type="text" value="${peso(elecInitialAmt)}" disabled></div>
+      <div class="field"><label>Electricity due date</label><input id="f-elec-duedate" type="date" value="${elecDueDefault}"></div>
+    </div>
     <div class="section-label">💧 Water ${waterMode === 'submeter' ? '· sub-metered' : '· flat amount'}</div>
     ${lineFieldsHTML('water', waterMode, water, waterPrevDefault, waterRateDefault, 'cu.m', 'Rate (₱/cu.m)')}
-    <div class="field"><label>Water due date</label><input id="f-water-duedate" type="date" value="${waterDueDefault}"></div>
+    <div class="field-row">
+      <div class="field"><label>Total amount</label><input id="f-water-total" type="text" value="${peso(waterInitialAmt)}" disabled></div>
+      <div class="field"><label>Water due date</label><input id="f-water-duedate" type="date" value="${waterDueDefault}"></div>
+    </div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existingBill.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
       ${isEdit ? `<button class="btn btn-danger" id="btnDelete">Delete</button>` : ''}
@@ -2429,8 +2441,10 @@ function openUtilityBillForm(tenant, unit, existingBill) {
       const amt = Math.round(consumed * rate);
       const kwhEl = document.getElementById(`f-${kind}-kwh`);
       const amtEl = document.getElementById(`f-${kind}-computed`);
+      const totalEl = document.getElementById(`f-${kind}-total`);
       if (kwhEl) kwhEl.value = consumed;
       if (amtEl) amtEl.textContent = peso(amt);
+      if (totalEl) totalEl.value = peso(amt);
     };
     if (elecMode === 'submeter') {
       recompute('elec', elecMode);
@@ -2441,6 +2455,16 @@ function openUtilityBillForm(tenant, unit, existingBill) {
       recompute('water', waterMode);
       ['f-water-prev', 'f-water-curr', 'f-water-rate'].forEach(id =>
         document.getElementById(id).addEventListener('input', () => recompute('water', waterMode)));
+    }
+    if (elecMode !== 'submeter') {
+      document.getElementById('f-elec-amount').addEventListener('input', (e) => {
+        document.getElementById('f-elec-total').value = peso(Number(e.target.value) || 0);
+      });
+    }
+    if (waterMode !== 'submeter') {
+      document.getElementById('f-water-amount').addEventListener('input', (e) => {
+        document.getElementById('f-water-total').value = peso(Number(e.target.value) || 0);
+      });
     }
     document.getElementById('btnSave').addEventListener('click', async () => {
       const p = document.getElementById('f-period').value.trim() || monthKey();
