@@ -1963,7 +1963,7 @@ function render() {
   const contractViewEl = document.getElementById('contractView');
   if (contractViewEl.style.display !== 'none') {
     contractViewEl.style.display = 'none';
-    document.getElementById('app').style.display = 'flex';
+    document.getElementById('app').style.display = '';
   }
   const { view, params } = currentRoute();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -3103,7 +3103,7 @@ function renderContractDoc(tenant, c) {
 
 function closeContractView() {
   document.getElementById('contractView').style.display = 'none';
-  document.getElementById('app').style.display = 'flex';
+  document.getElementById('app').style.display = '';
 }
 
 document.getElementById('contractBackBtn').addEventListener('click', closeContractView);
