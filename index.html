@@ -956,6 +956,37 @@ function docPublicUrl(path) {
   return data.publicUrl;
 }
 
+/* Signed-URL hydration for tenant-docs thumbnails/links ---------------------
+   tenant-docs is a private bucket now, so the `.url` saved on each record
+   (from docPublicUrl at upload time) 403s. Every record also saves
+   `.storagePath` alongside it, so render sites now emit a placeholder
+   (empty src/href + data-storage-path + data-fallback-url) instead of the
+   stale public URL, then call hydrateDocRefs(container) right after
+   inserting into the DOM. That mints a short-lived signed URL per element
+   and patches it in. Falls back to the old `.url` only if signing itself
+   fails (e.g. Supabase unreachable) — a possibly-broken link beats a blank
+   one. Safe to call on a container with zero matching elements. */
+async function hydrateDocRefs(root) {
+  if (!root || !sb) return;
+  const els = Array.from(root.querySelectorAll('[data-storage-path]'));
+  await Promise.all(els.map(async (el) => {
+    const path = el.dataset.storagePath;
+    let url = el.dataset.fallbackUrl || '';
+    if (path) {
+      try {
+        const { data, error } = await sb.storage.from(TENANT_DOCS_BUCKET).createSignedUrl(path, 3600);
+        if (error) throw error;
+        url = data.signedUrl;
+      } catch (err) {
+        console.warn('Could not create signed URL for', path, err);
+      }
+    }
+    if (!url) return;
+    if (el.tagName === 'IMG') { el.src = url; el.dataset.lightbox = url; }
+    else if (el.tagName === 'A') { el.href = url; }
+  }));
+}
+
 function initFirebase() {
   if (!firebaseEnabled) return;
   try {
@@ -2600,10 +2631,10 @@ function openPaymentDetailSheet(paymentId) {
     ? `<div class="muted" style="font-size:.82rem; margin-top:4px;">No proof of payment on file for this entry.</div>`
     : proofIsImage
       ? `<div class="proof-thumb-wrap" style="align-items:flex-start;">
-           <img class="proof-thumb" src="${proof.url}" data-lightbox="${escapeAttr(proof.url)}" alt="Payment proof" style="width:100%; height:220px; cursor:pointer;">
+           <img class="proof-thumb" src="" data-storage-path="${escapeAttr(proof.storagePath || '')}" data-fallback-url="${escapeAttr(proof.url || '')}" alt="Payment proof" style="width:100%; height:220px; cursor:pointer;">
            <div class="proof-thumb-label">Tap to enlarge</div>
          </div>`
-      : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
+      : `<a class="proof-file-chip" href="#" data-storage-path="${escapeAttr(proof.storagePath || '')}" data-fallback-url="${escapeAttr(proof.url || '')}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
 
   const isTenantSubmitted = p.source === 'portal';
 
@@ -2634,8 +2665,9 @@ function openPaymentDetailSheet(paymentId) {
       <button class="btn btn-danger" id="btnDeletePayment">Delete this record</button>
     </div>`}
   `, () => {
-    const img = document.querySelector('#sheetBody [data-lightbox]');
-    if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+    hydrateDocRefs(document.getElementById('sheetBody'));
+    const img = document.querySelector('#sheetBody .proof-thumb');
+    if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox || img.dataset.fallbackUrl));
     if (isTenantSubmitted) return; // no edit/delete wiring needed
     const editBtn = document.getElementById('btnEditPayment');
     if (editBtn) editBtn.addEventListener('click', () => {
@@ -2713,10 +2745,10 @@ function openTenantDocumentsSheet(tenant) {
     const isImage = !/\.pdf$/i.test(doc.name || '');
     const body = isImage
       ? `<div class="proof-thumb-wrap" style="align-items:flex-start;">
-           <img class="proof-thumb" src="${doc.url}" data-lightbox="${escapeAttr(doc.url)}" alt="${escapeAttr(label)}" style="width:100%; height:220px; cursor:pointer;">
+           <img class="proof-thumb" src="" data-storage-path="${escapeAttr(doc.storagePath || '')}" data-fallback-url="${escapeAttr(doc.url || '')}" alt="${escapeAttr(label)}" style="width:100%; height:220px; cursor:pointer;">
            <div class="proof-thumb-label">Tap to enlarge</div>
          </div>`
-      : `<a class="proof-file-chip" href="${doc.url}" target="_blank" rel="noopener">📄 View file (${escapeHTML(doc.name || 'file')})</a>`;
+      : `<a class="proof-file-chip" href="#" data-storage-path="${escapeAttr(doc.storagePath || '')}" data-fallback-url="${escapeAttr(doc.url || '')}" target="_blank" rel="noopener">📄 View file (${escapeHTML(doc.name || 'file')})</a>`;
     const uploaded = doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString('en-PH') : null;
     return `<div class="field"><label>${escapeHTML(label)}${uploaded ? ` · uploaded ${uploaded}` : ''}</label>${body}</div>`;
   }).join('');
@@ -2724,8 +2756,9 @@ function openTenantDocumentsSheet(tenant) {
     <h2>${escapeHTML(tenant.fullName)}'s documents</h2>
     ${blocks}
   `, () => {
-    document.querySelectorAll('#sheetBody [data-lightbox]').forEach(img =>
-      img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox)));
+    hydrateDocRefs(document.getElementById('sheetBody'));
+    document.querySelectorAll('#sheetBody .proof-thumb').forEach(img =>
+      img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox || img.dataset.fallbackUrl)));
     const viewBtn = document.getElementById('viewSignedContractBtn');
     if (viewBtn) viewBtn.addEventListener('click', () => {
       closeSheet();
@@ -3002,7 +3035,7 @@ function buildContractMarkup(tenant, c, signature) {
   const month = c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').toLocaleDateString('en-US', { month: 'long' }) : '________';
   const year = c.dateSigned ? new Date(c.dateSigned + 'T00:00:00').getFullYear() : '____';
   const lesseeSigBlock = signature
-    ? `<div class="cd-sig-imgwrap"><img src="${signature.url}" alt="Lessee e-signature" class="cd-sig-img"></div>
+    ? `<div class="cd-sig-imgwrap"><img src="" data-storage-path="${escapeAttr(signature.storagePath || '')}" data-fallback-url="${escapeAttr(signature.url || '')}" alt="Lessee e-signature" class="cd-sig-img"></div>
        <div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div>
        <div class="cd-sig-role">LESSEE</div>`
     : `<div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div>`;
@@ -3055,6 +3088,7 @@ function buildContractMarkup(tenant, c, signature) {
    signature, not just a blank line. */
 function renderContractDoc(tenant, c) {
   document.getElementById('contractDoc').innerHTML = buildContractMarkup(tenant, c, tenant.leaseSignature || null);
+  hydrateDocRefs(document.getElementById('contractDoc'));
   document.getElementById('app').style.display = 'none';
   document.getElementById('contractView').style.display = 'flex';
 }
@@ -3559,14 +3593,14 @@ function renderPendingReviewsList() {
       ? `<div class="proof-missing">⚠️ No proof attached — verify with the tenant before approving</div>`
       : proofIsImage
         ? `<div class="proof-thumb-wrap">
-             <img class="proof-thumb" src="${proof.url}" data-lightbox="${escapeAttr(proof.url)}" alt="Payment proof">
+             <img class="proof-thumb" src="" data-storage-path="${escapeAttr(proof.storagePath || '')}" data-fallback-url="${escapeAttr(proof.url || '')}" alt="Payment proof">
              <div class="proof-thumb-label">Proof</div>
            </div>`
-        : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 Proof (${escapeHTML(proof.name || 'file')})</a>`;
+        : `<a class="proof-file-chip" href="#" data-storage-path="${escapeAttr(proof.storagePath || '')}" data-fallback-url="${escapeAttr(proof.url || '')}" target="_blank" rel="noopener">📄 Proof (${escapeHTML(proof.name || 'file')})</a>`;
 
     const idPhotoBlock = idPhoto
       ? `<div class="proof-thumb-wrap">
-           <img class="proof-thumb" src="${idPhoto.url}" data-lightbox="${escapeAttr(idPhoto.url)}" alt="Tenant ID on file">
+           <img class="proof-thumb" src="" data-storage-path="${escapeAttr(idPhoto.storagePath || '')}" data-fallback-url="${escapeAttr(idPhoto.url || '')}" alt="Tenant ID on file">
            <div class="proof-thumb-label">ID on file</div>
          </div>`
       : '';
@@ -3591,7 +3625,8 @@ function renderPendingReviewsList() {
   }).join('') : emptyHTML('✅', 'All caught up', 'No payment proofs waiting for review.');
   list.querySelectorAll('[data-approve]').forEach(btn => btn.addEventListener('click', () => approvePendingPayment(btn.dataset.approve)));
   list.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => rejectPendingPayment(btn.dataset.reject)));
-  list.querySelectorAll('[data-lightbox]').forEach(img => img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox)));
+  list.querySelectorAll('.proof-thumb').forEach(img => img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox || img.dataset.fallbackUrl)));
+  hydrateDocRefs(list);
 }
 async function approvePendingPayment(id) {
   const p = state.cache.pendingPayments.find(x => x.id === id);
@@ -4400,10 +4435,10 @@ function portalOpenPaymentDetailSheet(r, isClaim) {
     ? `<div class="muted" style="font-size:.82rem; margin-top:4px;">No proof of payment was attached to this submission.</div>`
     : proofIsImage
       ? `<div class="proof-thumb-wrap" style="align-items:flex-start;">
-           <img class="proof-thumb" src="${proof.url}" data-lightbox="${escapeAttr(proof.url)}" alt="Payment proof" style="width:100%; height:220px; cursor:pointer;">
+           <img class="proof-thumb" src="" data-storage-path="${escapeAttr(proof.storagePath || '')}" data-fallback-url="${escapeAttr(proof.url || '')}" alt="Payment proof" style="width:100%; height:220px; cursor:pointer;">
            <div class="proof-thumb-label">Tap to enlarge</div>
          </div>`
-      : `<a class="proof-file-chip" href="${proof.url}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
+      : `<a class="proof-file-chip" href="#" data-storage-path="${escapeAttr(proof.storagePath || '')}" data-fallback-url="${escapeAttr(proof.url || '')}" target="_blank" rel="noopener">📄 View proof (${escapeHTML(proof.name || 'file')})</a>`;
   const statusLabel = isClaim ? (r.status === 'pending' ? 'Waiting on review' : 'Rejected') : (r.status || 'paid').toUpperCase();
 
   portalOpenSheet(`
@@ -4429,8 +4464,9 @@ function portalOpenPaymentDetailSheet(r, isClaim) {
              </div>`
           : `<p class="muted" style="font-size:.8rem; margin-top:10px;">Logged by your landlord — not editable here.</p>`)}
   `, () => {
-    const img = document.querySelector('#portalSheetBody [data-lightbox]');
-    if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox));
+    hydrateDocRefs(document.getElementById('portalSheetBody'));
+    const img = document.querySelector('#portalSheetBody .proof-thumb');
+    if (img) img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox || img.dataset.fallbackUrl));
     const delBtn = document.getElementById('pp-delete-btn');
     if (delBtn) delBtn.addEventListener('click', () => portalDeletePaymentClaim(r));
     const editPayBtn = document.getElementById('pp-edit-payment-btn');
@@ -4653,7 +4689,7 @@ function portalRenderDocSlots(tenant) {
         <div class="doc-icon">${icon}</div><div class="doc-label">${escapeHTML(label)}</div>
         <div class="doc-name">${escapeHTML(doc.name || '')}</div>
         <div class="doc-actions">
-          <a href="${doc.url}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">View</a>
+          <a href="#" data-storage-path="${escapeAttr(doc.storagePath || '')}" data-fallback-url="${escapeAttr(doc.url || '')}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">View</a>
           <button class="btn btn-outline btn-sm" data-slot="${slot}">Replace</button>
         </div></div>`;
     }
@@ -4662,6 +4698,7 @@ function portalRenderDocSlots(tenant) {
       <div class="doc-actions"><button class="btn btn-primary btn-sm" data-slot="${slot}">Add</button></div>
     </div>`;
   }).join('');
+  hydrateDocRefs(wrap);
   wrap.querySelectorAll('button[data-slot]').forEach(btn => {
     btn.addEventListener('click', () => portalPickAndUploadDoc(btn.dataset.slot));
   });
@@ -4751,7 +4788,7 @@ function portalOpenContractView(tenant) {
   portalOpenSheet(`
     <h2>Your lease contract</h2>
     <div class="cd-preview-box"><div class="contract-doc">${buildContractMarkup(tenant, c, tenant.leaseSignature || null)}</div></div>
-  `);
+  `, () => hydrateDocRefs(document.getElementById('portalSheetBody')));
 }
 
 /* Review-then-sign flow: shows the same contract read-only, then a
