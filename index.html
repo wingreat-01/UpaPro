@@ -2339,8 +2339,24 @@ function renderUnitUtilityBlock(tenant, unit) {
   const wrap = document.getElementById('unitUtilityBlock');
   const elecAmt = bill ? utilityLineAmount(bill.electricity) : null;
   const waterAmt = bill ? utilityLineAmount(bill.water) : null;
+  const pastBills = utilityBillsForTenant(tenant.id).filter(b => b.period !== period);
+  // A bill counts as paid once both lines are fully covered by logged
+  // payments this period — same amountPaidForCharge split used by the
+  // dashboard, so this matches the overdue/due-soon logic exactly rather
+  // than drifting into its own definition of "paid".
+  let isPaid = false;
+  if (bill && (elecAmt || waterAmt)) {
+    const weights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
+    const elecPaid = amountPaidForCharge(tenant.id, period, 'electricity', weights);
+    const waterPaid = amountPaidForCharge(tenant.id, period, 'water', weights);
+    isPaid = elecPaid >= elecAmt && waterPaid >= waterAmt;
+  }
+  const pastBillsBtn = pastBills.length ? `<button class="btn btn-outline btn-sm" id="pastUtilityBillsBtn">🕑 Past bills (${pastBills.length})</button>` : '';
   wrap.innerHTML = `
-    <div class="section-label" style="margin-top:14px;">${monthLabel(period)} utility bill</div>
+    <div class="section-label" style="margin-top:14px; display:flex; align-items:center; justify-content:space-between;">
+      <span>${monthLabel(period)} utility bill</span>
+      ${isPaid ? `<span class="stamp small" style="--c:var(--peso);">PAID</span>` : ''}
+    </div>
     <div class="detail-hero">
       ${bill ? `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:16px;">
@@ -2348,21 +2364,90 @@ function renderUnitUtilityBlock(tenant, unit) {
             <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}${bill.electricityDueDate ? ` <span class="muted" style="font-size:.72rem;">· due ${bill.electricityDueDate}</span>` : ''}</div></div>
             <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}${bill.waterDueDate ? ` <span class="muted" style="font-size:.72rem;">· due ${bill.waterDueDate}</span>` : ''}</div></div>
           </div>
-          <div style="text-align:right; flex-shrink:0; background:var(--amber-soft); border-radius:12px; padding:10px 16px;">
-            <div class="k" style="font-size:.72rem; color:var(--amber);">Total</div>
-            <div style="font-size:1.6rem; font-weight:700; line-height:1.2; color:var(--amber);">${peso(elecAmt + waterAmt)}</div>
+          <div style="text-align:right; flex-shrink:0; background:${isPaid ? 'var(--peso-soft)' : 'var(--amber-soft)'}; border-radius:12px; padding:10px 16px;">
+            <div class="k" style="font-size:.72rem; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">Total</div>
+            <div style="font-size:1.6rem; font-weight:700; line-height:1.2; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">${peso(elecAmt + waterAmt)}</div>
           </div>
         </div>
-        <div style="display:flex; gap:8px; margin-top:14px;">
+        <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;">
           <button class="btn btn-primary btn-sm" id="editUtilityBillBtn">✏️ Edit bill</button>
+          ${pastBillsBtn}
         </div>
       ` : `
         <p class="muted" style="font-size:.85rem;">No utility bill entered for ${monthLabel(period)} yet.</p>
-        <div style="margin-top:10px;"><button class="btn btn-accent btn-sm" id="addUtilityBillBtn">Add this month's bill</button></div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-accent btn-sm" id="addUtilityBillBtn">Add this month's bill</button>
+          ${pastBillsBtn}
+        </div>
       `}
     </div>`;
   const btn = document.getElementById(bill ? 'editUtilityBillBtn' : 'addUtilityBillBtn');
   if (btn) btn.addEventListener('click', () => openUtilityBillForm(tenant, unit, bill));
+  const pastBtn = document.getElementById('pastUtilityBillsBtn');
+  if (pastBtn) pastBtn.addEventListener('click', () => openPastUtilityBillsSheet(pastBills));
+}
+
+/** List of a tenant's previous (non-current-period) utility bills — the
+ *  admin-side equivalent of the tenant portal's utility history, so past
+ *  readings/rates/due-dates stay checkable after a bill is paid instead of
+ *  only living in the Payment History amounts. */
+function openPastUtilityBillsSheet(bills) {
+  const rows = bills.map(b => {
+    const elecAmt = utilityLineAmount(b.electricity);
+    const waterAmt = utilityLineAmount(b.water);
+    return `<div class="row-card" data-past-bill="${b.id}">
+      <div class="rc-main">
+        <div class="rc-title">${escapeHTML(monthLabel(b.period))}</div>
+        <div class="rc-sub">⚡ ${peso(elecAmt)} · 💧 ${peso(waterAmt)}</div>
+      </div>
+      <div class="rc-amt">${peso(elecAmt + waterAmt)}</div>
+    </div>`;
+  }).join('');
+  openSheet(`
+    <h2>Past utility bills</h2>
+    <div class="card-list">${rows}</div>
+  `, () => {
+    document.querySelectorAll('#sheetBody [data-past-bill]').forEach(row =>
+      row.addEventListener('click', () => openUtilityBillDetailSheet(bills.find(b => b.id === row.dataset.pastBill))));
+  });
+}
+
+/* Read-only breakdown for one past month's utility bill — admin-side twin
+ *  of portalOpenUtilityBillDetailSheet (same layout), reached from "Past
+ *  bills" instead of the tenant portal. */
+function openUtilityBillDetailSheet(bill) {
+  if (!bill) return;
+  const lineBlock = (label, icon, line, unitLabel, rateLabel) => {
+    if (!line) return '';
+    if (line.mode === 'submeter') {
+      const prev = Number(line.prevReading) || 0;
+      const curr = Number(line.currReading) || 0;
+      const used = Math.max(0, curr - prev);
+      return `
+        <div class="section-label" style="margin-top:14px;">${icon} ${label}</div>
+        <div class="field-row">
+          <div class="field"><label>Previous reading</label><div class="rc-title">${prev}</div></div>
+          <div class="field"><label>Current reading</label><div class="rc-title">${curr}</div></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Total ${unitLabel} used</label><div class="rc-title">${used} ${unitLabel}</div></div>
+          <div class="field"><label>${rateLabel}</label><div class="rc-title">₱${(Number(line.rate) || 0).toFixed(2)}</div></div>
+        </div>
+        <div class="field"><label>Amount</label><div class="rc-title">${peso(utilityLineAmount(line))}</div></div>`;
+    }
+    return `
+      <div class="section-label" style="margin-top:14px;">${icon} ${label}</div>
+      <div class="field"><label>Amount</label><div class="rc-title">${peso(utilityLineAmount(line))}</div></div>`;
+  };
+  openSheet(`
+    <h2>${escapeHTML(monthLabel(bill.period))} utility bill</h2>
+    ${lineBlock('Electricity', '⚡', bill.electricity, 'kWh', "Meralco's rate (₱/kWh)")}
+    ${lineBlock('Water', '💧', bill.water, 'cu.m', 'Rate (₱/cu.m)')}
+    <div class="field" style="margin-top:14px; padding-top:10px; border-top:1px solid rgba(41,37,32,.12);">
+      <label>Total</label><div class="rc-title" style="font-size:1.4rem; font-weight:700;">${peso(utilityLineAmount(bill.electricity) + utilityLineAmount(bill.water))}</div>
+    </div>
+    ${bill.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(bill.notes)}</div></div>` : ''}
+  `);
 }
 
 /** Add/edit a tenant's utility bill for a given period. Each of electricity
