@@ -474,6 +474,69 @@
   .sigpad-canvas{ width:100%; height:160px; display:block; touch-action:none; }
   .sigpad-hint{ position:absolute; left:14px; right:14px; bottom:30px; border-top:1px dashed var(--line); font-size:.7rem; color:var(--slate); text-align:center; padding-top:3px; pointer-events:none; }
 
+  /* ==========================================================
+     DESKTOP / WIDE LAYOUT (>=860px)
+     Mobile markup is untouched below this breakpoint — same
+     header/main/nav/fab elements, just re-laid-out with grid.
+     Sidebar replaces bottom nav; content gets a comfortable
+     reading width instead of stretching edge-to-edge.
+     ========================================================== */
+  @media (min-width:860px){
+    body{ background:var(--paper-2); }
+    #app{
+      max-width:none; min-height:100vh;
+      display:grid;
+      grid-template-columns:236px minmax(0,1fr);
+      grid-template-rows:auto 1fr;
+      grid-template-areas:"sidebar header" "sidebar main";
+    }
+
+    /* ---- sidebar (was bottomnav) ---- */
+    nav.bottomnav{
+      grid-area:sidebar; position:sticky; top:0; height:100vh;
+      flex-direction:column; align-items:stretch; justify-content:flex-start;
+      gap:2px; padding:22px 12px; border-top:none; border-right:1px solid var(--line);
+      overflow-y:auto;
+    }
+    nav.bottomnav::before{
+      content:"UpaPro"; font-family:'Space Grotesk',system-ui,sans-serif;
+      font-size:1.05rem; font-weight:700; color:var(--paper);
+      padding:0 10px 18px;
+    }
+    nav.bottomnav button{
+      flex-direction:row; justify-content:flex-start; align-items:center;
+      gap:12px; padding:11px 12px; border-radius:10px; font-size:.85rem;
+      text-align:left;
+    }
+    nav.bottomnav button:hover{ background:rgba(247,243,236,.06); }
+    nav.bottomnav button.active{ background:var(--amber); color:var(--ink); }
+    nav.bottomnav button.active .ic{ color:var(--ink); }
+    nav.bottomnav button .ic{ font-size:1.1rem; }
+
+    /* ---- header spans only the content column ---- */
+    header.topbar{ grid-area:header; }
+
+    /* ---- main content: readable column, not edge-to-edge ---- */
+    main{
+      grid-area:main; padding:28px 32px 56px;
+      max-width:760px; width:100%; margin:0; overflow-y:auto;
+    }
+
+    /* more breathing room + columns now that width allows it */
+    .stat-grid{ grid-template-columns:repeat(4,1fr); gap:12px; }
+    .stat-card.wide{ grid-column:1/-1; }
+
+    /* card lists: let rows flow into two columns where it's a
+       browsing list (properties/units/overdue), keep single
+       column where order matters (payment history, search, etc.) */
+    #dashOverdue, #locList, #unitList, #overdueFull{
+      display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+      gap:10px;
+    }
+
+    .fab{ right:32px; bottom:32px; }
+  }
+
   @media print{
     @page{ size: letter; margin: 1in; }
     #app, #tenantPortal, .sheet-backdrop, .toast, .update-banner, #imgLightboxBackdrop, .no-print{
