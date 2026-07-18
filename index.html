@@ -1957,6 +1957,14 @@ document.querySelectorAll('.bottomnav button').forEach(btn => {
 });
 
 function render() {
+  // Any real navigation (sidebar/bottomnav/backBtn) should back out of the
+  // full-screen contract view even if the user didn't tap its own ← button
+  // — otherwise #app stays hidden behind #contractView until a hard refresh.
+  const contractViewEl = document.getElementById('contractView');
+  if (contractViewEl.style.display !== 'none') {
+    contractViewEl.style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+  }
   const { view, params } = currentRoute();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + view).classList.add('active');
