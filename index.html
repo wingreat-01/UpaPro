@@ -18,8 +18,10 @@
 <script src="./index_files/firebase-auth-compat.js.download"></script>
 <script src="./index_files/firebase-firestore-compat.js.download"></script>
 <!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
-     now lives on Supabase Storage instead of Firebase Storage. -->
-<script src="./index_files/supabase.min.js.download"></script>
+     now lives on Supabase Storage instead of Firebase Storage.
+     supabase.min.js REMOVED — the browser no longer talks to Supabase
+     directly at all; storageProxyCall() just fetch()es the storage-proxy
+     Worker, which is the only thing holding a Supabase credential now. -->
 <style>
   :root{
     --ink:#1C2B33;
@@ -941,67 +943,100 @@ const firebaseConfig = {
   appId: "1:177340239376:web:80806c92272103f4770495"
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
-// Gate on the "Create account" signup form — anyone with this code can
-// self-register a full admin account for THIS deployment, so it's the
-// only thing standing between "found the URL" and full data access.
-// Change this to a unique code per client before handing off their
-// deployment, and share it only with that client's owners.
-const ADMIN_INVITE_CODE = "1111-4444";
+// Admin signup now goes through a real Firestore-backed adminInvites/{code}
+// doc (see ag-signup-btn handler below) instead of one shared hardcoded
+// string — each client gets their own single-use code, created in the
+// Firebase console, and firestore.rules is what actually enforces this
+// (a client-side-only check can be skipped via devtools). The old
+// ADMIN_INVITE_CODE constant is gone; there's nothing to edit here per
+// client anymore.
 const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages', 'moveoutSettlements'];
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
+// Unsubscribe handle for the admin auth-state listener — detached during
+// signup so onCloudAuthStateChanged can't fire (and start pulling cloud
+// data) before the admins/{uid} link doc has actually been created. Same
+// pattern as portalAuthUnsub/portalRedeeming below for the tenant portal.
+let cloudAuthUnsub = null;
 // True while a tenant (or the admin, previewing) is inside the tenant
 // portal — see enterTenantPortalMode/exitTenantPortalMode. Stops the admin
 // gate from popping up on top of a portal session (see showAdminGateForms).
 let inTenantPortalMode = false;
 
-/* Supabase — Storage ONLY. Auth and the Firestore database stay on Firebase;
-   this client is used purely for tenant document uploads (ID photos, signed
-   contracts) and their public-but-unguessable-path download URLs. There is
-   no Supabase Auth session here — sb.auth is never touched. */
-const supabaseConfig = {
-  url: "https://rwtnjxqmlmvzxuzdsaas.supabase.co",
-  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dG5qeHFtbG12enh1emRzYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3MjEwNzYsImV4cCI6MjA5OTI5NzA3Nn0.E2hayd8U1A2J4LMFS0aWmMcAiA7PDs2HpQyD_9UIx9c" // Settings → API → Project API keys → anon/public, in your Supabase dashboard
-};
-const supabaseStorageEnabled = !!supabaseConfig.url && supabaseConfig.url.indexOf('YOUR-PROJECT') === -1;
-const TENANT_DOCS_BUCKET = 'tenant-docs';
-let sb = null;
+/* Storage proxy — Storage ONLY. Auth and the Firestore database stay on
+   Firebase; file uploads (ID photos, signed contracts, payment proofs) and
+   their signed download URLs go through a small Cloudflare Worker instead
+   of talking to Supabase directly.
+   The old setup handed every visitor the same Supabase anon key, and
+   Storage had no compute layer of its own to check who was actually
+   asking — so that one shared key could read or write ANY tenant's files,
+   not just the caller's own. The Worker closes that gap: it verifies the
+   caller's Firebase ID token (and, for an admin viewing a tenant's file,
+   that the admin actually owns that tenant in Firestore) before it will
+   mint a signed URL or touch Storage with the service-role key. Supabase
+   Storage itself is locked down to default-deny (service_role only) — see
+   storage-proxy/README.md for the Worker source, deployment steps, and the
+   SQL to drop the old permissive policies. */
+const STORAGE_PROXY_URL = "https://upapro-storage-proxy.chad-workwithme.workers.dev"; // fill in with your deployed Worker URL — see storage-proxy/README.md
+const storageProxyEnabled = !!STORAGE_PROXY_URL && STORAGE_PROXY_URL.indexOf('YOUR-WORKER') === -1;
 
-function initSupabaseStorage() {
-  if (!supabaseStorageEnabled) return;
-  try {
-    if (typeof supabase === 'undefined') return;
-    sb = supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
-  } catch (err) {
-    console.warn('Supabase Storage init failed', err);
-  }
+// Whichever Firebase Auth instance is currently signed in — admin (fbAuth
+// via the default app) or tenant portal (portal.auth) — supplies the ID
+// token the Worker checks. Exactly one of these is ever populated at once.
+function storageProxyUser() {
+  return (portal.auth && portal.auth.currentUser) || (fbAuth && fbAuth.currentUser) || null;
 }
 
-function docPublicUrl(path) {
-  const { data } = sb.storage.from(TENANT_DOCS_BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+async function storageProxyCall(action, path, extra) {
+  if (!storageProxyEnabled) throw new Error('SUPABASE_NOT_CONFIGURED');
+  const user = storageProxyUser();
+  if (!user) throw new Error('NOT_SIGNED_IN');
+  const token = await user.getIdToken();
+  const res = await fetch(STORAGE_PROXY_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ action, path, ...extra }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `STORAGE_PROXY_${res.status}`);
+  return body;
+}
+
+// Uploads go through a signed-upload URL the Worker mints (via Supabase's
+// createSignedUploadUrl, service-role only) — the file itself still goes
+// straight from the browser to Supabase, the Worker just vouches for it.
+async function storageProxyUpload(path, fileOrBlob, contentType) {
+  const type = contentType || fileOrBlob.type || 'application/octet-stream';
+  const { signedUrl } = await storageProxyCall('upload', path, { contentType: type });
+  const putRes = await fetch(signedUrl, { method: 'PUT', headers: { 'Content-Type': type }, body: fileOrBlob });
+  if (!putRes.ok) throw new Error('UPLOAD_FAILED');
+}
+
+// Best-effort, fire-and-forget cleanup — matches how the old direct
+// Supabase remove() calls were used, never blocking on success.
+function storageProxyDelete(path) {
+  return storageProxyCall('delete', path).catch(() => {});
 }
 
 /* Signed-URL hydration for tenant-docs thumbnails/links ---------------------
-   tenant-docs is a private bucket now, so the `.url` saved on each record
-   (from docPublicUrl at upload time) 403s. Every record also saves
-   `.storagePath` alongside it, so render sites now emit a placeholder
-   (empty src/href + data-storage-path + data-fallback-url) instead of the
-   stale public URL, then call hydrateDocRefs(container) right after
-   inserting into the DOM. That mints a short-lived signed URL per element
-   and patches it in. Falls back to the old `.url` only if signing itself
-   fails (e.g. Supabase unreachable) — a possibly-broken link beats a blank
-   one. Safe to call on a container with zero matching elements. */
+   tenant-docs is a private bucket, so there's no stable public URL to save
+   at upload time — every record instead saves just `.storagePath`, and
+   render sites emit a placeholder (empty src/href + data-storage-path +
+   data-fallback-url) instead, then call hydrateDocRefs(container) right
+   after inserting into the DOM. That asks the Worker for a short-lived
+   signed URL per element and patches it in. Falls back to the (usually
+   empty) `.url` only if signing itself fails — a possibly-broken link
+   beats a blank one. Safe to call on a container with zero matching
+   elements. */
 async function hydrateDocRefs(root) {
-  if (!root || !sb) return;
+  if (!root || !storageProxyEnabled) return;
   const els = Array.from(root.querySelectorAll('[data-storage-path]'));
   await Promise.all(els.map(async (el) => {
     const path = el.dataset.storagePath;
     let url = el.dataset.fallbackUrl || '';
     if (path) {
       try {
-        const { data, error } = await sb.storage.from(TENANT_DOCS_BUCKET).createSignedUrl(path, 3600);
-        if (error) throw error;
-        url = data.signedUrl;
+        const { signedUrl } = await storageProxyCall('read', path);
+        url = signedUrl;
       } catch (err) {
         console.warn('Could not create signed URL for', path, err);
       }
@@ -1020,7 +1055,7 @@ function initFirebase() {
     fbAuth = firebase.auth();
     fbStore = firebase.firestore();
     fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {});
-    fbAuth.onAuthStateChanged(onCloudAuthStateChanged);
+    cloudAuthUnsub = fbAuth.onAuthStateChanged(onCloudAuthStateChanged);
   } catch (err) {
     console.warn('Firebase init failed', err);
   }
@@ -1122,7 +1157,7 @@ document.getElementById('ag-back-to-login').addEventListener('click', () => {
   document.getElementById('ag-login-view').style.display = 'block';
 });
 document.getElementById('ag-signup-btn').addEventListener('click', async () => {
-  const invite = document.getElementById('ag-signup-invite').value.trim();
+  const invite = document.getElementById('ag-signup-invite').value.trim().toUpperCase();
   const email = document.getElementById('ag-signup-email').value.trim();
   const password = document.getElementById('ag-signup-password').value;
   const errEl = document.getElementById('ag-signup-error');
@@ -1130,15 +1165,43 @@ document.getElementById('ag-signup-btn').addEventListener('click', async () => {
   const bar = document.getElementById('ag-signup-auth-loading-bar');
   errEl.textContent = '';
   if (!invite || !email || !password) { errEl.textContent = 'Enter the invite code, email, and password.'; return; }
-  if (invite !== ADMIN_INVITE_CODE) { errEl.textContent = 'Invalid invite code.'; return; }
   authLoadingStart(bar, btn);
+  let newUser = null;
+  // Detach the auth-state listener for the duration of signup — otherwise
+  // onCloudAuthStateChanged fires the instant createUserWithEmailAndPassword
+  // resolves and starts pulling cloud data before admins/{uid} exists yet,
+  // racing the invite-redemption writes below. Same fix as portalRedeeming
+  // uses for the tenant portal signup flow.
+  if (cloudAuthUnsub) { cloudAuthUnsub(); cloudAuthUnsub = null; }
   try {
-    await fbAuth.createUserWithEmailAndPassword(email, password);
-    // onCloudAuthStateChanged takes it from here.
+    // firestore.rules requires request.auth != null to read adminInvites/{code},
+    // so — same as the tenant portal's portalRedeemInvite() — the account has
+    // to exist first, then the invite is checked, and rolled back on failure.
+    // A bad/reused code never gets past this: the rules only let a code be
+    // marked used once, by whichever uid wins the race, so an already-used
+    // code (or a code that never existed) throws here and the auth account
+    // gets deleted again.
+    const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
+    newUser = cred.user;
+    const inviteRef = fbStore.collection('adminInvites').doc(invite);
+    const inviteSnap = await inviteRef.get();
+    if (!inviteSnap.exists || inviteSnap.data().used) {
+      throw { code: 'admin/bad-invite', message: 'Invalid or already-used invite code.' };
+    }
+    await inviteRef.update({ used: true, usedByUid: newUser.uid, usedAt: Date.now() });
+    await fbStore.collection('admins').doc(newUser.uid).set({
+      inviteCode: invite, email, createdAt: Date.now(),
+    });
     authLoadingEnd(bar, btn, true);
+    // Reattaching fires immediately with the now fully set-up user, so
+    // onCloudAuthStateChanged takes it from here (hides the gate, pulls
+    // cloud data, renders #app) — no need to call it manually.
+    cloudAuthUnsub = fbAuth.onAuthStateChanged(onCloudAuthStateChanged);
   } catch (err) {
     authLoadingEnd(bar, btn, false);
-    errEl.textContent = cloudAuthErrorMessage(err);
+    if (newUser) { try { await newUser.delete(); } catch (_) {} }
+    cloudAuthUnsub = fbAuth.onAuthStateChanged(onCloudAuthStateChanged);
+    errEl.textContent = err.code === 'admin/bad-invite' ? err.message : cloudAuthErrorMessage(err);
   }
 });
 
@@ -2734,10 +2797,11 @@ function openPaymentDetailSheet(paymentId) {
    ID photo + signed contract are managed entirely from the TENANT PORTAL now
    (tenant uploads their own — see portalPickAndUploadDoc / portalRenderDocSlots
    further down), not from the admin tenant detail view. Storage lives in
-   Supabase Storage (bucket TENANT_DOCS_BUCKET) under
-   users/{uid}/tenants/{tenantId}/{slot}-{timestamp}.{ext}. The public URL and
-   storage path are saved on the tenant record itself (documents.idPhoto /
-   documents.contract), which syncs through Firestore last-write-wins like
+   Supabase Storage (bucket 'tenant-docs', private — see storage-proxy) under
+   portalUploads/{tenantUid}/{slot}-{timestamp}.{ext}. The storage path is
+   saved on the tenant record itself (documents.idPhoto / documents.contract)
+   and hydrated into a signed URL on render (see hydrateDocRefs), which
+   syncs through Firestore last-write-wins like
    everything else — so the admin still has read access to the data, there's
    just no upload/replace/remove UI for it on the admin side. */
 const DOC_SLOTS = { idPhoto: 'ID photo', contract: 'Signed contract' };
@@ -3233,6 +3297,23 @@ async function generatePortalInvite(tenant) {
 
 async function revokePortalAccess(tenant) {
   if (!confirm(`Revoke ${tenant.fullName}'s portal access? They'll be signed out and lose access immediately.`)) return;
+  // Clearing the tenant doc's portalUid/portalEmail alone did nothing —
+  // every tenant-portal Firestore rule checks the portalAccounts/{uid} link
+  // doc, never the tenant doc's own fields, and that link was permanently
+  // immutable. Flip its `active` flag first; firestore.rules now allows the
+  // owning admin to update ONLY that field. If this write fails (offline,
+  // permission issue), bail before touching the tenant record — otherwise
+  // the UI would claim "revoked" while the tenant's account still works.
+  if (tenant.portalUid) {
+    try {
+      await fbStore.collection('portalAccounts').doc(tenant.portalUid)
+        .update({ active: false, updatedAt: Date.now() });
+    } catch (err) {
+      console.warn('Failed to deactivate portal account link', err);
+      showToast('Could not revoke access — check your connection');
+      return;
+    }
+  }
   const updated = { ...tenant, portalUid: null, portalEmail: null, portalInvite: null, updatedAt: Date.now() };
   await dbPut('tenants', updated);
   queueRecordSync('tenants', updated);
@@ -3875,9 +3956,10 @@ function initTenantFirebase() {
   portal.app = firebase.initializeApp(firebaseConfig, 'tenantPortalApp');
   portal.auth = portal.app.auth();
   portal.store = portal.app.firestore();
-  // File storage (ID photo, contract, payment proof) uses the single shared
-  // `sb` Supabase Storage client — no per-instance storage needed here since
-  // sb.auth is never used for Storage in this setup (see supabaseStorageEnabled).
+  // File storage (ID photo, contract, payment proof) goes through the
+  // shared storage-proxy Worker (see storageProxyCall) — it reads whichever
+  // Firebase Auth user is current via storageProxyUser(), so no separate
+  // storage client is needed per Firebase app instance.
 }
 
 function enterTenantPortalMode() {
@@ -3949,13 +4031,34 @@ async function onPortalAuthChanged(user) {
       return;
     }
     const acc = accSnap.data();
+    // Revoked by the admin (see revokePortalAccess) — firestore.rules already
+    // blocks every users/{adminUid}/... carve-out once active is false, but
+    // that alone would just surface as a cryptic permission-denied error
+    // from portalLoadData() below. Catch it here instead and sign them out
+    // with a clear reason. Missing `active` (accounts created before this
+    // field existed) is treated as active — only an explicit false revokes.
+    if (acc.active === false) {
+      await portal.auth.signOut();
+      portalShowToast('Your portal access has been revoked. Contact your landlord.');
+      return;
+    }
     portal.adminUid = acc.adminUid; portal.tenantId = acc.tenantId; portal.unitId = acc.unitId;
     await portalLoadData();
     portal.view = 'dashboard';
     portalRender();
   } catch (err) {
     console.warn('Portal auth resolve failed', err);
-    portalShowToast('Could not load your account — check your connection');
+    // Defense in depth for the case above: if active flipped to false in the
+    // gap between the check and portalLoadData()'s reads (or any other rule
+    // now denies a previously-linked account), Firestore throws
+    // permission-denied — treat that the same as an explicit revocation
+    // instead of showing a generic connection error.
+    if (err.code === 'permission-denied') {
+      await portal.auth.signOut().catch(() => {});
+      portalShowToast('Your portal access has been revoked. Contact your landlord.');
+    } else {
+      portalShowToast('Could not load your account — check your connection');
+    }
   }
 }
 
@@ -4088,7 +4191,7 @@ async function portalRedeemInvite() {
     await inviteRef.update({ used: true, usedByUid: newUser.uid, usedAt: Date.now() });
     await portal.store.collection('portalAccounts').doc(newUser.uid).set({
       adminUid: invite.adminUid, tenantId: invite.tenantId, unitId: invite.unitId,
-      inviteId: code, email, createdAt: Date.now(),
+      inviteId: code, email, createdAt: Date.now(), active: true,
     });
     await portal.store.collection('users').doc(invite.adminUid).collection('tenants').doc(invite.tenantId)
       .update({ portalUid: newUser.uid, portalEmail: email, updatedAt: Date.now() });
@@ -4324,12 +4427,11 @@ async function portalSubmitPaymentProof() {
   try {
     let proof = null;
     if (file) {
-      if (!sb) throw new Error('SUPABASE_NOT_CONFIGURED');
+      if (!storageProxyEnabled) throw new Error('SUPABASE_NOT_CONFIGURED');
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/proof-${Date.now()}.${ext}`;
-      const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
-      if (uploadErr) throw uploadErr;
-      proof = { url: docPublicUrl(path), storagePath: path, name: file.name };
+      await storageProxyUpload(path, file);
+      proof = { storagePath: path, name: file.name };
     }
     const id = uid();
     const claim = {
@@ -4347,10 +4449,10 @@ async function portalSubmitPaymentProof() {
     portalRenderDashboard();
   } catch (err) {
     console.warn('Payment proof submission failed', err);
-    // A missing/placeholder Supabase config throws before any network call
-    // is made (sb is null) — that's not a connectivity problem, so don't
-    // tell the tenant to check their connection when the real issue is
-    // that file uploads were never set up on the admin side.
+    // A missing/placeholder storage-proxy URL throws before any network
+    // call is made — that's not a connectivity problem, so don't tell the
+    // tenant to check their connection when the real issue is that file
+    // uploads were never set up on the admin side.
     portalShowToast(err && err.message === 'SUPABASE_NOT_CONFIGURED'
       ? 'File uploads aren\'t set up yet — ask your landlord'
       : 'Could not submit — check your connection');
@@ -4529,10 +4631,10 @@ async function portalDeletePaymentClaim(claim) {
     // that sync see it as an update to merge, not a gap to fill.
     const tombstone = { ...claim, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
     await portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(claim.id).set(tombstone);
-    if (claim.proof && claim.proof.storagePath && sb) {
+    if (claim.proof && claim.proof.storagePath && storageProxyEnabled) {
       // Best-effort cleanup of the uploaded file — a failure here shouldn't block
       // the delete itself, the claim record is already gone either way.
-      sb.storage.from(TENANT_DOCS_BUCKET).remove([claim.proof.storagePath]).catch(() => {});
+      storageProxyDelete(claim.proof.storagePath);
     }
     portal.pendingPayments = portal.pendingPayments.filter(p => p.id !== claim.id);
     portalCloseSheet();
@@ -4658,10 +4760,10 @@ async function portalDeleteApprovedPayment(payment) {
   try {
     const tombstone = { ...payment, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
     await portal.store.collection('users').doc(portal.adminUid).collection('payments').doc(payment.id).set(tombstone);
-    if (payment.proof && payment.proof.storagePath && sb) {
+    if (payment.proof && payment.proof.storagePath && storageProxyEnabled) {
       // Best-effort cleanup, same as portalDeletePaymentClaim — a failure
       // here shouldn't block the delete itself.
-      sb.storage.from(TENANT_DOCS_BUCKET).remove([payment.proof.storagePath]).catch(() => {});
+      storageProxyDelete(payment.proof.storagePath);
     }
     portal.payments = portal.payments.filter(p => p.id !== payment.id);
     portalCloseSheet();
@@ -4859,13 +4961,12 @@ function portalOpenContractSign(tenant, isEdit) {
       if (pad.isEmpty()) return portalShowToast('Please sign before submitting');
       portalShowToast('Saving signature…');
       try {
-        if (!sb) throw new Error('SUPABASE_NOT_CONFIGURED');
+        if (!storageProxyEnabled) throw new Error('SUPABASE_NOT_CONFIGURED');
         const blob = await pad.toBlob();
         if (!blob) throw new Error('SIGNATURE_BLOB_FAILED');
         const path = `portalUploads/${portal.user.uid}/signature-${Date.now()}.png`;
-        const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, blob, { upsert: true, contentType: 'image/png' });
-        if (uploadErr) throw uploadErr;
-        const leaseSignature = { url: docPublicUrl(path), storagePath: path, signedAt: Date.now() };
+        await storageProxyUpload(path, blob, 'image/png');
+        const leaseSignature = { storagePath: path, signedAt: Date.now() };
         await portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId)
           .update({ leaseSignature, updatedAt: Date.now() });
         portal.tenant = { ...portal.tenant, leaseSignature };
@@ -4889,13 +4990,11 @@ function portalPickAndUploadDoc(slot) {
     if (file.size > MAX_DOC_BYTES) return portalShowToast('File is too large — max 15MB');
     portalShowToast('Uploading…');
     try {
-      if (!sb) throw new Error('SUPABASE_NOT_CONFIGURED');
+      if (!storageProxyEnabled) throw new Error('SUPABASE_NOT_CONFIGURED');
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/${slot}-${Date.now()}.${ext}`;
-      const { error: uploadErr } = await sb.storage.from(TENANT_DOCS_BUCKET).upload(path, file, { upsert: true });
-      if (uploadErr) throw uploadErr;
-      const url = docPublicUrl(path);
-      const updatedDocs = { ...(portal.tenant.documents || {}), [slot]: { url, storagePath: path, name: file.name, uploadedAt: Date.now() } };
+      await storageProxyUpload(path, file);
+      const updatedDocs = { ...(portal.tenant.documents || {}), [slot]: { storagePath: path, name: file.name, uploadedAt: Date.now() } };
       await portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId)
         .update({ documents: updatedDocs, updatedAt: Date.now() });
       portal.tenant = { ...portal.tenant, documents: updatedDocs };
@@ -4903,8 +5002,8 @@ function portalPickAndUploadDoc(slot) {
       portalShowToast('Uploaded');
     } catch (err) {
       console.warn('Portal document upload failed', err);
-      // Same distinction as the payment-proof path: a null `sb` means
-      // Supabase Storage was never configured, not that the network is down.
+      // Same distinction as the payment-proof path: a disabled storage
+      // proxy means Storage was never configured, not that the network is down.
       portalShowToast(err && err.message === 'SUPABASE_NOT_CONFIGURED'
         ? 'File uploads aren\'t set up yet — ask your landlord'
         : 'Upload failed — check your connection');
@@ -4984,7 +5083,6 @@ async function cleanupPhantomSeed() {
   await refreshCache();
   render();
   initFirebase();
-  initSupabaseStorage();
   // A tenant opened the shared link (?portal=1) — skip straight to their portal
   // instead of the admin dashboard. The admin app still boots quietly underneath
   // so nothing else in this file has to special-case "portal mode".
