@@ -535,6 +535,24 @@
     }
 
     .fab{ right:32px; bottom:32px; }
+
+    /* ---- Lease contract: styled document-page view, not the mobile
+       edge-to-edge column. A tan gutter frames a centered white "page"
+       with its own header bar, so it reads like a real print preview. ---- */
+    #contractView{
+      max-width:none; background:var(--paper-2);
+      padding:40px 24px 64px; align-items:center;
+    }
+    #contractView header.topbar{
+      max-width:680px; width:100%; margin:0 auto;
+      border-radius:14px 14px 0 0; position:static;
+    }
+    #contractDoc{
+      max-width:680px; width:100%; margin:0 auto;
+      background:var(--card); padding:64px 72px;
+      border-radius:0 0 14px 14px;
+      box-shadow:0 12px 32px rgba(28,43,51,.14);
+    }
   }
 
   @media print{
@@ -542,8 +560,8 @@
     #app, #tenantPortal, .sheet-backdrop, .toast, .update-banner, #imgLightboxBackdrop, .no-print{
       display:none !important;
     }
-    #contractView{ display:block !important; max-width:none; }
-    #contractDoc{ padding:0; }
+    #contractView{ display:block !important; max-width:none; padding:0; background:#fff; }
+    #contractDoc{ padding:0; max-width:none; margin:0; box-shadow:none; border-radius:0; background:#fff; }
     #contractDoc .cd-page + .cd-page{ margin-top:0; padding-top:0; border-top:none; page-break-before:always; }
     #contractDoc .cd-page-label{ display:none; }
     body{ background:#fff; }
