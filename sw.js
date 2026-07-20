@@ -20,7 +20,7 @@
    simply queues and retries once back online.
    ========================================================= */
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const CACHE_NAME = `upapro-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -35,10 +35,10 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(APP_SHELL))
-      // Take over immediately once installed, rather than waiting for
-      // all tabs to close — paired with the update-available toast in
-      // index.html, which asks before actually switching.
-      .then(() => self.skipWaiting())
+    // Deliberately NOT calling self.skipWaiting() here — the new worker
+    // should sit in "waiting" until index.html's update banner posts
+    // SKIP_WAITING (see the message listener below), so the switch only
+    // happens when the person taps Refresh, not silently mid-session.
   );
 });
 
