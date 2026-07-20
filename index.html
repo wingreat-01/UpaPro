@@ -976,7 +976,7 @@ let inTenantPortalMode = false;
    Storage itself is locked down to default-deny (service_role only) — see
    storage-proxy/README.md for the Worker source, deployment steps, and the
    SQL to drop the old permissive policies. */
-const STORAGE_PROXY_URL = "https://upapro-storage-proxy.chad-workwithme.workers.dev"; // fill in with your deployed Worker URL — see storage-proxy/README.md
+const STORAGE_PROXY_URL = "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"; // fill in with your deployed Worker URL — see storage-proxy/README.md
 const storageProxyEnabled = !!STORAGE_PROXY_URL && STORAGE_PROXY_URL.indexOf('YOUR-WORKER') === -1;
 
 // Whichever Firebase Auth instance is currently signed in — admin (fbAuth
@@ -4021,7 +4021,18 @@ async function onPortalAuthChanged(user) {
   portal.user = user;
   document.getElementById('portalLogoutBtn').style.display = user ? 'flex' : 'none';
   document.getElementById('portalBackBtn').classList.toggle('show', false);
-  if (!user) { portal.view = 'login'; portalRender(); return; }
+  if (!user) {
+    // A failed/rolled-back redemption attempt also lands here (Firebase
+    // fires this listener with the current — signed-out — state the
+    // instant it's reattached). Don't stomp the signup screen in that
+    // case: portalRedeemInvite() already wrote the real error message
+    // there, and forcing view='login' would blow it away before anyone
+    // could read it. Only reset to login from anywhere else (e.g. an
+    // actual sign-out or revoked-access flow).
+    if (portal.view !== 'signup') portal.view = 'login';
+    portalRender();
+    return;
+  }
   try {
     const accSnap = await portal.store.collection('portalAccounts').doc(user.uid).get();
     if (!accSnap.exists) {
