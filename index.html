@@ -600,6 +600,7 @@
 
       <div id="ag-signup-view" style="display:none;">
         <p class="muted" style="margin:0 0 14px;">Create your admin account.</p>
+        <div class="field"><label>Invite code</label><input id="ag-signup-invite" type="text" autocomplete="off" placeholder="Provided by the property owner"></div>
         <div class="field"><label>Email</label><input id="ag-signup-email" type="email" autocomplete="email" inputmode="email"></div>
         <div class="field"><label>Password</label><input id="ag-signup-password" type="password" autocomplete="new-password" placeholder="At least 6 characters"></div>
         <div id="ag-signup-error" style="color:var(--rust); font-size:.8rem; margin:-6px 0 10px; min-height:14px;"></div>
@@ -940,6 +941,12 @@ const firebaseConfig = {
   appId: "1:177340239376:web:80806c92272103f4770495"
 };
 const firebaseEnabled = !!firebaseConfig.apiKey;
+// Gate on the "Create account" signup form — anyone with this code can
+// self-register a full admin account for THIS deployment, so it's the
+// only thing standing between "found the URL" and full data access.
+// Change this to a unique code per client before handing off their
+// deployment, and share it only with that client's owners.
+const ADMIN_INVITE_CODE = "CHANGE-ME-PER-CLIENT";
 const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages', 'moveoutSettlements'];
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
 // True while a tenant (or the admin, previewing) is inside the tenant
@@ -1115,13 +1122,15 @@ document.getElementById('ag-back-to-login').addEventListener('click', () => {
   document.getElementById('ag-login-view').style.display = 'block';
 });
 document.getElementById('ag-signup-btn').addEventListener('click', async () => {
+  const invite = document.getElementById('ag-signup-invite').value.trim();
   const email = document.getElementById('ag-signup-email').value.trim();
   const password = document.getElementById('ag-signup-password').value;
   const errEl = document.getElementById('ag-signup-error');
   const btn = document.getElementById('ag-signup-btn');
   const bar = document.getElementById('ag-signup-auth-loading-bar');
   errEl.textContent = '';
-  if (!email || !password) { errEl.textContent = 'Enter an email and password.'; return; }
+  if (!invite || !email || !password) { errEl.textContent = 'Enter the invite code, email, and password.'; return; }
+  if (invite !== ADMIN_INVITE_CODE) { errEl.textContent = 'Invalid invite code.'; return; }
   authLoadingStart(bar, btn);
   try {
     await fbAuth.createUserWithEmailAndPassword(email, password);
