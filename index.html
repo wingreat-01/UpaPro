@@ -976,7 +976,7 @@ let inTenantPortalMode = false;
    Storage itself is locked down to default-deny (service_role only) — see
    storage-proxy/README.md for the Worker source, deployment steps, and the
    SQL to drop the old permissive policies. */
-const STORAGE_PROXY_URL = "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"; // fill in with your deployed Worker URL — see storage-proxy/README.md
+const STORAGE_PROXY_URL = "https://upapro-storage-proxy.chad-workwithme.workers.dev"; // deployed Cloudflare Worker
 const storageProxyEnabled = !!STORAGE_PROXY_URL && STORAGE_PROXY_URL.indexOf('YOUR-WORKER') === -1;
 
 // Whichever Firebase Auth instance is currently signed in — admin (fbAuth
@@ -3137,7 +3137,7 @@ function buildContractMarkup(tenant, c, signature) {
     ? `<div class="cd-sig-imgwrap"><img src="" data-storage-path="${escapeAttr(signature.storagePath || '')}" data-fallback-url="${escapeAttr(signature.url || '')}" alt="Lessee e-signature" class="cd-sig-img"></div>
        <div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div>
        <div class="cd-sig-role">LESSEE</div>`
-    : `<div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div>`;
+    : `<div class="cd-sig-imgwrap"></div><div class="cd-sig-line">${escapeHTML(tenant.fullName)}</div><div class="cd-sig-role">LESSEE</div>`;
 
   return `
     <div class="cd-page">
