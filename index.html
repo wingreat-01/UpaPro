@@ -229,6 +229,14 @@
     max-height:88vh; overflow-y:auto; animation:sheetup .22s ease;
     position:relative;
   }
+  /* Wider variant for sheets that show a full document page (lease
+     contract preview/sign) rather than a short form — the default 480px
+     cap reads fine for forms but is needlessly cramped for a document on
+     a real desktop screen. Only widens once there's actually room; stays
+     identical to .sheet on phones. */
+  @media (min-width:700px){
+    .sheet.sheet-wide{max-width:800px;}
+  }
   @keyframes sheetup{from{transform:translateY(24px); opacity:.4;} to{transform:translateY(0); opacity:1;}}
   .sheet-grab{width:36px; height:4px; background:var(--line); border-radius:99px; margin:8px auto 14px;}
   .sheet-close{
@@ -1141,11 +1149,24 @@ async function onCloudAuthStateChanged(user) {
     render();
     cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
   } else if (firebaseEnabled) {
-    // Signed out / never signed in — the gate is now the only thing on
-    // screen; no local-only fallback here anymore (that used to be the
-    // behavior, but the whole point of the gate is that #app is never
-    // reachable without an account).
-    showAdminGateForms();
+    // A failed/rolled-back signup attempt also lands here (Firebase fires
+    // this listener with the signed-out state the instant it's reattached
+    // right after ag-signup-btn's newUser.delete() rollback). Don't stomp
+    // the signup view in that case — the catch block there already wrote
+    // the real error message ("Invalid or already-used invite code.") into
+    // ag-signup-error, and forcing back to the login view hides it before
+    // anyone can read it (see July 2026 report: "invalid invite code just
+    // bounces back to sign-in with no visible error"). Only reset to the
+    // login view from anywhere else (e.g. an actual sign-out). Same fix
+    // already in place for the tenant portal side — see onPortalAuthChanged.
+    const onSignupView = document.getElementById('ag-signup-view').style.display !== 'none';
+    if (onSignupView) {
+      document.getElementById('adminGate').style.display = 'flex';
+      document.getElementById('ag-checking').style.display = 'none';
+      document.getElementById('ag-forms').style.display = 'block';
+    } else {
+      showAdminGateForms();
+    }
   }
 }
 
@@ -4050,9 +4071,10 @@ function portalShowToast(msg) {
   clearTimeout(portalToastTimer);
   portalToastTimer = setTimeout(() => el.classList.remove('show'), 1800);
 }
-function portalOpenSheet(html, onMount) {
+function portalOpenSheet(html, onMount, extraClass) {
   document.getElementById('portalSheetBody').innerHTML =
     `<button class="sheet-close" id="portalSheetCloseBtn" aria-label="Close">✕</button><div class="sheet-grab"></div>${html}`;
+  document.getElementById('portalSheetBody').className = 'sheet' + (extraClass ? ' ' + extraClass : '');
   document.getElementById('portalSheetBackdrop').classList.add('show');
   document.getElementById('portalSheetCloseBtn').addEventListener('click', portalCloseSheet);
   if (onMount) onMount();
@@ -4982,7 +5004,7 @@ function portalOpenContractView(tenant) {
   portalOpenSheet(`
     <h2>Your lease contract</h2>
     <div class="cd-preview-box"><div class="contract-doc">${buildContractMarkup(tenant, c, tenant.leaseSignature || null)}</div></div>
-  `, () => hydrateDocRefs(document.getElementById('portalSheetBody')));
+  `, () => hydrateDocRefs(document.getElementById('portalSheetBody')), 'sheet-wide');
 }
 
 /* Review-then-sign flow: shows the same contract read-only, then a
@@ -5035,7 +5057,7 @@ function portalOpenContractSign(tenant, isEdit) {
         portalShowToast('Could not save signature — check your connection');
       }
     });
-  });
+  }, 'sheet-wide');
 }
 
 function portalPickAndUploadDoc(slot) {
