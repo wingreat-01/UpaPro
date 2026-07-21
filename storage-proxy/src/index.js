@@ -100,7 +100,7 @@ export default {
       }
       return jsonError('UNKNOWN_ACTION', 400, allowOrigin);
     } catch (err) {
-      return jsonError('STORAGE_ERROR', 502, allowOrigin);
+      return jsonError(`STORAGE_ERROR: ${(err && err.message) || 'unknown'}`, 502, allowOrigin);
     }
   },
 };
@@ -211,23 +211,31 @@ async function createSignedUrl(env, path) {
       body: JSON.stringify({ expiresIn: SIGN_TTL_SECONDS }),
     }
   );
-  if (!res.ok) throw new Error(`sign failed: ${res.status}`);
+  if (!res.ok) throw new Error(`sign failed: ${res.status} ${await res.text().catch(() => '')}`);
   const data = await res.json();
-  return `${env.SUPABASE_URL}${data.signedURL}`;
+  return `${env.SUPABASE_URL}/storage/v1${data.signedURL}`;
 }
 
 async function createSignedUploadUrl(env, path) {
-  const res = await fetch(
-    `${env.SUPABASE_URL}/storage/v1/object/upload/sign/${env.SUPABASE_BUCKET}/${encodeStoragePath(path)}`,
-    {
-      method: 'POST',
-      headers: supabaseHeaders(env),
-      body: JSON.stringify({ upsert: true }),
-    }
-  );
-  if (!res.ok) throw new Error(`sign-upload failed: ${res.status}`);
-  const data = await res.json();
-  return `${env.SUPABASE_URL}${data.url}`;
+  const url = `${env.SUPABASE_URL}/storage/v1/object/upload/sign/${env.SUPABASE_BUCKET}/${encodeStoragePath(path)}`;
+  console.log('createSignedUploadUrl:keycheck', JSON.stringify({
+    keyLength: (env.SUPABASE_SERVICE_ROLE_KEY || '').length,
+    keyStartsWithEyJ: (env.SUPABASE_SERVICE_ROLE_KEY || '').startsWith('eyJ'),
+    keyFirst4: JSON.stringify((env.SUPABASE_SERVICE_ROLE_KEY || '').slice(0, 4)),
+    keyLast4: JSON.stringify((env.SUPABASE_SERVICE_ROLE_KEY || '').slice(-4)),
+    hasLeadingOrTrailingWhitespace: (env.SUPABASE_SERVICE_ROLE_KEY || '') !== (env.SUPABASE_SERVICE_ROLE_KEY || '').trim(),
+    dotCount: ((env.SUPABASE_SERVICE_ROLE_KEY || '').match(/\./g) || []).length,
+  }));
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: supabaseHeaders(env),
+    body: JSON.stringify({}),
+  });
+  const bodyText = await res.text().catch(() => '');
+  console.log('createSignedUploadUrl', JSON.stringify({ url, bucket: env.SUPABASE_BUCKET, status: res.status, bodyText }));
+  if (!res.ok) throw new Error(`sign-upload failed: ${res.status} ${bodyText}`);
+  const data = JSON.parse(bodyText);
+  return `${env.SUPABASE_URL}/storage/v1${data.url}`;
 }
 
 async function removeObject(env, path) {

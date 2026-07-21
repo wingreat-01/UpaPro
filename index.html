@@ -914,6 +914,13 @@ function dbDelete(store, id) {
     r.onerror = () => rej(r.error);
   });
 }
+function dbClearStore(store) {
+  return new Promise((res, rej) => {
+    const r = tx(store, 'readwrite').clear();
+    r.onsuccess = () => res(true);
+    r.onerror = () => rej(r.error);
+  });
+}
 function dbByIndex(store, indexName, value) {
   return new Promise((res, rej) => {
     const r = tx(store).index(indexName).getAll(value);
@@ -951,6 +958,34 @@ const firebaseEnabled = !!firebaseConfig.apiKey;
 // ADMIN_INVITE_CODE constant is gone; there's nothing to edit here per
 // client anymore.
 const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages', 'moveoutSettlements'];
+
+/* ---------------------------------------------------------------
+   ACCOUNT-SWITCH GUARD — the local IndexedDB cache (upapro_db) is one
+   flat set of stores, not scoped per admin uid. If admin A signs in
+   on a device, then admin B signs in on that SAME device without the
+   cache ever being cleared, pullAndMergeCollection() sees admin A's
+   leftover local records as "local-only, not pushed to the cloud yet"
+   (since they're absent from admin B's empty cloud data) and pushes
+   them straight into admin B's own users/{uid}/... — silently copying
+   one client's properties/tenants into another client's account. Real
+   incident: TONDO A + tenants leaked from chad.yunitrade@gmail.com
+   into chadeugenio4@gmail.com this way, July 2026.
+
+   Fix: remember which uid was last synced on this device (in the
+   'meta' store). If a different uid signs in, wipe every synced store
+   (and the outbox, so no stale queued write for the old account goes
+   out under the new one) BEFORE the first pull/seed runs. */
+async function getLastSyncedUid() {
+  const rec = await dbGet('meta', 'lastSyncedUid');
+  return rec ? rec.value : null;
+}
+async function setLastSyncedUid(uidVal) {
+  await dbPut('meta', { key: 'lastSyncedUid', value: uidVal });
+}
+async function clearLocalDataForAccountSwitch() {
+  for (const store of SYNCED_STORES) await dbClearStore(store);
+  await dbClearStore('_syncOutbox');
+}
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
 // Unsubscribe handle for the admin auth-state listener — detached during
 // signup so onCloudAuthStateChanged can't fire (and start pulling cloud
@@ -1067,6 +1102,17 @@ async function onCloudAuthStateChanged(user) {
   if (cloudAutoTimer) { clearInterval(cloudAutoTimer); cloudAutoTimer = null; }
   if (user) {
     hideAdminGate();
+    // Guard against a leftover local cache from a DIFFERENT admin who
+    // signed in earlier on this same device/browser — see the
+    // ACCOUNT-SWITCH GUARD note above SYNCED_STORES. Must run before
+    // any pull/seed below, or a stale local record from the previous
+    // account gets mistaken for new local-only data and pushed into
+    // this account's cloud data.
+    const lastSyncedUid = await getLastSyncedUid();
+    if (lastSyncedUid && lastSyncedUid !== user.uid) {
+      await clearLocalDataForAccountSwitch();
+    }
+    await setLastSyncedUid(user.uid);
     // Pull/merge cloud data FIRST, then only seed a starter location if
     // this account genuinely has nothing anywhere yet. Seeding before the
     // pull (the old order) is exactly what caused deleted locations to
