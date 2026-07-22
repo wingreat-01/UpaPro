@@ -1898,6 +1898,58 @@ function computeOverdueHistory(tenantId) {
   }
   return { months: overduePeriods.length, periods: overduePeriods };
 }
+/** What a tenant actually owes RIGHT NOW: every rent/electricity/water
+ *  charge, across every period from move-in to today, whose OWN due date
+ *  has already passed and still has a balance — not just the current
+ *  period's line. A tenant who's 2 months behind on rent should show the
+ *  full 2 months owed, not just this month's charge; a charge that hasn't
+ *  reached its due date yet (this period's rent, typically) is left out
+ *  the same way computeOverdueHistory() leaves it out of the months count.
+ *  Returns { rent, electricity, water, total, breakdown } where breakdown
+ *  is one line per outstanding charge, newest first, for a tap-to-expand
+ *  view (see openOutstandingBreakdownSheet). */
+function computeOutstandingBalance(tenantId) {
+  const tenant = state.cache.tenants.find(t => t.id === tenantId);
+  const unit = tenant && state.cache.units.find(u => u.id === tenant.unitId);
+  const empty = { rent: 0, electricity: 0, water: 0, total: 0, breakdown: [] };
+  if (!tenant || !unit) return empty;
+  const rentAmt = Number(unit.monthlyRent) || 0;
+  const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
+  const today = new Date();
+  const fromPeriod = tenant.moveInDate ? monthKey(new Date(tenant.moveInDate + 'T00:00:00')) : monthKey();
+  const toDate = tenant.moveOutDate ? new Date(tenant.moveOutDate + 'T00:00:00') : today;
+  const toPeriod = monthKey(toDate);
+  const totals = { rent: 0, electricity: 0, water: 0 };
+  const breakdown = [];
+  for (const period of periodsBetween(fromPeriod, toPeriod)) {
+    const [y, m] = period.split('-').map(Number);
+    const rentDueDate = new Date(y, m - 1, dueDay);
+    const bill = utilityBillFor(tenant.id, period);
+    const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+    const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+    const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+    const elecDueDate = resolveUtilityDueDate(bill, 'electricityDueDate', period);
+    const waterDueDate = resolveUtilityDueDate(bill, 'waterDueDate', period);
+    const charges = [
+      ['rent', rentAmt, rentDueDate, 'Rent'],
+      ['electricity', elecAmt, elecDueDate, '⚡ Electricity'],
+      ['water', waterAmt, waterDueDate, '💧 Water'],
+    ];
+    for (const [key, amt, dueDate, label] of charges) {
+      if (amt <= 0) continue;
+      const balance = Math.max(0, amt - amountPaidForCharge(tenant.id, period, key, weights));
+      if (balance <= 0) continue;
+      if (chargeStatus(balance, dueDate, today).status !== 'overdue') continue;
+      totals[key] += balance;
+      breakdown.push({ period, type: key, label, amount: Math.round(balance), dueDate });
+    }
+  }
+  totals.rent = Math.round(totals.rent);
+  totals.electricity = Math.round(totals.electricity);
+  totals.water = Math.round(totals.water);
+  breakdown.sort((a, b) => b.dueDate - a.dueDate);
+  return { ...totals, total: totals.rent + totals.electricity + totals.water, breakdown };
+}
 /** Threshold tier for a consecutive-overdue-months count — drives the badge
  *  class/label wherever a tenant is listed. 3+ gets the distinct "critical"
  *  treatment (filled/solid stamp) instead of just the dashed outline used
@@ -1907,6 +1959,31 @@ function overdueTier(months) {
   if (months === 2) return { cls: 'overdue', label: `${months} mo overdue` };
   if (months === 1) return { cls: 'due', label: `${months} mo overdue` };
   return null;
+}
+/** Bottom sheet listing every line that makes up computeOutstandingBalance's
+ *  total — reused from the unit-detail page and the dashboard flagged list
+ *  so "what does this ₱X actually cover" is always one tap away. */
+function openOutstandingBreakdownSheet(tenantId) {
+  const tenant = state.cache.tenants.find(t => t.id === tenantId);
+  const totals = computeOutstandingBalance(tenantId);
+  const fmtDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  openSheet(`
+    <h2>${tenant ? escapeHTML(tenant.fullName) + "'s " : ''}amount owed</h2>
+    <div class="kv-grid">
+      <div class="kv"><div class="k">Total owed</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(totals.total)}</div></div>
+    </div>
+    <div class="section-label" style="margin-top:14px;">Breakdown</div>
+    <div class="card-list">
+      ${totals.breakdown.length ? totals.breakdown.map(line => `
+        <div class="row-card">
+          <div class="rc-main">
+            <div class="rc-title">${line.label} · ${monthLabel(line.period)}</div>
+            <div class="rc-sub">Was due ${fmtDate(line.dueDate)}</div>
+          </div>
+          <div class="rc-amt" style="color:var(--rust);">${peso(line.amount)}</div>
+        </div>`).join('') : emptyHTML('🎉', 'Nothing overdue', 'Every past-due charge has been paid.')}
+    </div>
+  `);
 }
 
 /* --------------------------------- TOAST ---------------------------------- */
@@ -2257,6 +2334,11 @@ function rentRowHTML(r) {
   const stampClass = tier ? tier.cls : (r.status === 'overdue' ? 'overdue' : (r.status === 'due-soon' ? 'due' : ''));
   const stampText = r.status === 'overdue' ? `${r.daysOverdue}D LATE` : (r.status === 'due-soon' ? 'DUE SOON' : 'OK');
   const stampStyle = r.status === 'due-soon' ? ' style="--c:var(--rust);"' : '';
+  // For an overdue tenant, "due" should mean everything actually owed to
+  // date (past unpaid periods + this period's already-overdue charges),
+  // not just this period's line — otherwise a tenant 2 months behind
+  // still reads as owing a single month.
+  const amountDue = r.status === 'overdue' ? computeOutstandingBalance(r.tenant.id).total : r.balance;
   return `
     <div class="row-card" data-unit-id="${r.unit.id}">
       <div class="stamp small ${stampClass}"${stampStyle}>${stampText}</div>
@@ -2265,7 +2347,7 @@ function rentRowHTML(r) {
         <div class="rc-sub">${escapeHTML(r.location ? r.location.name : '')} · ${escapeHTML(r.unit.unitLabel)}</div>
         ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
       </div>
-      <div class="rc-amt">${r.balance > 0 ? peso(r.balance) + ' due' : peso(r.expected)}</div>
+      <div class="rc-amt">${amountDue > 0 ? peso(amountDue) + ' due' : peso(r.expected)}</div>
     </div>`;
 }
 function bindRentRowClicks(scopeSelector) {
@@ -2525,6 +2607,13 @@ function renderUnitDetail(unitId) {
     // behind on rent".
     const overdue = row && row.rent.status === 'overdue' ? computeOverdueHistory(tenant.id) : null;
     const tier = overdue && overdue.months >= 1 ? overdueTier(overdue.months) : null;
+    // Everything actually owed to date, across every period — not just
+    // the current-period lines below. Only worth its own line once it
+    // covers more than the current period alone (i.e. there's real
+    // backlog), otherwise it'd just duplicate the Rent/Electricity/Water
+    // rows right underneath it.
+    const owed = row && row.status === 'overdue' ? computeOutstandingBalance(tenant.id) : null;
+    const showTotalOwed = owed && owed.total > row.balance;
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -2537,6 +2626,10 @@ function renderUnitDetail(unitId) {
         </div>
         <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
         ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
+        ${showTotalOwed ? `
+        <div class="kv" id="totalOwedRow" style="margin-top:10px; padding:10px 12px; background:var(--rust-soft); border-radius:10px; cursor:pointer;">
+          <div class="k">Total owed (tap for breakdown)</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(owed.total)}</div>
+        </div>` : ''}
         <div class="kv-grid">
           <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
           <div class="kv"><div class="k">Deposit</div><div class="v">${peso(totalDepositPaid(tenant.id))}</div></div>
@@ -2556,6 +2649,7 @@ function renderUnitDetail(unitId) {
           <button class="btn btn-danger btn-sm" id="moveOutBtn">${moveOutLabel}</button>
         </div>
       </div>`;
+    if (showTotalOwed) document.getElementById('totalOwedRow').addEventListener('click', () => openOutstandingBreakdownSheet(tenant.id));
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
@@ -4375,6 +4469,87 @@ async function portalRedeemInvite() {
 }
 
 /* -------------------------------- DASHBOARD -------------------------------- */
+/** Portal-side equivalent of computeOutstandingBalance() — same due-date
+ *  walk from move-in to today, same "only count a charge once its own due
+ *  date has passed" rule, just reading portal.payments/portal.utilityBills
+ *  (the tenant's own synced data) instead of admin's state.cache, since the
+ *  portal doesn't have access to state.cache for other tenants. Kept in
+ *  sync by hand with the admin version — if that logic ever changes, this
+ *  needs the same change. */
+function portalOutstandingBalance() {
+  const t = portal.tenant, u = portal.unit;
+  const empty = { rent: 0, electricity: 0, water: 0, total: 0, breakdown: [] };
+  if (!t || !u) return empty;
+  const rentAmt = Number(u.monthlyRent) || 0;
+  const dueDay = Math.min(Math.max(Number(u.dueDay) || 1, 1), 28);
+  const today = new Date();
+  const fromPeriod = t.moveInDate ? monthKey(new Date(t.moveInDate + 'T00:00:00')) : monthKey();
+  const toPeriod = monthKey();
+  const totals = { rent: 0, electricity: 0, water: 0 };
+  const breakdown = [];
+  for (const period of periodsBetween(fromPeriod, toPeriod)) {
+    const [y, m] = period.split('-').map(Number);
+    const rentDueDate = new Date(y, m - 1, dueDay);
+    const bill = portal.utilityBills.find(b => b.period === period) || null;
+    const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+    const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+    const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+    const totalExpected = rentAmt + elecAmt + waterAmt;
+    const elecDueDate = resolveUtilityDueDate(bill, 'electricityDueDate', period);
+    const waterDueDate = resolveUtilityDueDate(bill, 'waterDueDate', period);
+    const paidForTag = (chargeType) => portal.payments
+      .filter(p => p.coveredPeriod === period && p.tag !== 'deposit')
+      .reduce((sum, p) => {
+        const amt = Number(p.amountPaid) || 0;
+        if (!amt) return sum;
+        if (p.tag) return p.tag === chargeType ? sum + amt : sum;
+        if (totalExpected > 0) return sum + amt * ((weights[chargeType] || 0) / totalExpected);
+        return chargeType === 'rent' ? sum + amt : sum;
+      }, 0);
+    const charges = [
+      ['rent', rentAmt, rentDueDate, 'Rent'],
+      ['electricity', elecAmt, elecDueDate, '⚡ Electricity'],
+      ['water', waterAmt, waterDueDate, '💧 Water'],
+    ];
+    for (const [key, amt, dueDate, label] of charges) {
+      if (amt <= 0) continue;
+      const balance = Math.max(0, amt - paidForTag(key));
+      if (balance <= 0) continue;
+      if (chargeStatus(balance, dueDate, today).status !== 'overdue') continue;
+      totals[key] += balance;
+      breakdown.push({ period, type: key, label, amount: Math.round(balance), dueDate });
+    }
+  }
+  totals.rent = Math.round(totals.rent);
+  totals.electricity = Math.round(totals.electricity);
+  totals.water = Math.round(totals.water);
+  breakdown.sort((a, b) => b.dueDate - a.dueDate);
+  return { ...totals, total: totals.rent + totals.electricity + totals.water, breakdown };
+}
+/** Bottom sheet listing every line behind portalOutstandingBalance()'s
+ *  total — tapped open from the balance card so a tenant can see exactly
+ *  what an accumulated "2 months overdue" figure is made of. */
+function openPortalOutstandingBreakdownSheet() {
+  const totals = portalOutstandingBalance();
+  const fmtDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  portalOpenSheet(`
+    <h2>Amount owed</h2>
+    <div class="kv-grid">
+      <div class="kv"><div class="k">Total owed</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(totals.total)}</div></div>
+    </div>
+    <div class="section-label" style="margin-top:14px;">Breakdown</div>
+    <div class="card-list">
+      ${totals.breakdown.length ? totals.breakdown.map(line => `
+        <div class="row-card">
+          <div class="rc-main">
+            <div class="rc-title">${line.label} · ${monthLabel(line.period)}</div>
+            <div class="rc-sub">Was due ${fmtDate(line.dueDate)}</div>
+          </div>
+          <div class="rc-amt" style="color:var(--rust);">${peso(line.amount)}</div>
+        </div>`).join('') : emptyHTML('🎉', 'Nothing overdue', 'Every past-due charge has been paid.')}
+    </div>
+  `);
+}
 function portalRenderDashboard() {
   const t = portal.tenant, u = portal.unit;
   if (!t || !u) {
@@ -4417,12 +4592,18 @@ function portalRenderDashboard() {
   const pendingCount = portal.pendingPayments.filter(p => p.status === 'pending').length;
   const hasUtilities = elecAmt > 0 || waterAmt > 0;
   const settlement = portalActiveSettlement();
+  // Headline balance is everything actually owed to date (past unpaid
+  // periods included), not just this period's line — a tenant 2 months
+  // behind should see the full amount, not just this month's rent.
+  const owed = portalOutstandingBalance();
+  const headlineBalance = cardClass === 'overdue' ? owed.total : balance;
+  const hasBacklog = owed.total > balance;
 
   document.getElementById('portalMain').innerHTML = `
-    <div class="portal-balance-card ${cardClass}">
-      <div class="pb-label">${monthLabel(period)} balance</div>
-      <div class="pb-amt">${peso(balance)}</div>
-      <div class="pb-sub">${balance <= 0 ? 'You\'re all paid up 🎉' : `Rent due the ${dueDay}${nth(dueDay)}`}</div>
+    <div class="portal-balance-card ${cardClass}"${hasBacklog ? ' id="portalBalanceCard" style="cursor:pointer;"' : ''}>
+      <div class="pb-label">${hasBacklog ? 'Total balance' : monthLabel(period) + ' balance'}</div>
+      <div class="pb-amt">${peso(headlineBalance)}</div>
+      <div class="pb-sub">${balance <= 0 && !hasBacklog ? 'You\'re all paid up 🎉' : hasBacklog ? 'Tap for breakdown' : `Rent due the ${dueDay}${nth(dueDay)}`}</div>
       <div style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(247,243,236,.2); font-size:.82rem; display:flex; flex-direction:column; gap:5px;">
         <div style="display:flex; justify-content:space-between;"><span>Rent</span><span>${rentBalance > 0 ? peso(rentBalance) + ' due ' + fmtDate(rentDueDate) : peso(rentAmt) + ' · paid'}</span></div>
         ${elecAmt ? `<div style="display:flex; justify-content:space-between;"><span>⚡ Electricity</span><span>${elecBalance > 0 ? peso(elecBalance) + ' due ' + fmtDate(elecDueDate) : peso(elecAmt) + ' · paid'}</span></div>` : ''}
@@ -4447,6 +4628,7 @@ function portalRenderDashboard() {
   document.getElementById('p-utilities-btn').addEventListener('click', () => { portal.view = 'utilities'; portalRender(); });
   document.getElementById('p-documents-btn').addEventListener('click', () => { portal.view = 'documents'; portalRender(); });
   if (settlement) document.getElementById('p-settlement-btn').addEventListener('click', () => { portal.view = 'settlement'; portalRender(); });
+  if (hasBacklog) document.getElementById('portalBalanceCard').addEventListener('click', openPortalOutstandingBreakdownSheet);
 }
 
 /* -------------------------- MOVE-OUT SETTLEMENT (tenant) --------------------------
