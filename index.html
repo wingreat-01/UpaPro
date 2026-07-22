@@ -1420,6 +1420,33 @@ async function runFullCloudSync(showUi) {
   }
 }
 
+// Lightweight refresh for the two views that generate confused
+// "I paid and it's not showing" / "it's approved and I still see PENDING"
+// messages — a full runFullCloudSync() pulls all SYNCED_STORES, which is
+// overkill (and needless read cost) just to catch a payment status change.
+// This only pulls the two collections that actually drive a balance number,
+// throttled so rapid nav (dashboard -> unit -> back -> unit) doesn't fire a
+// fresh pull on every tap.
+let lastBalanceRefresh = 0;
+const BALANCE_REFRESH_MIN_INTERVAL_MS = 20000;
+async function refreshBalanceDataOnOpen() {
+  if (!fbUser || !fbStore || cloudSyncBusy) return;
+  const now = Date.now();
+  if (now - lastBalanceRefresh < BALANCE_REFRESH_MIN_INTERVAL_MS) return;
+  lastBalanceRefresh = now;
+  try {
+    await pullAndMergeCollection('payments');
+    await pullAndMergeCollection('pendingPayments');
+    await refreshCache();
+    render();
+  } catch (err) {
+    // Best-effort background refresh — the cached data already on screen is
+    // still correct as of the last real sync, so fail silently rather than
+    // surfacing a toast for something the user didn't ask for.
+    console.warn('Balance refresh failed', err);
+  }
+}
+
 function cloudAuthErrorMessage(err) {
   switch (err && err.code) {
     case 'auth/invalid-email': return 'That email address looks invalid.';
@@ -2382,6 +2409,9 @@ function navigateTo(view, params = {}, replace = false) {
   if (replace) state.navStack[state.navStack.length - 1] = entry;
   else state.navStack.push(entry);
   render();
+  // See refreshBalanceDataOnOpen — catches a just-approved payment or a
+  // just-submitted one that hasn't reached this device's local cache yet.
+  if (view === 'dashboard' || view === 'unit-detail') refreshBalanceDataOnOpen();
 }
 function goBack() {
   if (state.navStack.length > 1) {
@@ -2395,6 +2425,7 @@ document.querySelectorAll('.bottomnav button').forEach(btn => {
   btn.addEventListener('click', () => {
     state.navStack = [{ view: btn.dataset.nav }];
     render();
+    if (btn.dataset.nav === 'dashboard') refreshBalanceDataOnOpen();
   });
 });
 
@@ -4339,6 +4370,7 @@ function renderPendingReviewsList() {
         <div class="rc-main">
           <div class="rc-title">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
           <div class="rc-sub">${escapeHTML(unit ? unit.unitLabel : '')} · ${{ rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' }[p.tag] || 'Rent'} · ${escapeHTML(p.coveredPeriod || '')} · ${escapeHTML(p.method || '')}</div>
+          ${p.method === 'check' ? `<div class="rc-sub">${p.checkNumber ? '#' + escapeHTML(p.checkNumber) + ' · ' : ''}${escapeHTML(p.bankName || 'Bank n/a')} · dated ${escapeHTML(p.checkDate || '—')}</div>` : ''}
         </div>
         <div class="rc-amt">${peso(p.amountClaimed)}</div>
         <div class="proof-thumb-row" style="width:100%;">
@@ -4382,6 +4414,17 @@ async function approvePendingPayment(id) {
     portalUid: p.portalUid, // needed so the tenant-edit/delete Firestore rules can match this record back to them
     updatedAt: Date.now(),
   };
+  if (payment.method === 'check') {
+    // A tenant-submitted check needs the same clearanceStatus:'pending' gate
+    // as one the admin logs directly — otherwise isUnclearedCheck() would
+    // still correctly keep it out of balance totals (undefined !== 'cleared'),
+    // but it would never show up in the Pending Checks list to actually be
+    // dealt with, since pendingChecks() filters on clearanceStatus === 'pending'.
+    payment.checkNumber = p.checkNumber || '';
+    payment.bankName = p.bankName || '';
+    payment.checkDate = p.checkDate || payment.datePaid;
+    payment.clearanceStatus = 'pending';
+  }
   await dbPut('payments', payment);
   queueRecordSync('payments', payment);
   const updatedPending = { ...p, status: 'approved', reviewedAt: Date.now(), updatedAt: Date.now() };
@@ -4604,6 +4647,9 @@ document.getElementById('portalBackBtn').addEventListener('click', () => {
   if (portal.view === 'dashboard') { exitTenantPortalMode(); return; }
   portal.view = 'dashboard';
   portalRender();
+  // Landing back on the balance card is exactly the "did my payment show up
+  // yet" moment — refresh it.
+  portalRefreshBalanceData();
 });
 document.getElementById('portalLogoutBtn').addEventListener('click', async () => {
   if (!confirm('Sign out of your tenant portal?')) return;
@@ -4714,6 +4760,38 @@ async function portalLoadData() {
   portal.settlements = []; setSnap.forEach(d => portal.settlements.push(d.data()));
   portal.settlements = portal.settlements.filter(s => !s.deleted).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
+// Portal-side counterpart to refreshBalanceDataOnOpen — the tenant portal
+// doesn't have a local IndexedDB merge step to lean on (it reads Firestore
+// straight into `portal.*` via portalLoadData), so this just re-runs the
+// two scoped queries that actually feed the balance card and re-renders if
+// the tenant is still looking at a balance-sensitive view when it resolves.
+let portalLastBalanceRefresh = 0;
+const PORTAL_BALANCE_REFRESH_MIN_INTERVAL_MS = 20000;
+async function portalRefreshBalanceData() {
+  if (!portal.user || !portal.adminUid) return;
+  const now = Date.now();
+  if (now - portalLastBalanceRefresh < PORTAL_BALANCE_REFRESH_MIN_INTERVAL_MS) return;
+  portalLastBalanceRefresh = now;
+  try {
+    const [paySnap, pendSnap] = await Promise.all([
+      portal.store.collection('users').doc(portal.adminUid).collection('payments').where('tenantId', '==', portal.tenantId).get(),
+      portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').where('portalUid', '==', portal.user.uid).get(),
+    ]);
+    portal.payments = []; paySnap.forEach(d => portal.payments.push(d.data()));
+    portal.payments = portal.payments.filter(p => !p.deleted);
+    portal.payments.sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
+    portal.pendingPayments = []; pendSnap.forEach(d => portal.pendingPayments.push(d.data()));
+    portal.pendingPayments = portal.pendingPayments.filter(p => !p.deleted);
+    portal.pendingPayments.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+    // Only redraw if still on a balance-sensitive view — a refresh that
+    // resolves after the tenant has since tapped into messages/documents/etc
+    // shouldn't yank the screen back or clobber what's currently rendered.
+    if (portal.view === 'dashboard' || portal.view === 'history') portalRender();
+  } catch (err) {
+    console.warn('Portal balance refresh failed', err);
+  }
+}
+
 function portalUnreadMessageCount() {
   return portal.messages.filter(m => m.sender === 'admin' && !m.readByTenant).length;
 }
@@ -5070,7 +5148,7 @@ function portalRenderDashboard() {
     <div class="settings-item" id="p-documents-btn"><div><div class="si-title">My documents</div><div class="si-sub">ID photo &amp; signed contract</div></div><span>📄</span></div>
   `;
   document.getElementById('p-submit-payment-btn').addEventListener('click', portalOpenSubmitPaymentSheet);
-  document.getElementById('p-history-btn').addEventListener('click', () => { portal.view = 'history'; portalRender(); });
+  document.getElementById('p-history-btn').addEventListener('click', () => { portal.view = 'history'; portalRender(); portalRefreshBalanceData(); });
   document.getElementById('p-messages-btn').addEventListener('click', () => { portal.view = 'messages'; portalRender(); });
   document.getElementById('p-utilities-btn').addEventListener('click', () => { portal.view = 'utilities'; portalRender(); });
   document.getElementById('p-documents-btn').addEventListener('click', () => { portal.view = 'documents'; portalRender(); });
@@ -5193,9 +5271,15 @@ function portalOpenSubmitPaymentSheet() {
     <div class="field-row">
       <div class="field"><label>Date paid</label><input id="pp-date" type="date" value="${todayISO()}"></div>
       <div class="field"><label>Method</label>
-        <select id="pp-method"><option value="gcash">GCash</option><option value="cash">Cash</option><option value="bank">Bank transfer</option></select>
+        <select id="pp-method"><option value="gcash">GCash</option><option value="cash">Cash</option><option value="bank">Bank transfer</option><option value="check">Check / PDC</option></select>
       </div>
     </div>
+    <div class="field-row" id="pp-check-fields" style="display:none;">
+      <div class="field"><label>Check #</label><input id="pp-checknumber" placeholder="0001234"></div>
+      <div class="field"><label>Bank</label><input id="pp-bankname" placeholder="e.g. BDO"></div>
+    </div>
+    <div class="field" id="pp-checkdate-field" style="display:none;"><label>Check date</label><input type="date" id="pp-checkdate" value="${todayISO()}"></div>
+    <p class="muted" id="pp-check-note" style="display:none; margin-top:-8px;">A check/PDC won't count toward your balance until your landlord marks it cleared — even after they approve this submission.</p>
     <div class="field" id="pp-rent-split-field">
       <label>Rent line applies to</label>
       <div id="pp-rent-split-preview" class="rc-sub" style="display:flex; flex-direction:column; gap:3px;"></div>
@@ -5239,6 +5323,12 @@ function portalOpenSubmitPaymentSheet() {
     if (waterEl) waterEl.addEventListener('input', updateLinesSum);
     updateRentSplitPreview();
     updateLinesSum();
+    document.getElementById('pp-method').addEventListener('change', (e) => {
+      const isCheck = e.target.value === 'check';
+      document.getElementById('pp-check-fields').style.display = isCheck ? '' : 'none';
+      document.getElementById('pp-checkdate-field').style.display = isCheck ? '' : 'none';
+      document.getElementById('pp-check-note').style.display = isCheck ? '' : 'none';
+    });
     document.getElementById('pp-save-btn').addEventListener('click', portalSubmitPaymentProof);
   });
 }
@@ -5265,13 +5355,19 @@ async function portalSubmitPaymentProof() {
       await storageProxyUpload(path, file);
       proof = { storagePath: path, name: file.name };
     }
+    const method = document.getElementById('pp-method').value;
     const shared = {
       tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
       datePaid: document.getElementById('pp-date').value || todayISO(),
-      method: document.getElementById('pp-method').value,
+      method,
       notes: document.getElementById('pp-notes').value.trim(),
       proof, status: 'pending', submittedAt: Date.now(), updatedAt: Date.now(),
     };
+    if (method === 'check') {
+      shared.checkNumber = document.getElementById('pp-checknumber').value.trim();
+      shared.bankName = document.getElementById('pp-bankname').value.trim();
+      shared.checkDate = document.getElementById('pp-checkdate').value || shared.datePaid;
+    }
     // Each charge type gets its own pendingPayment doc(s), so the landlord's
     // review/approval and every downstream balance calculation see exactly
     // the same tag-aware split the tenant chose here — nothing left for
