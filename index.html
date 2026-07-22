@@ -1854,23 +1854,35 @@ function outstandingTotalsForTenant(tenant, unit) {
 /** Walks a tenant's RENT-only history (utilities intentionally excluded —
  *  this answers "how many months behind on rent", the number a landlord
  *  actually asks about) backward from the current month to move-in,
- *  counting consecutive unpaid periods ending at today. The first
- *  fully-paid period encountered while walking backward breaks the streak,
- *  since being current again means the tenant isn't presently overdue by
- *  an older gap. Reuses periodsBetween()/amountPaidForCharge() — the same
- *  history-walking building blocks outstandingTotalsForTenant() uses — so
- *  no new schema or data is needed, just a different walk over it. */
+ *  counting consecutive overdue periods ending at today.
+ *
+ *  A calendar month having started does NOT mean that month's rent is due
+ *  yet — the unit's fixed due day still has to arrive. So each period is
+ *  run through the same chargeStatus() due-date logic computeRentStatus()
+ *  uses for the live month, just with that period's own due date
+ *  (YYYY-MM + unit.dueDay) instead of today's. A period that's paid off
+ *  breaks the streak (tenant caught up before that point); a period
+ *  that's merely not due yet (typically only the most recent, in-progress
+ *  one) is skipped rather than counted or treated as a break, so it never
+ *  inflates the count while its due date is still in the future.
+ *  Recomputed fresh on every call, so the result — and any badge built
+ *  from it — moves forward automatically as today crosses each due date;
+ *  there's nothing to update by hand. */
 function computeOverdueHistory(tenantId) {
   const tenant = state.cache.tenants.find(t => t.id === tenantId);
   const unit = tenant && state.cache.units.find(u => u.id === tenant.unitId);
   if (!tenant || !unit) return { months: 0, periods: [] };
   const rentAmt = Number(unit.monthlyRent) || 0;
   if (!rentAmt) return { months: 0, periods: [] };
+  const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
+  const today = new Date();
   const fromPeriod = tenant.moveInDate ? monthKey(new Date(tenant.moveInDate + 'T00:00:00')) : monthKey();
   const periods = periodsBetween(fromPeriod, monthKey());
   const overduePeriods = [];
   for (let i = periods.length - 1; i >= 0; i--) {
     const period = periods[i];
+    const [y, m] = period.split('-').map(Number);
+    const dueDate = new Date(y, m - 1, dueDay);
     const bill = utilityBillFor(tenant.id, period);
     const weights = {
       rent: rentAmt,
@@ -1878,7 +1890,10 @@ function computeOverdueHistory(tenantId) {
       water: bill ? utilityLineAmount(bill.water) : 0,
     };
     const rentPaid = amountPaidForCharge(tenant.id, period, 'rent', weights);
-    if (rentPaid >= rentAmt) break;
+    const rentBalance = Math.max(0, rentAmt - rentPaid);
+    const { status } = chargeStatus(rentBalance, dueDate, today);
+    if (status === 'paid') break;      // caught up as of this period — streak ends
+    if (status !== 'overdue') continue; // due-soon/upcoming — not overdue yet, don't count
     overduePeriods.unshift(period);
   }
   return { months: overduePeriods.length, periods: overduePeriods };
