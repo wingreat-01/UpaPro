@@ -164,6 +164,20 @@
     border-style:solid; background:var(--c); color:#fff;
     box-shadow:0 3px 8px color-mix(in srgb, var(--c) 45%, transparent);
   }
+  /* 3+ consecutive months overdue on rent — a step past the ordinary
+     "overdue" stamp: solid fill instead of dashed outline, same rust hue,
+     so it reads as more urgent without introducing a new color. */
+  .stamp.critical{--c:var(--rust); border-style:solid; background:var(--c); color:#fff; box-shadow:0 3px 8px color-mix(in srgb, var(--c) 45%, transparent);}
+
+  /* ---------- OVERDUE-MONTHS BADGE (consecutive months behind on rent) ---------- */
+  .badge-months{
+    display:inline-block; font-size:.64rem; font-weight:700; text-transform:uppercase;
+    letter-spacing:.03em; padding:2px 7px; border-radius:99px; white-space:nowrap;
+    margin-top:3px;
+  }
+  .badge-months.due{background:var(--amber-soft); color:var(--amber);}
+  .badge-months.overdue{background:var(--rust-soft); color:var(--rust);}
+  .badge-months.critical{background:var(--rust); color:#fff;}
 
   /* ---------- EMPTY STATE ---------- */
   .empty{
@@ -1837,6 +1851,49 @@ function outstandingTotalsForTenant(tenant, unit) {
   return totals;
 }
 
+/** Walks a tenant's RENT-only history (utilities intentionally excluded —
+ *  this answers "how many months behind on rent", the number a landlord
+ *  actually asks about) backward from the current month to move-in,
+ *  counting consecutive unpaid periods ending at today. The first
+ *  fully-paid period encountered while walking backward breaks the streak,
+ *  since being current again means the tenant isn't presently overdue by
+ *  an older gap. Reuses periodsBetween()/amountPaidForCharge() — the same
+ *  history-walking building blocks outstandingTotalsForTenant() uses — so
+ *  no new schema or data is needed, just a different walk over it. */
+function computeOverdueHistory(tenantId) {
+  const tenant = state.cache.tenants.find(t => t.id === tenantId);
+  const unit = tenant && state.cache.units.find(u => u.id === tenant.unitId);
+  if (!tenant || !unit) return { months: 0, periods: [] };
+  const rentAmt = Number(unit.monthlyRent) || 0;
+  if (!rentAmt) return { months: 0, periods: [] };
+  const fromPeriod = tenant.moveInDate ? monthKey(new Date(tenant.moveInDate + 'T00:00:00')) : monthKey();
+  const periods = periodsBetween(fromPeriod, monthKey());
+  const overduePeriods = [];
+  for (let i = periods.length - 1; i >= 0; i--) {
+    const period = periods[i];
+    const bill = utilityBillFor(tenant.id, period);
+    const weights = {
+      rent: rentAmt,
+      electricity: bill ? utilityLineAmount(bill.electricity) : 0,
+      water: bill ? utilityLineAmount(bill.water) : 0,
+    };
+    const rentPaid = amountPaidForCharge(tenant.id, period, 'rent', weights);
+    if (rentPaid >= rentAmt) break;
+    overduePeriods.unshift(period);
+  }
+  return { months: overduePeriods.length, periods: overduePeriods };
+}
+/** Threshold tier for a consecutive-overdue-months count — drives the badge
+ *  class/label wherever a tenant is listed. 3+ gets the distinct "critical"
+ *  treatment (filled/solid stamp) instead of just the dashed outline used
+ *  for 1-2 months. */
+function overdueTier(months) {
+  if (months >= 3) return { cls: 'critical', label: `${months} mo overdue` };
+  if (months === 2) return { cls: 'overdue', label: `${months} mo overdue` };
+  if (months === 1) return { cls: 'due', label: `${months} mo overdue` };
+  return null;
+}
+
 /* --------------------------------- TOAST ---------------------------------- */
 let toastTimer;
 function showToast(msg) {
@@ -2177,7 +2234,12 @@ function renderDashboard() {
 }
 
 function rentRowHTML(r) {
-  const stampClass = r.status === 'overdue' ? 'overdue' : (r.status === 'due-soon' ? 'due' : '');
+  // Consecutive months behind on rent specifically (not electricity/water) —
+  // only meaningful once the tenant is actually in 'overdue' status, since
+  // a 'due-soon'/'paid' tenant hasn't missed anything yet.
+  const overdue = r.status === 'overdue' ? computeOverdueHistory(r.tenant.id) : null;
+  const tier = overdue && overdue.months >= 1 ? overdueTier(overdue.months) : null;
+  const stampClass = tier ? tier.cls : (r.status === 'overdue' ? 'overdue' : (r.status === 'due-soon' ? 'due' : ''));
   const stampText = r.status === 'overdue' ? `${r.daysOverdue}D LATE` : (r.status === 'due-soon' ? 'DUE SOON' : 'OK');
   const stampStyle = r.status === 'due-soon' ? ' style="--c:var(--rust);"' : '';
   return `
@@ -2186,6 +2248,7 @@ function rentRowHTML(r) {
       <div class="rc-main">
         <div class="rc-title">${escapeHTML(r.tenant.fullName)}</div>
         <div class="rc-sub">${escapeHTML(r.location ? r.location.name : '')} · ${escapeHTML(r.unit.unitLabel)}</div>
+        ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
       </div>
       <div class="rc-amt">${r.balance > 0 ? peso(r.balance) + ' due' : peso(r.expected)}</div>
     </div>`;
@@ -2288,10 +2351,11 @@ function renderLocationDetail(locationId) {
     ? units.map(u => {
         const tenant = activeTenantForUnit(u.id);
         const row = statusByUnit[u.id];
-        let stamp, amountHTML;
+        let stamp, amountHTML, tier = null;
         if (u.status === 'occupied' && row) {
+          if (row.status === 'overdue') tier = tenant ? overdueTier(computeOverdueHistory(tenant.id).months) : null;
           stamp = row.status === 'overdue'
-            ? { cls: 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
+            ? { cls: tier ? `filled ${tier.cls}` : 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
             : row.status === 'due-soon'
               ? { cls: 'due', color: 'var(--rust)', text: 'DUE SOON' }
               : { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
@@ -2309,6 +2373,7 @@ function renderLocationDetail(locationId) {
           <div class="rc-main">
             <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
             <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Vacant'}</div>
+            ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
           </div>
           ${amountHTML}
         </div>`;
@@ -2440,6 +2505,11 @@ function renderUnitDetail(unitId) {
           <div class="kv"><div class="k">${label}</div><div class="v" style="color:${colorFor(c)}">${c.balance > 0 ? peso(c.balance) + ' due ' + c.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Paid'}</div></div>` : '';
     const tenantSettlement = settlementForTenant(tenant.id);
     const moveOutLabel = tenantSettlement && tenantSettlement.status === 'draft' ? 'Move-out settlement (draft)' : 'Move out';
+    // Only worth computing/showing once rent itself is actually overdue —
+    // a tenant who's current or only late on a utility isn't "months
+    // behind on rent".
+    const overdue = row && row.rent.status === 'overdue' ? computeOverdueHistory(tenant.id) : null;
+    const tier = overdue && overdue.months >= 1 ? overdueTier(overdue.months) : null;
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -2451,6 +2521,7 @@ function renderUnitDetail(unitId) {
           </div>
         </div>
         <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
+        ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
         <div class="kv-grid">
           <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
           <div class="kv"><div class="k">Deposit</div><div class="v">${peso(totalDepositPaid(tenant.id))}</div></div>
