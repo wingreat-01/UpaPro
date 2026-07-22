@@ -3635,7 +3635,7 @@ function openPaymentForm(tenant, unit, existing) {
         </select>
       </div>
     </div>
-    <div class="field" id="f-period-field" style="${initialTag === 'deposit' ? 'display:none;' : ''}"><label id="f-period-label">Period covered</label><input id="f-period" value="${period}" placeholder="2026-07"></div>
+    <div class="field" id="f-period-field" style="${initialTag === 'deposit' ? 'display:none;' : ''}"><label id="f-period-label">Period covered</label><input type="month" id="f-period" value="${period}"></div>
     <p class="muted" id="f-deposit-note" style="${initialTag === 'deposit' ? '' : 'display:none;'} margin-top:-10px;">Deposit money isn't rent for any specific month, so it's kept separate from every month's balance — it won't ever show up as "paid" rent or utilities.</p>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
@@ -4823,7 +4823,7 @@ function portalOpenSubmitPaymentSheet() {
         <select id="pp-method"><option value="gcash">GCash</option><option value="cash">Cash</option><option value="bank">Bank transfer</option></select>
       </div>
     </div>
-    <div class="field" id="pp-period-field" style="display:none;"><label>Period covered</label><input id="pp-period" value="${monthKey()}"></div>
+    <div class="field" id="pp-period-field" style="display:none;"><label>Period covered</label><input type="month" id="pp-period" value="${monthKey()}"></div>
     <div class="field" id="pp-rent-split-field">
       <label>This covers</label>
       <div id="pp-rent-split-preview" class="rc-sub" style="display:flex; flex-direction:column; gap:3px;"></div>
@@ -5151,7 +5151,7 @@ function portalOpenEditPaymentSheet(payment) {
         </select>
       </div>
     </div>
-    <div class="field"><label>Period covered</label><input id="pe-period" value="${period}"></div>
+    <div class="field"><label>Period covered</label><input type="month" id="pe-period" value="${period}"></div>
     <div class="field"><label>Notes</label><textarea id="pe-notes" placeholder="Optional">${escapeHTML(payment.notes || '')}</textarea></div>
     <div class="sheet-actions"><button class="btn btn-accent" id="pe-save-btn">Save changes</button></div>
   `, () => {
