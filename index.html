@@ -4890,6 +4890,43 @@ function portalSplitRentAcrossPeriods(amount) {
   else if (remaining > 0) allocations.push({ period: monthKey(), amount: remaining });
   return allocations;
 }
+/** Total rent still unpaid from move-in through the CURRENT period —
+ *  deliberately includes this month's rent even if its due date hasn't
+ *  passed yet, since "what would catch me all the way up today" is what
+ *  the itemized Submit Payment form wants to default to, not the stricter
+ *  strictly-overdue-only figure portalOutstandingBalance() shows on the
+ *  balance card. Used to default/cap the Rent line in that form. */
+function portalRentOwedToDate() {
+  const t = portal.tenant, u = portal.unit;
+  if (!t || !u) return 0;
+  const rentAmt = Number(u.monthlyRent) || 0;
+  if (rentAmt <= 0) return 0;
+  const fromPeriod = t.moveInDate ? monthKey(new Date(t.moveInDate + 'T00:00:00')) : monthKey();
+  let owed = 0;
+  for (const period of periodsBetween(fromPeriod, monthKey())) {
+    owed += Math.max(0, rentAmt - portalPaidForCharge(period, 'rent'));
+  }
+  return Math.round(owed);
+}
+/** Oldest still-unpaid electricity/water bill from move-in through now. The
+ *  itemized Submit Payment form only ever shows one line per utility type,
+ *  so this picks the single period that actually needs the money rather
+ *  than trying to list every month's bill — the same simplification the
+ *  old single-tag flow made (it only ever looked at the current period). */
+function portalOldestUnpaidUtility(chargeType) {
+  const t = portal.tenant;
+  const toPeriod = monthKey();
+  if (!t) return { period: toPeriod, amount: 0 };
+  const fromPeriod = t.moveInDate ? monthKey(new Date(t.moveInDate + 'T00:00:00')) : monthKey();
+  for (const period of periodsBetween(fromPeriod, toPeriod)) {
+    const bill = portal.utilityBills.find(b => b.period === period) || null;
+    const amt = bill ? utilityLineAmount(chargeType === 'electricity' ? bill.electricity : bill.water) : 0;
+    if (amt <= 0) continue;
+    const balance = Math.max(0, amt - portalPaidForCharge(period, chargeType));
+    if (balance > 0) return { period, amount: Math.round(balance) };
+  }
+  return { period: toPeriod, amount: 0 };
+}
 /** Portal-side equivalent of computeOutstandingBalance() — same due-date
  *  walk from move-in to today, same "only count a charge once its own due
  *  date has passed" rule, just reading portal.payments/portal.utilityBills
@@ -5135,76 +5172,86 @@ async function portalMarkAdminMessagesRead() {
 }
 
 function portalOpenSubmitPaymentSheet() {
+  const rentOwed = portalRentOwedToDate();
+  const elecInfo = portalOldestUnpaidUtility('electricity');
+  const waterInfo = portalOldestUnpaidUtility('water');
+  // Only show a utility line when there's actually a real bill owing it —
+  // a tenant with no utility bills on file (or fully paid up) just gets
+  // the Rent line, same as the old single-tag flow effectively did.
+  const showElec = elecInfo.amount > 0;
+  const showWater = waterInfo.amount > 0;
+  const rentDefault = rentOwed > 0 ? rentOwed : (portal.unit ? Number(portal.unit.monthlyRent) || 0 : 0);
   portalOpenSheet(`
     <h2>Submit payment</h2>
     <p class="muted" style="margin-top:-6px;">This goes to your landlord for review — it won't count toward your balance until approved.</p>
-    <div class="field"><label>What's this for?</label></div>
-    <div class="tagchip-row" id="ppTagChipRow">
-      <div class="tagchip active" data-tag="rent">Rent</div>
-      <div class="tagchip" data-tag="electricity">⚡ Electricity</div>
-      <div class="tagchip" data-tag="water">💧 Water</div>
-    </div>
-    <div class="field"><label>Amount paid</label><input id="pp-amount" type="number" inputmode="decimal" value="${portal.unit ? portal.unit.monthlyRent : ''}"></div>
+    <div class="field"><label>Total to pay</label><input id="pp-total" type="number" inputmode="decimal" value="${rentDefault + (showElec ? elecInfo.amount : 0) + (showWater ? waterInfo.amount : 0)}"></div>
+    <p class="muted" style="margin-top:-8px;">Typing here fills in the lines below — Rent first, then Electricity, then Water, with anything extra parked as a rent advance. Edit a line directly to override it.</p>
+    <div class="field"><label>Rent${rentOwed > 0 ? ` (${peso(rentOwed)} owed)` : ''}</label><input id="pp-line-rent" type="number" inputmode="decimal" value="${rentDefault}"></div>
+    ${showElec ? `<div class="field"><label>⚡ Electricity — ${monthLabel(elecInfo.period)} (${peso(elecInfo.amount)} owed)</label><input id="pp-line-electricity" type="number" inputmode="decimal" value="${elecInfo.amount}" data-period="${elecInfo.period}"></div>` : ''}
+    ${showWater ? `<div class="field"><label>💧 Water — ${monthLabel(waterInfo.period)} (${peso(waterInfo.amount)} owed)</label><input id="pp-line-water" type="number" inputmode="decimal" value="${waterInfo.amount}" data-period="${waterInfo.period}"></div>` : ''}
+    <p class="muted" id="pp-lines-sum" style="margin-top:-8px;"></p>
     <div class="field-row">
       <div class="field"><label>Date paid</label><input id="pp-date" type="date" value="${todayISO()}"></div>
       <div class="field"><label>Method</label>
         <select id="pp-method"><option value="gcash">GCash</option><option value="cash">Cash</option><option value="bank">Bank transfer</option></select>
       </div>
     </div>
-    <div class="field" id="pp-period-field" style="display:none;"><label>Period covered</label><input type="month" id="pp-period" value="${monthKey()}"></div>
     <div class="field" id="pp-rent-split-field">
-      <label>This covers</label>
+      <label>Rent line applies to</label>
       <div id="pp-rent-split-preview" class="rc-sub" style="display:flex; flex-direction:column; gap:3px;"></div>
     </div>
     <div class="field"><label>Proof (screenshot/receipt photo)</label><input id="pp-proof" type="file" accept="image/*,application/pdf"></div>
     <div class="field"><label>Notes</label><textarea id="pp-notes" placeholder="Optional"></textarea></div>
     <div class="sheet-actions"><button class="btn btn-accent" id="pp-save-btn">Submit for review</button></div>
   `, () => {
-    // Paying more than one month's rent in a single lump sum (catching up
-    // on arrears, paying ahead, or both) is common enough that Rent gets
-    // its own auto-split preview instead of a single free-typed month —
-    // see portalSplitRentAcrossPeriods(). Electricity/water stay single-
-    // period since a utility bill can't be prepaid before it's even billed.
+    const rentEl = document.getElementById('pp-line-rent');
+    const elecEl = document.getElementById('pp-line-electricity');
+    const waterEl = document.getElementById('pp-line-water');
     const updateRentSplitPreview = () => {
-      const amt = Number(document.getElementById('pp-amount').value) || 0;
+      const amt = Number(rentEl.value) || 0;
       const el = document.getElementById('pp-rent-split-preview');
       const allocations = portalSplitRentAcrossPeriods(amt);
       el.innerHTML = allocations.length
         ? allocations.map(a => `<div style="display:flex; justify-content:space-between;"><span>${monthLabel(a.period)}</span><span>${peso(a.amount)}</span></div>`).join('')
-        : '<span class="muted">Enter an amount to see how this applies</span>';
+        : '<span class="muted">Enter a rent amount to see how this applies</span>';
     };
-    const setTagUI = (tag) => {
-      document.getElementById('pp-period-field').style.display = tag === 'rent' ? 'none' : '';
-      document.getElementById('pp-rent-split-field').style.display = tag === 'rent' ? '' : 'none';
-      if (tag === 'rent') updateRentSplitPreview();
+    const updateLinesSum = () => {
+      const sum = (Number(rentEl.value) || 0) + (elecEl ? Number(elecEl.value) || 0 : 0) + (waterEl ? Number(waterEl.value) || 0 : 0);
+      document.getElementById('pp-lines-sum').textContent = `Total from lines above: ${peso(sum)}`;
     };
-    document.getElementById('pp-amount').addEventListener('input', () => {
-      const activeTag = document.querySelector('#ppTagChipRow .tagchip.active').dataset.tag;
-      if (activeTag === 'rent') updateRentSplitPreview();
+    // "Total to pay" is a one-shot fill, not a synced value — typing here
+    // redistributes fresh across the lines (Rent → Electricity → Water,
+    // any leftover parked back on Rent as an advance); editing a line
+    // afterward just changes that line, it doesn't feed back into Total.
+    document.getElementById('pp-total').addEventListener('input', (e) => {
+      let remaining = Math.max(0, Number(e.target.value) || 0);
+      const rentAlloc = Math.min(remaining, rentOwed); remaining -= rentAlloc;
+      const elecAlloc = showElec ? Math.min(remaining, elecInfo.amount) : 0; remaining -= elecAlloc;
+      const waterAlloc = showWater ? Math.min(remaining, waterInfo.amount) : 0; remaining -= waterAlloc;
+      rentEl.value = rentAlloc + remaining; // leftover beyond everything owed rolls forward as a rent advance
+      if (elecEl) elecEl.value = elecAlloc;
+      if (waterEl) waterEl.value = waterAlloc;
+      updateRentSplitPreview();
+      updateLinesSum();
     });
-    document.querySelectorAll('#ppTagChipRow .tagchip').forEach(chip => {
-      chip.addEventListener('click', () => {
-        document.querySelectorAll('#ppTagChipRow .tagchip').forEach(c => c.classList.toggle('active', c === chip));
-        const amtEl = document.getElementById('pp-amount');
-        const period = document.getElementById('pp-period').value.trim() || monthKey();
-        const bill = portal.utilityBills.find(b => b.period === period) || null;
-        const tag = chip.dataset.tag;
-        if (tag === 'rent') amtEl.value = portal.unit ? portal.unit.monthlyRent : '';
-        else if (tag === 'electricity') amtEl.value = bill ? utilityLineAmount(bill.electricity) : '';
-        else if (tag === 'water') amtEl.value = bill ? utilityLineAmount(bill.water) : '';
-        setTagUI(tag);
-      });
-    });
-    setTagUI('rent');
+    rentEl.addEventListener('input', () => { updateRentSplitPreview(); updateLinesSum(); });
+    if (elecEl) elecEl.addEventListener('input', updateLinesSum);
+    if (waterEl) waterEl.addEventListener('input', updateLinesSum);
+    updateRentSplitPreview();
+    updateLinesSum();
     document.getElementById('pp-save-btn').addEventListener('click', portalSubmitPaymentProof);
   });
 }
 
 async function portalSubmitPaymentProof() {
-  const amountClaimed = Number(document.getElementById('pp-amount').value) || 0;
-  if (amountClaimed <= 0) return portalShowToast('Enter an amount greater than 0');
-  const activeTagChip = document.querySelector('#ppTagChipRow .tagchip.active');
-  const tag = activeTagChip ? activeTagChip.dataset.tag : 'rent';
+  const rentEl = document.getElementById('pp-line-rent');
+  const elecEl = document.getElementById('pp-line-electricity');
+  const waterEl = document.getElementById('pp-line-water');
+  const rentAmount = Number(rentEl.value) || 0;
+  const elecAmount = elecEl ? Number(elecEl.value) || 0 : 0;
+  const waterAmount = waterEl ? Number(waterEl.value) || 0 : 0;
+  const amountClaimedTotal = rentAmount + elecAmount + waterAmount;
+  if (amountClaimedTotal <= 0) return portalShowToast('Enter an amount greater than 0');
   const file = document.getElementById('pp-proof').files[0];
   if (file && file.size > MAX_DOC_BYTES) return portalShowToast('File is too large — max 15MB');
   const saveBtn = document.getElementById('pp-save-btn');
@@ -5220,28 +5267,35 @@ async function portalSubmitPaymentProof() {
     }
     const shared = {
       tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
-      tag, datePaid: document.getElementById('pp-date').value || todayISO(),
+      datePaid: document.getElementById('pp-date').value || todayISO(),
       method: document.getElementById('pp-method').value,
       notes: document.getElementById('pp-notes').value.trim(),
       proof, status: 'pending', submittedAt: Date.now(), updatedAt: Date.now(),
     };
-    // Rent: one pendingPayment doc per period it covers, so each still
-    // matches the app's one-payment-covers-one-period assumption and the
-    // landlord reviews/approves them exactly like any other payment — the
-    // "advance payment" is entirely a submission-time UI/split concern,
-    // not a schema change. Electricity/water: always a single doc, as before.
-    const allocations = tag === 'rent'
-      ? portalSplitRentAcrossPeriods(amountClaimed)
-      : [{ period: document.getElementById('pp-period').value.trim() || monthKey(), amount: amountClaimed }];
-    const claims = allocations.map(a => ({
-      id: uid(), ...shared, amountClaimed: a.amount, coveredPeriod: a.period,
-    }));
+    // Each charge type gets its own pendingPayment doc(s), so the landlord's
+    // review/approval and every downstream balance calculation see exactly
+    // the same tag-aware split the tenant chose here — nothing left for
+    // approvePendingPayment() to guess at. Rent: one doc per period it
+    // covers (see portalSplitRentAcrossPeriods). Electricity/water: one
+    // doc each, against the specific period they were owed for.
+    const claims = [];
+    if (rentAmount > 0) {
+      portalSplitRentAcrossPeriods(rentAmount).forEach(a => {
+        claims.push({ id: uid(), ...shared, tag: 'rent', amountClaimed: a.amount, coveredPeriod: a.period });
+      });
+    }
+    if (elecAmount > 0) {
+      claims.push({ id: uid(), ...shared, tag: 'electricity', amountClaimed: elecAmount, coveredPeriod: elecEl.dataset.period || monthKey() });
+    }
+    if (waterAmount > 0) {
+      claims.push({ id: uid(), ...shared, tag: 'water', amountClaimed: waterAmount, coveredPeriod: waterEl.dataset.period || monthKey() });
+    }
     const batch = portal.store.batch();
     claims.forEach(claim => batch.set(portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(claim.id), claim));
     await batch.commit();
     portal.pendingPayments.unshift(...claims);
     portalCloseSheet();
-    portalShowToast(claims.length > 1 ? `Submitted — covers ${claims.length} months, pending review` : 'Submitted — your landlord will review it');
+    portalShowToast(claims.length > 1 ? `Submitted — covers ${claims.length} charges, pending review` : 'Submitted — your landlord will review it');
     portalRenderDashboard();
   } catch (err) {
     console.warn('Payment proof submission failed', err);
