@@ -3926,6 +3926,12 @@ async function renderSettings() {
   const n = pendingReviewCount();
   document.getElementById('pendingReviewsSub').textContent = n ? `${n} waiting for review` : 'Nothing waiting';
   document.getElementById('pendingReviewsDot').classList.toggle('on', n > 0);
+  // Self-hiding one-time fix: once every tenant-submitted payment already
+  // has portalUid (true for a fresh install, and true for anyone who's
+  // already run this once), there's nothing left for this button to do —
+  // no reason to leave a dead migration button sitting in Settings forever.
+  const needsBackfill = state.cache.payments.some(p => p.source === 'portal' && !p.portalUid);
+  document.getElementById('btnBackfillPortalUid').style.display = needsBackfill ? '' : 'none';
 }
 document.getElementById('btnPendingReviews').addEventListener('click', openPendingReviewsSheet);
 document.getElementById('btnOpenPortal').addEventListener('click', openPortalPreviewSheet);
@@ -3956,6 +3962,7 @@ async function backfillPortalUidOnPayments() {
   showToast(skipped
     ? `Fixed ${fixed} · skipped ${skipped} (no linked portal account found)`
     : `Fixed ${fixed} payment record${fixed === 1 ? '' : 's'}`);
+  renderSettings();
 }
 document.getElementById('btnBackfillPortalUid').addEventListener('click', backfillPortalUidOnPayments);
 
