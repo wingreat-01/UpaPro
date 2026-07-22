@@ -704,6 +704,7 @@
       <div class="settings-item" id="btnExport"><div><div class="si-title">Export backup (JSON)</div><div class="si-sub">Save a copy of all your data</div></div><span>⬇️</span></div>
       <div class="settings-item" id="btnImport"><div><div class="si-title">Restore from backup</div><div class="si-sub">Load a previously exported JSON file</div></div><span>⬆️</span></div>
       <input type="file" id="importFile" accept="application/json" style="display:none;">
+      <div class="settings-item" id="btnBackfillPortalUid"><div><div class="si-title">Fix old tenant-submitted payments</div><div class="si-sub" id="backfillPortalUidSub">One-time fix for payments approved before tenant self-edit/delete was added</div></div><span>🔧</span></div>
 
       <div class="section-label">Cloud sync</div>
       <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not signed in</div></div><span class="badge-dot" id="firebaseDot"></span></div>
@@ -3928,6 +3929,35 @@ async function renderSettings() {
 }
 document.getElementById('btnPendingReviews').addEventListener('click', openPendingReviewsSheet);
 document.getElementById('btnOpenPortal').addEventListener('click', openPortalPreviewSheet);
+/** One-time data fix: approvePendingPayment() didn't copy portalUid onto the
+ *  resulting `payments` doc until this was caught, so every tenant-submitted
+ *  payment approved before that fix is missing the field the Firestore rules
+ *  need to let that tenant edit/delete their own record
+ *  (resource.data.portalUid == request.auth.uid). New approvals are fine —
+ *  this only needs to run once to catch what's already in the database, by
+ *  filling in each affected payment's portalUid from its tenant's own
+ *  tenant.portalUid (set once, at portal signup, and never reassigned). */
+async function backfillPortalUidOnPayments() {
+  const affected = state.cache.payments.filter(p => p.source === 'portal' && !p.portalUid);
+  if (!affected.length) { showToast('Nothing to fix — every tenant-submitted payment already has this.'); return; }
+  const btn = document.getElementById('btnBackfillPortalUid');
+  if (btn) btn.style.pointerEvents = 'none';
+  let fixed = 0, skipped = 0;
+  for (const p of affected) {
+    const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+    if (!tenant || !tenant.portalUid) { skipped++; continue; }
+    const updated = { ...p, portalUid: tenant.portalUid, updatedAt: Date.now() };
+    await dbPut('payments', updated);
+    queueRecordSync('payments', updated);
+    fixed++;
+  }
+  await refreshCache();
+  if (btn) btn.style.pointerEvents = '';
+  showToast(skipped
+    ? `Fixed ${fixed} · skipped ${skipped} (no linked portal account found)`
+    : `Fixed ${fixed} payment record${fixed === 1 ? '' : 's'}`);
+}
+document.getElementById('btnBackfillPortalUid').addEventListener('click', backfillPortalUidOnPayments);
 
 /* ------------------------- PENDING PAYMENT REVIEWS (admin) -------------------------
    Tenants submit proof-of-payment claims from the portal; they land here as
@@ -4014,6 +4044,7 @@ async function approvePendingPayment(id) {
     notes: p.notes ? `Tenant-submitted: ${p.notes}` : 'Submitted via tenant portal',
     proof: p.proof || null,
     source: 'portal', // came from a tenant's approved claim — not editable/deletable admin-side, see openPaymentDetailSheet
+    portalUid: p.portalUid, // needed so the tenant-edit/delete Firestore rules can match this record back to them
     updatedAt: Date.now(),
   };
   await dbPut('payments', payment);
