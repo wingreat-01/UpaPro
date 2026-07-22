@@ -711,6 +711,7 @@
 
       <div class="section-label">Tenant portal</div>
       <div class="settings-item" id="btnPendingReviews"><div><div class="si-title">Pending payment reviews</div><div class="si-sub" id="pendingReviewsSub">Nothing waiting</div></div><span class="badge-dot" id="pendingReviewsDot"></span></div>
+      <div class="settings-item" id="btnPendingChecks"><div><div class="si-title">Pending checks</div><div class="si-sub" id="pendingChecksSub">Nothing waiting</div></div><span class="badge-dot" id="pendingChecksDot"></span></div>
       <div class="settings-item" id="btnOpenPortal"><div><div class="si-title">Open tenant portal</div><div class="si-sub">Preview what tenants see, or share the link</div></div><span>↗️</span></div>
 
       <div class="section-label">About</div>
@@ -1545,9 +1546,18 @@ function totalDepositPaid(tenantId) {
     .filter(p => p.tenantId === tenantId && p.tag === 'deposit')
     .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
 }
+/** A Check/PDC payment isn't real money in hand yet — the check could still
+ *  bounce — so it must NOT count toward any balance until the admin marks it
+ *  'cleared' via the Pending Checks list. A check marked 'bounced' never
+ *  counts either (the money never actually arrived). Every place that sums
+ *  "how much has this tenant paid" filters through this so a pending/bounced
+ *  check can never quietly slip into a balance calculation. */
+function isUnclearedCheck(p) {
+  return p.method === 'check' && p.clearanceStatus !== 'cleared';
+}
 function amountPaidThisPeriod(tenantId, period) {
   return state.cache.payments
-    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit')
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit' && !isUnclearedCheck(p))
     .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
 }
 /** Tag-aware balance allocation. A payment tagged 'rent'/'electricity'/'water'
@@ -1565,7 +1575,7 @@ function amountPaidThisPeriod(tenantId, period) {
 function amountPaidForCharge(tenantId, period, chargeType, weights, excludeId) {
   const totalExpected = (weights.rent || 0) + (weights.electricity || 0) + (weights.water || 0);
   return state.cache.payments
-    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit' && p.id !== excludeId)
+    .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit' && p.id !== excludeId && !isUnclearedCheck(p))
     .reduce((sum, p) => {
       const amt = Number(p.amountPaid) || 0;
       if (!amt) return sum;
@@ -1575,6 +1585,58 @@ function amountPaidForCharge(tenantId, period, chargeType, weights, excludeId) {
       if (totalExpected > 0) return sum + amt * ((weights[chargeType] || 0) / totalExpected);
       return chargeType === 'rent' ? sum + amt : sum;
     }, 0);
+}
+/* ---------------------------- PDC / CHECK PAYMENTS ----------------------------
+   A Check/PDC payment record lives in the normal `payments` store (see
+   openPaymentForm) tagged method:'check', with its own clearanceStatus:
+   'pending' → 'cleared' or 'bounced'. isUnclearedCheck() above keeps a
+   pending/bounced check out of every balance calculation. This section adds
+   the "list of checks waiting to be dealt with" view and the bounced-check
+   fee that gets tacked onto a tenant's balance if one bounces. */
+function pendingChecks() {
+  return state.cache.payments
+    .filter(p => p.method === 'check' && p.clearanceStatus === 'pending')
+    .sort((a, b) => (a.checkDate || '').localeCompare(b.checkDate || ''));
+}
+/** Checks whose printed date has already arrived (or passed) and are still
+ *  sitting un-deposited — the thing a landlord actually needs a nudge about,
+ *  as opposed to a post-dated check that isn't bankable yet. */
+function checksReadyToDeposit() {
+  const today = todayISO();
+  return pendingChecks().filter(p => (p.checkDate || '') <= today);
+}
+/** Bounced-check fees are their own small ledger on the tenant record
+ *  (tenant.bouncedFees) rather than a `payments` row, since a fee is money
+ *  OWED, not money received — the opposite direction from everything
+ *  amountPaidForCharge() sums. Unresolved (unpaid/unwaived) fees are what
+ *  show on the tenant's unit page next to Total owed. */
+function unresolvedBouncedFees(tenant) {
+  return (tenant && tenant.bouncedFees || []).filter(f => !f.resolved);
+}
+function totalBouncedFees(tenant) {
+  return unresolvedBouncedFees(tenant).reduce((sum, f) => sum + (Number(f.amount) || 0), 0);
+}
+/** Marks a pending check cleared or bounced. Bouncing also appends an
+ *  unresolved fee to the tenant's record so it surfaces on their unit page
+ *  until the admin resolves it. */
+async function resolveCheckClearance(payment, outcome, bounceFeeAmount) {
+  const updatedPayment = { ...payment, clearanceStatus: outcome, updatedAt: Date.now() };
+  await dbPut('payments', updatedPayment);
+  queueRecordSync('payments', updatedPayment);
+  if (outcome === 'bounced') {
+    const tenant = state.cache.tenants.find(t => t.id === payment.tenantId);
+    if (tenant) {
+      const fee = {
+        id: uid(), amount: Math.max(0, Number(bounceFeeAmount) || 0),
+        note: `Bounced check${payment.checkNumber ? ' #' + payment.checkNumber : ''}${payment.bankName ? ' (' + payment.bankName + ')' : ''} — ${peso(payment.amountPaid)}`,
+        checkPaymentId: payment.id, addedAt: Date.now(), resolved: false,
+      };
+      const updatedTenant = { ...tenant, bouncedFees: [...(tenant.bouncedFees || []), fee], updatedAt: Date.now() };
+      await dbPut('tenants', updatedTenant);
+      queueRecordSync('tenants', updatedTenant);
+    }
+  }
+  await refreshCache();
 }
 function pendingReviewCount() {
   return state.cache.pendingPayments.filter(p => p.status === 'pending').length;
@@ -2016,6 +2078,50 @@ function openOutstandingBreakdownSheet(tenantId) {
   `);
 }
 
+/** Bounced-check fees are resolved by hand here, one at a time — either
+ *  "Mark paid" (the tenant settled it in cash/GCash/whatever, outside the
+ *  normal rent/electricity/water balance) or "Waive" (the admin lets it go).
+ *  Both just flip resolved:true; unresolvedBouncedFees()/totalBouncedFees()
+ *  then stop counting it, so the row on the unit page disappears once every
+ *  fee here is resolved. */
+function openBouncedFeesSheet(tenant) {
+  openSheet(`
+    <h2>${escapeHTML(tenant.fullName)}'s bounced-check fees</h2>
+    <div class="card-list" id="bouncedFeesListEl"></div>
+  `, () => renderBouncedFeesListEl(tenant.id));
+}
+function renderBouncedFeesListEl(tenantId) {
+  const list = document.getElementById('bouncedFeesListEl');
+  if (!list) return;
+  const tenant = state.cache.tenants.find(t => t.id === tenantId);
+  const fees = unresolvedBouncedFees(tenant);
+  list.innerHTML = fees.length ? fees.map(f => `
+    <div class="row-card" style="cursor:default; flex-wrap:wrap;">
+      <div class="rc-main">
+        <div class="rc-title">${peso(f.amount)}</div>
+        <div class="rc-sub">${escapeHTML(f.note || '')}</div>
+      </div>
+      <div style="width:100%; display:flex; gap:8px; margin-top:10px;">
+        <button class="btn btn-primary btn-sm" style="flex:1;" data-fee-id="${f.id}" data-action="paid">✅ Mark paid</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" data-fee-id="${f.id}" data-action="waive">Waive</button>
+      </div>
+    </div>`).join('') : emptyHTML('🎉', 'Nothing outstanding', 'Every bounced-check fee has been resolved.');
+  list.querySelectorAll('button[data-fee-id]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const t = state.cache.tenants.find(x => x.id === tenantId);
+      if (!t) return;
+      const updatedFees = (t.bouncedFees || []).map(f => f.id === btn.dataset.feeId ? { ...f, resolved: true } : f);
+      const updatedTenant = { ...t, bouncedFees: updatedFees, updatedAt: Date.now() };
+      await dbPut('tenants', updatedTenant);
+      queueRecordSync('tenants', updatedTenant);
+      await refreshCache();
+      showToast(btn.dataset.action === 'paid' ? 'Fee marked paid' : 'Fee waived');
+      renderBouncedFeesListEl(tenantId);
+      render();
+    });
+  });
+}
+
 /* --------------------------------- TOAST ---------------------------------- */
 let toastTimer;
 function showToast(msg) {
@@ -2336,6 +2442,7 @@ function renderDashboard() {
   const collected = rows.reduce((s, r) => s + r.paid, 0);
   const expected = rows.reduce((s, r) => s + r.expected, 0);
   const overdueCount = rows.filter(r => r.status === 'overdue').length;
+  const readyChecks = checksReadyToDeposit();
 
   document.getElementById('dashStats').innerHTML = `
     <div class="stat-card"><div class="val">${units.length}</div><div class="lbl">Total units · ${locations.length} locations</div></div>
@@ -2346,7 +2453,14 @@ function renderDashboard() {
       <div><div class="lbl" style="margin-bottom:2px;">Overdue right now</div><div class="val">${overdueCount} tenant${overdueCount === 1 ? '' : 's'}</div></div>
       <div class="stamp ${overdueCount ? 'overdue' : ''} small">${overdueCount ? 'ALERT' : 'CLEAR'}</div>
     </div>
+    ${readyChecks.length ? `
+    <div class="stat-card wide warn" id="dashChecksReadyCard" style="cursor:pointer;">
+      <div><div class="lbl" style="margin-bottom:2px;">Checks ready to deposit</div><div class="val">${readyChecks.length} check${readyChecks.length === 1 ? '' : 's'}</div></div>
+      <div class="stamp overdue small">DEPOSIT</div>
+    </div>` : ''}
   `;
+  const readyCard = document.getElementById('dashChecksReadyCard');
+  if (readyCard) readyCard.addEventListener('click', openPendingChecksSheet);
 
   const flagged = rows.filter(r => r.status === 'overdue' || r.status === 'due-soon').slice(0, 6);
   document.getElementById('dashOverdue').innerHTML = flagged.length
@@ -2645,6 +2759,7 @@ function renderUnitDetail(unitId) {
     const owed = row && row.status === 'overdue' ? computeOutstandingBalance(tenant.id) : null;
     const showTotalOwed = owed && owed.total > row.balance;
     const advanceCredit = computeAdvanceCredit(tenant.id);
+    const bouncedFeesTotal = totalBouncedFees(tenant);
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -2660,6 +2775,10 @@ function renderUnitDetail(unitId) {
         ${showTotalOwed ? `
         <div class="kv" id="totalOwedRow" style="margin-top:10px; padding:10px 12px; background:var(--rust-soft); border-radius:10px; cursor:pointer;">
           <div class="k">Total owed (tap for breakdown)</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(owed.total)}</div>
+        </div>` : ''}
+        ${bouncedFeesTotal > 0 ? `
+        <div class="kv" id="bouncedFeesRow" style="margin-top:10px; padding:10px 12px; background:var(--rust-soft); border-radius:10px; cursor:pointer;">
+          <div class="k">⚠️ Bounced-check fees (tap to manage)</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(bouncedFeesTotal)}</div>
         </div>` : ''}
         ${advanceCredit > 0 ? `
         <div class="kv" style="margin-top:10px; padding:10px 12px; background:var(--peso-soft); border-radius:10px;">
@@ -2685,6 +2804,7 @@ function renderUnitDetail(unitId) {
         </div>
       </div>`;
     if (showTotalOwed) document.getElementById('totalOwedRow').addEventListener('click', () => openOutstandingBreakdownSheet(tenant.id));
+    if (bouncedFeesTotal > 0) document.getElementById('bouncedFeesRow').addEventListener('click', () => openBouncedFeesSheet(tenant));
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
@@ -3666,9 +3786,16 @@ function openPaymentForm(tenant, unit, existing) {
           <option value="cash"${isEdit && existing.method === 'cash' ? ' selected' : ''}>Cash</option>
           <option value="gcash"${isEdit && existing.method === 'gcash' ? ' selected' : ''}>GCash</option>
           <option value="bank"${isEdit && existing.method === 'bank' ? ' selected' : ''}>Bank transfer</option>
+          <option value="check"${isEdit && existing.method === 'check' ? ' selected' : ''}>Check / PDC</option>
         </select>
       </div>
     </div>
+    <div class="field-row" id="f-check-fields" style="${isEdit && existing.method === 'check' ? '' : 'display:none;'}">
+      <div class="field"><label>Check #</label><input id="f-checknumber" value="${isEdit ? escapeAttr(existing.checkNumber || '') : ''}" placeholder="0001234"></div>
+      <div class="field"><label>Bank</label><input id="f-bankname" value="${isEdit ? escapeAttr(existing.bankName || '') : ''}" placeholder="e.g. BDO"></div>
+    </div>
+    <div class="field" id="f-checkdate-field" style="${isEdit && existing.method === 'check' ? '' : 'display:none;'}"><label>Check date</label><input type="date" id="f-checkdate" value="${isEdit ? (existing.checkDate || '') : todayISO()}"></div>
+    <p class="muted" id="f-check-note" style="${isEdit && existing.method === 'check' ? '' : 'display:none;'} margin-top:-10px;">This won't count toward the balance until you mark the check cleared in Settings → Pending checks — it stays due/late until then, protecting you from a bounced check.</p>
     <div class="field" id="f-period-field" style="${initialTag === 'deposit' ? 'display:none;' : ''}"><label id="f-period-label">Period covered</label><input type="month" id="f-period" value="${period}"></div>
     <p class="muted" id="f-deposit-note" style="${initialTag === 'deposit' ? '' : 'display:none;'} margin-top:-10px;">Deposit money isn't rent for any specific month, so it's kept separate from every month's balance — it won't ever show up as "paid" rent or utilities.</p>
     <div class="field" id="f-overpay-field" style="display:none;">
@@ -3711,6 +3838,12 @@ function openPaymentForm(tenant, unit, existing) {
       field.style.display = '';
     };
     document.getElementById('f-amount').addEventListener('input', refreshOverpayUI);
+    document.getElementById('f-method').addEventListener('change', (e) => {
+      const isCheck = e.target.value === 'check';
+      document.getElementById('f-check-fields').style.display = isCheck ? '' : 'none';
+      document.getElementById('f-checkdate-field').style.display = isCheck ? '' : 'none';
+      document.getElementById('f-check-note').style.display = isCheck ? '' : 'none';
+    });
     document.querySelectorAll('#tagChipRow .tagchip').forEach(chip => {
       chip.addEventListener('click', () => {
         tag = chip.dataset.tag;
@@ -3781,6 +3914,20 @@ function openPaymentForm(tenant, unit, existing) {
         source: isEdit ? (existing.source || 'admin') : 'admin',
         updatedAt: Date.now(),
       };
+      if (obj.method === 'check') {
+        obj.checkNumber = document.getElementById('f-checknumber').value.trim();
+        obj.bankName = document.getElementById('f-bankname').value.trim();
+        obj.checkDate = document.getElementById('f-checkdate').value || datePaid;
+        // Never downgrade an already-cleared/bounced check back to pending on
+        // an unrelated edit (e.g. fixing a typo'd bank name) — only a fresh
+        // check starts pending; preserve whatever the Pending Checks list
+        // already decided for an existing one.
+        obj.clearanceStatus = (isEdit && existing.method === 'check' && existing.clearanceStatus) ? existing.clearanceStatus : 'pending';
+      } else if (isEdit && existing.method === 'check') {
+        // Method was switched away from Check/PDC — drop the now-irrelevant
+        // check fields rather than leaving stale data attached.
+        obj.checkNumber = null; obj.bankName = null; obj.checkDate = null; obj.clearanceStatus = null;
+      }
       if (isEdit && existing.proof) obj.proof = existing.proof;
       await dbPut('payments', obj);
       queueRecordSync('payments', obj);
@@ -4026,6 +4173,12 @@ async function renderSettings() {
   const n = pendingReviewCount();
   document.getElementById('pendingReviewsSub').textContent = n ? `${n} waiting for review` : 'Nothing waiting';
   document.getElementById('pendingReviewsDot').classList.toggle('on', n > 0);
+  const checks = pendingChecks();
+  const readyCount = checksReadyToDeposit().length;
+  document.getElementById('pendingChecksSub').textContent = checks.length
+    ? `${checks.length} waiting${readyCount ? ` · ${readyCount} ready to deposit` : ''}`
+    : 'Nothing waiting';
+  document.getElementById('pendingChecksDot').classList.toggle('on', readyCount > 0);
   // Self-hiding one-time fix: once every tenant-submitted payment already
   // has portalUid (true for a fresh install, and true for anyone who's
   // already run this once), there's nothing left for this button to do —
@@ -4034,6 +4187,7 @@ async function renderSettings() {
   document.getElementById('btnBackfillPortalUid').style.display = needsBackfill ? '' : 'none';
 }
 document.getElementById('btnPendingReviews').addEventListener('click', openPendingReviewsSheet);
+document.getElementById('btnPendingChecks').addEventListener('click', openPendingChecksSheet);
 document.getElementById('btnOpenPortal').addEventListener('click', openPortalPreviewSheet);
 /** One-time data fix: approvePendingPayment() didn't copy portalUid onto the
  *  resulting `payments` doc until this was caught, so every tenant-submitted
@@ -4065,6 +4219,80 @@ async function backfillPortalUidOnPayments() {
   renderSettings();
 }
 document.getElementById('btnBackfillPortalUid').addEventListener('click', backfillPortalUidOnPayments);
+
+/* ------------------------- PENDING CHECKS / PDC (admin) -------------------------
+   Every payment logged with method:'check' sits here as clearanceStatus:
+   'pending' until the admin deposits it and marks the outcome — see
+   pendingChecks()/resolveCheckClearance() above. Kept as its own settings
+   sheet (rather than folded into Pending payment reviews) since a PDC isn't
+   waiting on the admin's judgment call the way a tenant-submitted proof is —
+   it's waiting on the bank. */
+function openPendingChecksSheet() {
+  openSheet(`
+    <h2>Pending checks</h2>
+    <p class="muted" style="margin-top:-6px;">Checks logged here don't count toward a tenant's balance until you mark them cleared.</p>
+    <div class="card-list" id="pendingChecksListEl"></div>
+  `, () => renderPendingChecksListEl());
+}
+function renderPendingChecksListEl() {
+  const list = document.getElementById('pendingChecksListEl');
+  if (!list) return;
+  const rows = pendingChecks();
+  const today = todayISO();
+  list.innerHTML = rows.length ? rows.map(p => {
+    const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+    const unit = state.cache.units.find(u => u.id === p.unitId);
+    const ready = (p.checkDate || '') <= today;
+    return `
+      <div class="row-card" style="cursor:default; flex-wrap:wrap;">
+        <div class="stamp small ${ready ? 'due' : ''}">${ready ? 'READY' : 'UPCOMING'}</div>
+        <div class="rc-main">
+          <div class="rc-title">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
+          <div class="rc-sub">${escapeHTML(unit ? unit.unitLabel : '')} · ${p.checkNumber ? '#' + escapeHTML(p.checkNumber) + ' · ' : ''}${escapeHTML(p.bankName || 'Bank n/a')} · deposit ${escapeHTML(p.checkDate || '—')}</div>
+        </div>
+        <div class="rc-amt">${peso(p.amountPaid)}</div>
+        <div style="width:100%; display:flex; gap:8px; margin-top:10px;">
+          <button class="btn btn-primary btn-sm" style="flex:1;" data-check-id="${p.id}" data-outcome="cleared">✅ Mark cleared</button>
+          <button class="btn btn-danger btn-sm" style="flex:1;" data-check-id="${p.id}" data-outcome="bounced">❌ Mark bounced</button>
+        </div>
+      </div>`;
+  }).join('') : emptyHTML('🏦', 'No pending checks', 'Checks you log with Method = Check / PDC show up here until cleared.');
+  list.querySelectorAll('button[data-check-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const payment = rows.find(p => p.id === btn.dataset.checkId);
+      if (!payment) return;
+      if (btn.dataset.outcome === 'cleared') {
+        resolveCheckClearance(payment, 'cleared').then(() => {
+          showToast('Check marked cleared');
+          renderPendingChecksListEl();
+          renderSettings();
+        });
+      } else {
+        openBounceFeeSheet(payment);
+      }
+    });
+  });
+}
+/** Small follow-up sheet to collect the bounced-check fee amount before
+ *  confirming — defaults to a flat ₱500 but the admin can adjust or zero it
+ *  out if they'd rather not charge one for this tenant. */
+function openBounceFeeSheet(payment) {
+  openSheet(`
+    <h2>Mark check bounced</h2>
+    <p class="muted" style="margin-top:-6px;">This adds a fee to the tenant's balance and keeps the original amount permanently uncounted.</p>
+    <div class="field"><label>Bounced-check fee</label><input id="bf-amount" type="number" inputmode="decimal" value="500" placeholder="0"></div>
+    <div class="sheet-actions"><button class="btn btn-danger" id="bf-confirm-btn">Confirm bounced</button></div>
+  `, () => {
+    document.getElementById('bf-confirm-btn').addEventListener('click', async () => {
+      const feeAmount = Number(document.getElementById('bf-amount').value) || 0;
+      await resolveCheckClearance(payment, 'bounced', feeAmount);
+      closeSheet();
+      showToast('Check marked bounced' + (feeAmount > 0 ? ' · fee added' : ''));
+      openPendingChecksSheet();
+      renderSettings();
+    });
+  });
+}
 
 /* ------------------------- PENDING PAYMENT REVIEWS (admin) -------------------------
    Tenants submit proof-of-payment claims from the portal; they land here as
@@ -4619,7 +4847,7 @@ function portalPaidForCharge(period, chargeType) {
   const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
   const totalExpected = rentAmt + elecAmt + waterAmt;
   return portal.payments
-    .filter(p => p.coveredPeriod === period && p.tag !== 'deposit')
+    .filter(p => p.coveredPeriod === period && p.tag !== 'deposit' && !isUnclearedCheck(p))
     .reduce((sum, p) => {
       const amt = Number(p.amountPaid) || 0;
       if (!amt) return sum;
