@@ -4469,6 +4469,61 @@ async function portalRedeemInvite() {
 }
 
 /* -------------------------------- DASHBOARD -------------------------------- */
+/** Portal-side equivalent of amountPaidForCharge() — tag-aware allocation
+ *  over portal.payments instead of state.cache.payments. Shared by
+ *  portalOutstandingBalance() and portalSplitRentAcrossPeriods() so both
+ *  use the exact same payment-matching rule. */
+function portalPaidForCharge(period, chargeType) {
+  const bill = portal.utilityBills.find(b => b.period === period) || null;
+  const rentAmt = portal.unit ? Number(portal.unit.monthlyRent) || 0 : 0;
+  const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+  const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+  const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+  const totalExpected = rentAmt + elecAmt + waterAmt;
+  return portal.payments
+    .filter(p => p.coveredPeriod === period && p.tag !== 'deposit')
+    .reduce((sum, p) => {
+      const amt = Number(p.amountPaid) || 0;
+      if (!amt) return sum;
+      if (p.tag) return p.tag === chargeType ? sum + amt : sum;
+      if (totalExpected > 0) return sum + amt * ((weights[chargeType] || 0) / totalExpected);
+      return chargeType === 'rent' ? sum + amt : sum;
+    }, 0);
+}
+/** For the Rent tab of Submit Payment: splits one lump sum across periods
+ *  starting from the tenant's oldest period with any rent still owed,
+ *  oldest first, each period capped at what it actually still owes. Once
+ *  every existing owed period is fully covered, any leftover keeps
+ *  rolling forward into periods that haven't started yet — that's what
+ *  turns a payment bigger than one month's rent into a genuine advance
+ *  payment instead of just overpaying the most recent month. Capped at 36
+ *  periods (3 years) forward as a sanity guard against a typo'd amount. */
+function portalSplitRentAcrossPeriods(amount) {
+  const t = portal.tenant, u = portal.unit;
+  const rentAmt = u ? Number(u.monthlyRent) || 0 : 0;
+  if (!t || !u || rentAmt <= 0 || amount <= 0) return [];
+  let [y, m] = (t.moveInDate ? monthKey(new Date(t.moveInDate + 'T00:00:00')) : monthKey()).split('-').map(Number);
+  const allocations = [];
+  let remaining = Math.round(amount);
+  let guard = 0;
+  while (remaining > 0 && guard < 36) {
+    const period = `${y}-${String(m).padStart(2, '0')}`;
+    const owed = Math.max(0, rentAmt - portalPaidForCharge(period, 'rent'));
+    if (owed > 0) {
+      const alloc = Math.min(owed, remaining);
+      allocations.push({ period, amount: alloc });
+      remaining -= alloc;
+    }
+    m++; if (m > 12) { m = 1; y++; }
+    guard++;
+  }
+  // Leftover after 3 years of periods means the amount was almost
+  // certainly a typo — rather than silently dropping it, tack it onto the
+  // last period touched so the total submitted still matches what was typed.
+  if (remaining > 0 && allocations.length) allocations[allocations.length - 1].amount += remaining;
+  else if (remaining > 0) allocations.push({ period: monthKey(), amount: remaining });
+  return allocations;
+}
 /** Portal-side equivalent of computeOutstandingBalance() — same due-date
  *  walk from move-in to today, same "only count a charge once its own due
  *  date has passed" rule, just reading portal.payments/portal.utilityBills
@@ -4493,19 +4548,8 @@ function portalOutstandingBalance() {
     const bill = portal.utilityBills.find(b => b.period === period) || null;
     const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
     const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
-    const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
-    const totalExpected = rentAmt + elecAmt + waterAmt;
     const elecDueDate = resolveUtilityDueDate(bill, 'electricityDueDate', period);
     const waterDueDate = resolveUtilityDueDate(bill, 'waterDueDate', period);
-    const paidForTag = (chargeType) => portal.payments
-      .filter(p => p.coveredPeriod === period && p.tag !== 'deposit')
-      .reduce((sum, p) => {
-        const amt = Number(p.amountPaid) || 0;
-        if (!amt) return sum;
-        if (p.tag) return p.tag === chargeType ? sum + amt : sum;
-        if (totalExpected > 0) return sum + amt * ((weights[chargeType] || 0) / totalExpected);
-        return chargeType === 'rent' ? sum + amt : sum;
-      }, 0);
     const charges = [
       ['rent', rentAmt, rentDueDate, 'Rent'],
       ['electricity', elecAmt, elecDueDate, '⚡ Electricity'],
@@ -4513,7 +4557,7 @@ function portalOutstandingBalance() {
     ];
     for (const [key, amt, dueDate, label] of charges) {
       if (amt <= 0) continue;
-      const balance = Math.max(0, amt - paidForTag(key));
+      const balance = Math.max(0, amt - portalPaidForCharge(period, key));
       if (balance <= 0) continue;
       if (chargeStatus(balance, dueDate, today).status !== 'overdue') continue;
       totals[key] += balance;
@@ -4741,11 +4785,37 @@ function portalOpenSubmitPaymentSheet() {
         <select id="pp-method"><option value="gcash">GCash</option><option value="cash">Cash</option><option value="bank">Bank transfer</option></select>
       </div>
     </div>
-    <div class="field"><label>Period covered</label><input id="pp-period" value="${monthKey()}"></div>
+    <div class="field" id="pp-period-field" style="display:none;"><label>Period covered</label><input id="pp-period" value="${monthKey()}"></div>
+    <div class="field" id="pp-rent-split-field">
+      <label>This covers</label>
+      <div id="pp-rent-split-preview" class="rc-sub" style="display:flex; flex-direction:column; gap:3px;"></div>
+    </div>
     <div class="field"><label>Proof (screenshot/receipt photo)</label><input id="pp-proof" type="file" accept="image/*,application/pdf"></div>
     <div class="field"><label>Notes</label><textarea id="pp-notes" placeholder="Optional"></textarea></div>
     <div class="sheet-actions"><button class="btn btn-accent" id="pp-save-btn">Submit for review</button></div>
   `, () => {
+    // Paying more than one month's rent in a single lump sum (catching up
+    // on arrears, paying ahead, or both) is common enough that Rent gets
+    // its own auto-split preview instead of a single free-typed month —
+    // see portalSplitRentAcrossPeriods(). Electricity/water stay single-
+    // period since a utility bill can't be prepaid before it's even billed.
+    const updateRentSplitPreview = () => {
+      const amt = Number(document.getElementById('pp-amount').value) || 0;
+      const el = document.getElementById('pp-rent-split-preview');
+      const allocations = portalSplitRentAcrossPeriods(amt);
+      el.innerHTML = allocations.length
+        ? allocations.map(a => `<div style="display:flex; justify-content:space-between;"><span>${monthLabel(a.period)}</span><span>${peso(a.amount)}</span></div>`).join('')
+        : '<span class="muted">Enter an amount to see how this applies</span>';
+    };
+    const setTagUI = (tag) => {
+      document.getElementById('pp-period-field').style.display = tag === 'rent' ? 'none' : '';
+      document.getElementById('pp-rent-split-field').style.display = tag === 'rent' ? '' : 'none';
+      if (tag === 'rent') updateRentSplitPreview();
+    };
+    document.getElementById('pp-amount').addEventListener('input', () => {
+      const activeTag = document.querySelector('#ppTagChipRow .tagchip.active').dataset.tag;
+      if (activeTag === 'rent') updateRentSplitPreview();
+    });
     document.querySelectorAll('#ppTagChipRow .tagchip').forEach(chip => {
       chip.addEventListener('click', () => {
         document.querySelectorAll('#ppTagChipRow .tagchip').forEach(c => c.classList.toggle('active', c === chip));
@@ -4756,8 +4826,10 @@ function portalOpenSubmitPaymentSheet() {
         if (tag === 'rent') amtEl.value = portal.unit ? portal.unit.monthlyRent : '';
         else if (tag === 'electricity') amtEl.value = bill ? utilityLineAmount(bill.electricity) : '';
         else if (tag === 'water') amtEl.value = bill ? utilityLineAmount(bill.water) : '';
+        setTagUI(tag);
       });
     });
+    setTagUI('rent');
     document.getElementById('pp-save-btn').addEventListener('click', portalSubmitPaymentProof);
   });
 }
@@ -4780,19 +4852,30 @@ async function portalSubmitPaymentProof() {
       await storageProxyUpload(path, file);
       proof = { storagePath: path, name: file.name };
     }
-    const id = uid();
-    const claim = {
-      id, tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
-      amountClaimed, tag, datePaid: document.getElementById('pp-date').value || todayISO(),
+    const shared = {
+      tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
+      tag, datePaid: document.getElementById('pp-date').value || todayISO(),
       method: document.getElementById('pp-method').value,
-      coveredPeriod: document.getElementById('pp-period').value.trim() || monthKey(),
       notes: document.getElementById('pp-notes').value.trim(),
       proof, status: 'pending', submittedAt: Date.now(), updatedAt: Date.now(),
     };
-    await portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(id).set(claim);
-    portal.pendingPayments.unshift(claim);
+    // Rent: one pendingPayment doc per period it covers, so each still
+    // matches the app's one-payment-covers-one-period assumption and the
+    // landlord reviews/approves them exactly like any other payment — the
+    // "advance payment" is entirely a submission-time UI/split concern,
+    // not a schema change. Electricity/water: always a single doc, as before.
+    const allocations = tag === 'rent'
+      ? portalSplitRentAcrossPeriods(amountClaimed)
+      : [{ period: document.getElementById('pp-period').value.trim() || monthKey(), amount: amountClaimed }];
+    const claims = allocations.map(a => ({
+      id: uid(), ...shared, amountClaimed: a.amount, coveredPeriod: a.period,
+    }));
+    const batch = portal.store.batch();
+    claims.forEach(claim => batch.set(portal.store.collection('users').doc(portal.adminUid).collection('pendingPayments').doc(claim.id), claim));
+    await batch.commit();
+    portal.pendingPayments.unshift(...claims);
     portalCloseSheet();
-    portalShowToast('Submitted — your landlord will review it');
+    portalShowToast(claims.length > 1 ? `Submitted — covers ${claims.length} months, pending review` : 'Submitted — your landlord will review it');
     portalRenderDashboard();
   } catch (err) {
     console.warn('Payment proof submission failed', err);
