@@ -1742,14 +1742,13 @@ function computeRentStatus() {
     const water = { amount: waterAmt, paid: waterPaid, balance: waterBalance, dueDate: waterDueDate, ...waterCS };
 
     // Combined view for callers that just want "is this tenant okay overall":
-    // worst status of the three, summed balances, rent's due date (for
-    // anything still showing a single date, e.g. list stamps).
-    const worstStatus = [rent, electricity, water].reduce((worst, c) => order[c.status] < order[worst] ? c.status : worst, 'paid');
-    const daysOverdue = Math.max(
-      rent.status === 'overdue' ? rent.daysOverdue : 0,
-      electricity.status === 'overdue' ? electricity.daysOverdue : 0,
-      water.status === 'overdue' ? water.daysOverdue : 0
-    );
+    // status here now tracks RENT specifically — a late electricity/water
+    // bill still shows its own red balance line on the unit detail page
+    // (via the electricity/water objects below), but it no longer counts
+    // toward the dashboard's Overdue list or the "XD LATE" day count, which
+    // are meant to answer "is rent itself late", not "is anything late".
+    const worstStatus = rent.status;
+    const daysOverdue = rent.status === 'overdue' ? rent.daysOverdue : 0;
 
     rows.push({
       location, unit, tenant,
@@ -1850,6 +1849,36 @@ function outstandingTotalsForTenant(tenant, unit) {
   totals.electricity = Math.round(totals.electricity);
   totals.water = Math.round(totals.water);
   return totals;
+}
+
+/** Mirror image of outstandingTotalsForTenant(): sums up any amount paid
+ *  BEYOND what was owed, across every rent/electricity/water charge in the
+ *  tenant's whole stay. This is the "advance / overpayment" total — money
+ *  the tenant has given that isn't reflected in any balance or overdue view
+ *  because it was recorded against a charge that was already fully settled
+ *  (whether that happened naturally or via openPaymentForm's "apply the
+ *  extra to" picker). Purely informational: nothing here is auto-applied
+ *  against a future bill, the admin decides that at the time a payment is
+ *  logged. */
+function computeAdvanceCredit(tenantId) {
+  const tenant = state.cache.tenants.find(t => t.id === tenantId);
+  const unit = tenant && state.cache.units.find(u => u.id === tenant.unitId);
+  if (!tenant || !unit) return 0;
+  const rentAmt = Number(unit.monthlyRent) || 0;
+  const fromPeriod = tenant.moveInDate ? monthKey(new Date(tenant.moveInDate + 'T00:00:00')) : monthKey();
+  const toDate = tenant.moveOutDate ? new Date(tenant.moveOutDate + 'T00:00:00') : new Date();
+  const toPeriod = monthKey(toDate);
+  let credit = 0;
+  for (const period of periodsBetween(fromPeriod, toPeriod)) {
+    const bill = utilityBillFor(tenant.id, period);
+    const elecAmt = bill ? utilityLineAmount(bill.electricity) : 0;
+    const waterAmt = bill ? utilityLineAmount(bill.water) : 0;
+    const weights = { rent: rentAmt, electricity: elecAmt, water: waterAmt };
+    for (const [key, amt] of [['rent', rentAmt], ['electricity', elecAmt], ['water', waterAmt]]) {
+      credit += Math.max(0, amountPaidForCharge(tenant.id, period, key, weights) - amt);
+    }
+  }
+  return Math.round(credit);
 }
 
 /** Walks a tenant's RENT-only history (utilities intentionally excluded —
@@ -2615,6 +2644,7 @@ function renderUnitDetail(unitId) {
     // rows right underneath it.
     const owed = row && row.status === 'overdue' ? computeOutstandingBalance(tenant.id) : null;
     const showTotalOwed = owed && owed.total > row.balance;
+    const advanceCredit = computeAdvanceCredit(tenant.id);
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -2630,6 +2660,10 @@ function renderUnitDetail(unitId) {
         ${showTotalOwed ? `
         <div class="kv" id="totalOwedRow" style="margin-top:10px; padding:10px 12px; background:var(--rust-soft); border-radius:10px; cursor:pointer;">
           <div class="k">Total owed (tap for breakdown)</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(owed.total)}</div>
+        </div>` : ''}
+        ${advanceCredit > 0 ? `
+        <div class="kv" style="margin-top:10px; padding:10px 12px; background:var(--peso-soft); border-radius:10px;">
+          <div class="k">Advance / credit balance</div><div class="v" style="color:var(--peso); font-weight:700;">${peso(advanceCredit)}</div>
         </div>` : ''}
         <div class="kv-grid">
           <div class="kv"><div class="k">Moved in</div><div class="v">${tenant.moveInDate || '—'}</div></div>
@@ -3637,12 +3671,46 @@ function openPaymentForm(tenant, unit, existing) {
     </div>
     <div class="field" id="f-period-field" style="${initialTag === 'deposit' ? 'display:none;' : ''}"><label id="f-period-label">Period covered</label><input type="month" id="f-period" value="${period}"></div>
     <p class="muted" id="f-deposit-note" style="${initialTag === 'deposit' ? '' : 'display:none;'} margin-top:-10px;">Deposit money isn't rent for any specific month, so it's kept separate from every month's balance — it won't ever show up as "paid" rent or utilities.</p>
+    <div class="field" id="f-overpay-field" style="display:none;">
+      <label id="f-overpay-label">Overpayment</label>
+      <select id="f-overpay-target"></select>
+    </div>
     <div class="field"><label>Notes</label><textarea id="f-notes" placeholder="Optional">${isEdit ? escapeHTML(existing.notes || '') : ''}</textarea></div>
     <div class="sheet-actions">
       <button class="btn btn-accent" id="btnSave">${isEdit ? 'Save changes' : 'Save payment'}</button>
     </div>
   `, () => {
     let tag = initialTag;
+    const tagLabel = (t) => ({ rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water' }[t] || t);
+    // What's still owed for the currently-selected tag this period, ignoring
+    // whatever's typed in the amount field — used to detect an overpayment
+    // as the admin types, so the "apply the extra to" picker can appear
+    // before Save is even clicked.
+    const expectedAndAlreadyFor = (t) => {
+      const expected = t === 'rent' ? (Number(unit.monthlyRent) || 0) : (t === 'electricity' ? elecAmt : waterAmt);
+      const weights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
+      const already = amountPaidForCharge(tenant.id, period, t, weights, isEdit ? existing.id : undefined);
+      return { expected, already };
+    };
+    // Overpaying one charge doesn't automatically cover another — the admin
+    // picks where the extra goes, so this just surfaces the choice rather
+    // than guessing. Left on "keep with <tag>" (the default), the excess
+    // simply stays recorded against the original charge, same as before.
+    const refreshOverpayUI = () => {
+      const field = document.getElementById('f-overpay-field');
+      const select = document.getElementById('f-overpay-target');
+      if (tag === 'deposit') { field.style.display = 'none'; return; }
+      const amountPaid = Number(document.getElementById('f-amount').value) || 0;
+      const { expected, already } = expectedAndAlreadyFor(tag);
+      const overpay = Math.round(Math.max(0, amountPaid - Math.max(0, expected - already)));
+      if (overpay <= 0) { field.style.display = 'none'; select.value = ''; return; }
+      const otherTags = ['rent', 'electricity', 'water'].filter(t => t !== tag);
+      select.innerHTML = `<option value="">Keep with ${tagLabel(tag)} (advance)</option>`
+        + otherTags.map(t => `<option value="${t}">${tagLabel(t)}</option>`).join('');
+      document.getElementById('f-overpay-label').textContent = `This is ${peso(overpay)} more than owed for ${tagLabel(tag)} — apply the extra to:`;
+      field.style.display = '';
+    };
+    document.getElementById('f-amount').addEventListener('input', refreshOverpayUI);
     document.querySelectorAll('#tagChipRow .tagchip').forEach(chip => {
       chip.addEventListener('click', () => {
         tag = chip.dataset.tag;
@@ -3663,13 +3731,15 @@ function openPaymentForm(tenant, unit, existing) {
         periodField.style.display = tag === 'deposit' ? 'none' : '';
         depositNote.style.display = tag === 'deposit' ? '' : 'none';
         if (tag === 'deposit') periodInput.value = '';
+        refreshOverpayUI();
       });
     });
+    refreshOverpayUI();
     document.getElementById('btnSave').addEventListener('click', async () => {
       const amountPaid = Number(document.getElementById('f-amount').value) || 0;
       if (amountPaid <= 0) return showToast('Enter an amount greater than 0');
       const datePaid = document.getElementById('f-datepaid').value || todayISO();
-      let period, status;
+      let period, status, primaryAmount = amountPaid, overflowAmount = 0, overflowTag = '';
       if (tag === 'deposit') {
         // Fixed, non-month coveredPeriod so this can never be picked up by
         // any period lookup — combined with the tag !== 'deposit' filters in
@@ -3685,11 +3755,25 @@ function openPaymentForm(tenant, unit, existing) {
         // otherwise saving would count the old amount toward the new total
         // and could wrongly flip a fully-paid charge to itself again.
         const already = amountPaidForCharge(tenant.id, period, tag, weights, isEdit ? existing.id : undefined);
-        status = (already + amountPaid) >= expectedForTag ? 'paid' : 'partial';
+        const remainingOwed = Math.max(0, expectedForTag - already);
+        // If the admin picked a specific charge for the extra (the
+        // "apply the extra to" picker only appears once amountPaid exceeds
+        // what's owed here), the payment gets split: this charge only ever
+        // records up to what it actually owed, and the excess becomes its
+        // own payment tagged to the chosen charge — see below.
+        const overpayField = document.getElementById('f-overpay-field');
+        const overpaySelect = document.getElementById('f-overpay-target');
+        const chosenTarget = overpayField && overpayField.style.display !== 'none' ? overpaySelect.value : '';
+        if (chosenTarget && amountPaid > remainingOwed) {
+          primaryAmount = remainingOwed;
+          overflowAmount = Math.round((amountPaid - remainingOwed) * 100) / 100;
+          overflowTag = chosenTarget;
+        }
+        status = (already + primaryAmount) >= expectedForTag ? 'paid' : 'partial';
       }
       const obj = {
         id: isEdit ? existing.id : uid(), tenantId: tenant.id, unitId: unit.id, tag,
-        amountPaid, dueDate: tag === 'deposit' ? datePaid : `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
+        amountPaid: primaryAmount, dueDate: tag === 'deposit' ? datePaid : `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
         datePaid,
         method: document.getElementById('f-method').value,
         coveredPeriod: period, status,
@@ -3700,6 +3784,22 @@ function openPaymentForm(tenant, unit, existing) {
       if (isEdit && existing.proof) obj.proof = existing.proof;
       await dbPut('payments', obj);
       queueRecordSync('payments', obj);
+      if (overflowAmount > 0 && overflowTag) {
+        const overflowExpected = overflowTag === 'rent' ? (Number(unit.monthlyRent) || 0) : (overflowTag === 'electricity' ? elecAmt : waterAmt);
+        const overflowWeights = { rent: Number(unit.monthlyRent) || 0, electricity: elecAmt, water: waterAmt };
+        const overflowAlready = amountPaidForCharge(tenant.id, period, overflowTag, overflowWeights);
+        const overflowObj = {
+          id: uid(), tenantId: tenant.id, unitId: unit.id, tag: overflowTag,
+          amountPaid: overflowAmount,
+          dueDate: `${period}-${String(unit.dueDay || 1).padStart(2, '0')}`,
+          datePaid, method: obj.method, coveredPeriod: period,
+          status: (overflowAlready + overflowAmount) >= overflowExpected ? 'paid' : 'partial',
+          notes: `Overpayment reallocated from ${tagLabel(tag)}`,
+          source: obj.source, updatedAt: Date.now(),
+        };
+        await dbPut('payments', overflowObj);
+        queueRecordSync('payments', overflowObj);
+      }
       await refreshCache();
       closeSheet();
       showToast(isEdit ? 'Payment updated' : 'Payment logged');
