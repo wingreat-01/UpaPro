@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_14.html -->
+<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_15.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -806,7 +806,7 @@
 <div id="contractView" style="display: none;">
   <header class="topbar no-print">
     <button class="back-btn show" id="contractBackBtn" aria-label="Close">←</button>
-    <h1>Lease Contract</h1>
+    <h1 id="contractViewTitle">Lease Contract</h1>
     <button class="icon-btn" id="contractPrintBtn" aria-label="Print / Save as PDF">🖨️</button>
   </header>
   <div id="contractDoc" class="contract-doc"></div>
@@ -3763,21 +3763,28 @@ function buildContractMarkup(tenant, c, signature) {
   `;
 }
 
-/* Renders the filled-in contract into #contractDoc and swaps #app out for
-   #contractView (see @media print rules in <style>). Automatically embeds
-   the tenant's e-signature (tenant.leaseSignature) if they've already
-   signed via the portal, so the admin's printed/PDF copy shows the real
-   signature, not just a blank line. */
-function renderContractDoc(tenant, c) {
+/* Renders the filled-in contract into #contractDoc and swaps the current
+   panel out for #contractView (see @media print rules in <style>).
+   Automatically embeds the tenant's e-signature (tenant.leaseSignature) if
+   they've already signed via the portal, so the printed/PDF copy shows the
+   real signature, not just a blank line.
+   Shared by the admin (#app) and, on desktop, the tenant portal
+   (#tenantPortal) — pass fromPortal:true so it hides/restores the right
+   panel and swaps the header title to the tenant-facing wording. */
+function renderContractDoc(tenant, c, opts) {
+  const fromPortal = !!(opts && opts.fromPortal);
   document.getElementById('contractDoc').innerHTML = buildContractMarkup(tenant, c, tenant.leaseSignature || null);
   hydrateDocRefs(document.getElementById('contractDoc'));
-  document.getElementById('app').style.display = 'none';
+  document.getElementById(fromPortal ? 'tenantPortal' : 'app').style.display = 'none';
+  document.getElementById('contractView').dataset.returnTo = fromPortal ? 'tenantPortal' : 'app';
+  document.getElementById('contractViewTitle').textContent = fromPortal ? 'Your Lease Contract' : 'Lease Contract';
   document.getElementById('contractView').style.display = 'flex';
 }
 
 function closeContractView() {
   document.getElementById('contractView').style.display = 'none';
-  document.getElementById('app').style.display = '';
+  const returnTo = document.getElementById('contractView').dataset.returnTo || 'app';
+  document.getElementById(returnTo).style.display = returnTo === 'tenantPortal' ? 'block' : '';
 }
 
 document.getElementById('contractBackBtn').addEventListener('click', closeContractView);
@@ -6056,10 +6063,19 @@ function initSignaturePad(canvasEl) {
 
 /* Read-only view of the (unsigned or already-signed) contract — same
    markup the admin sees, via buildContractMarkup, so wording always
-   matches what the admin generated. */
+   matches what the admin generated.
+   On desktop (>=860px, same breakpoint as the rest of the wide layout)
+   this opens the exact same full-page #contractView the admin uses
+   (styled print-preview "page", print button included) instead of the
+   in-sheet preview — a document like this deserves more room than a
+   modal on a real screen. Phones keep the compact sheet, since there's
+   no room for the full page treatment there. */
 function portalOpenContractView(tenant) {
   const c = tenant.leaseContract;
   if (!c) return portalShowToast('Your lease contract isn\'t ready yet');
+  if (window.matchMedia('(min-width:860px)').matches) {
+    return renderContractDoc(tenant, c, { fromPortal: true });
+  }
   portalOpenSheet(`
     <h2>Your lease contract</h2>
     <div class="cd-preview-box"><div class="contract-doc">${buildContractMarkup(tenant, c, tenant.leaseSignature || null)}</div></div>
