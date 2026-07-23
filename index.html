@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_15.html -->
+<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_16.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -2964,13 +2964,11 @@ function renderUnitDetail(unitId) {
           <button class="btn btn-outline btn-sm" id="paymentSummaryBtn">📄 Summary</button>
           <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn">📁 Documents</button>
           <button class="btn btn-outline btn-sm" id="msgTenantBtn">💬 Messages${unreadMessagesCountForTenant(tenant.id) ? `<span class="msg-unread-badge">${unreadMessagesCountForTenant(tenant.id)}</span>` : ''}</button>
+          <button class="btn btn-outline btn-sm" id="genContractBtn">📃 Contract</button>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
           <button class="btn btn-primary btn-sm" id="editTenantBtn">✏️ Edit Tenant</button>
-        </div>
-        <div style="display:flex; justify-content:center; margin-top:10px;">
-          <button class="btn btn-outline btn-sm" id="genContractBtn" style="flex:none; padding-left:20px; padding-right:20px;">📃 Contract</button>
-        </div>
-        <div style="display:flex; justify-content:center; margin-top:8px;">
-          <button class="btn btn-danger btn-sm" id="moveOutBtn" style="flex:none; padding-left:20px; padding-right:20px;">${moveOutLabel}</button>
+          <button class="btn btn-danger btn-sm" id="moveOutBtn">${moveOutLabel}</button>
         </div>
       </div>`;
     if (showTotalOwed) document.getElementById('totalOwedRow').addEventListener('click', () => openOutstandingBreakdownSheet(tenant.id));
