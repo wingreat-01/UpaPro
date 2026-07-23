@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_11.html -->
+<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_12.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -2934,13 +2934,7 @@ function renderUnitDetail(unitId) {
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-          <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
-          <div style="display:flex; gap:6px; flex-shrink:0;">
-            <button class="btn btn-outline btn-sm" id="msgTenantBtn">💬 Messages${unreadMessagesCountForTenant(tenant.id) ? `<span class="msg-unread-badge">${unreadMessagesCountForTenant(tenant.id)}</span>` : ''}</button>
-            <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn">📄 Documents</button>
-          </div>
-        </div>
+        <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
         <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
         ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
         ${showTotalOwed ? `
@@ -2965,14 +2959,18 @@ function renderUnitDetail(unitId) {
         </div>
         <div class="section-label" style="margin-top:14px;">Tenant portal access</div>
         <div id="tenantPortalAccessBlock"></div>
-        <div style="display:flex; gap:8px; margin-top:14px;">
-          <button class="btn btn-accent" id="logPaymentBtn">Log payment</button>
-          <button class="btn btn-outline" id="paymentSummaryBtn">🧾 Payment summary</button>
+        <button class="btn btn-accent" id="logPaymentBtn" style="width:100%; margin-top:14px;">💰 Log Payment</button>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
+          <button class="btn btn-outline btn-sm" id="paymentSummaryBtn">📄 Summary</button>
+          <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn">📁 Documents</button>
+          <button class="btn btn-outline btn-sm" id="msgTenantBtn">💬 Messages${unreadMessagesCountForTenant(tenant.id) ? `<span class="msg-unread-badge">${unreadMessagesCountForTenant(tenant.id)}</span>` : ''}</button>
+          <button class="btn btn-primary btn-sm" id="editTenantBtn">✏️ Edit Tenant</button>
         </div>
-        <div style="display:flex; gap:8px; margin-top:8px;">
-          <button class="btn btn-primary btn-sm" id="editTenantBtn">✏️ Edit tenant</button>
-          <button class="btn btn-outline btn-sm" id="genContractBtn">📃 Contract</button>
-          <button class="btn btn-danger btn-sm" id="moveOutBtn">${moveOutLabel}</button>
+        <div style="display:flex; justify-content:center; margin-top:10px;">
+          <button class="btn btn-outline btn-sm" id="genContractBtn" style="flex:none; padding-left:20px; padding-right:20px;">📃 Contract</button>
+        </div>
+        <div style="display:flex; justify-content:center; margin-top:8px;">
+          <button class="btn btn-danger btn-sm" id="moveOutBtn" style="flex:none; padding-left:20px; padding-right:20px;">${moveOutLabel}</button>
         </div>
       </div>`;
     if (showTotalOwed) document.getElementById('totalOwedRow').addEventListener('click', () => openOutstandingBreakdownSheet(tenant.id));
