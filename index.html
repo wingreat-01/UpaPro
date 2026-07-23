@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_8.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_9.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1471,6 +1471,41 @@ async function refreshBalanceDataOnOpen() {
   }
 }
 
+// Background refresh for the admin message thread — mirrors
+// refreshBalanceDataOnOpen's shape but for the 'messages' collection only.
+// Called both when the thread sheet opens (so a reply that arrived while
+// it was closed shows up without a manual pull-to-refresh) and when it
+// closes (so unread badges elsewhere update even if the tenant's reply
+// arrived while the admin was mid-conversation). rerenderThread controls
+// whether it's still safe to touch #msgThread (true only right after
+// opening, since by the time this resolves on close the sheet is gone).
+let messagesRefreshBusy = false;
+async function refreshAdminMessages(tenant, rerenderThread) {
+  if (!fbUser || !fbStore || messagesRefreshBusy) return;
+  messagesRefreshBusy = true;
+  try {
+    await pullAndMergeCollection('messages');
+    await refreshCache();
+    if (rerenderThread && activeMessageThreadTenantId === tenant.id) {
+      const thread = document.getElementById('msgThread');
+      if (thread) {
+        thread.innerHTML = msgThreadHTML(messagesForTenant(tenant.id), 'admin', initials(tenant.fullName));
+        thread.scrollTop = thread.scrollHeight;
+      }
+      markTenantMessagesRead(tenant.id);
+    } else {
+      render();
+    }
+  } catch (err) {
+    // Best-effort — the thread already on screen is correct as of the
+    // last real sync, so fail silently rather than surfacing a toast for
+    // a background refresh the user didn't explicitly ask for.
+    console.warn('Messages refresh failed', err);
+  } finally {
+    messagesRefreshBusy = false;
+  }
+}
+
 function cloudAuthErrorMessage(err) {
   switch (err && err.code) {
     case 'auth/invalid-email': return 'That email address looks invalid.';
@@ -2363,9 +2398,15 @@ function renderInviteShareRow(tenant) {
 let sheetDirty = false;
 let sheetHistoryPushed = false;
 let ignoreNextPopstate = false;
+// Set only while the admin message-thread sheet is the one open (by
+// openMessageThreadSheet, below) so closeSheet() knows to kick off a
+// background messages refresh regardless of *how* it closes (✕ button,
+// Escape, or the Android/browser back button all funnel through it).
+let activeMessageThreadTenantId = null;
 
 function openSheet(html, onMount, extraClass) {
   sheetDirty = false;
+  activeMessageThreadTenantId = null;
   document.getElementById('sheetBody').innerHTML =
     `<button class="sheet-close" id="sheetCloseBtn" aria-label="Close">✕</button>
      <div class="sheet-grab"></div>${html}`;
@@ -2401,6 +2442,12 @@ function requestCloseSheet() {
 function closeSheet() {
   sheetDirty = false;
   document.getElementById('sheetBackdrop').classList.remove('show');
+  if (activeMessageThreadTenantId) {
+    const closedTenantId = activeMessageThreadTenantId;
+    activeMessageThreadTenantId = null;
+    const tenant = state.cache.tenants.find(t => t.id === closedTenantId);
+    if (tenant) refreshAdminMessages(tenant, false);
+  }
   if (sheetHistoryPushed) {
     sheetHistoryPushed = false;
     // Guard: only actually step back if we're still sitting on the modal
@@ -3453,6 +3500,7 @@ function openMessageThreadSheet(tenant) {
       <button id="msg-send-btn" aria-label="Send">➤</button>
     </div>
   `, () => {
+    activeMessageThreadTenantId = tenant.id;
     const thread = document.getElementById('msgThread');
     thread.scrollTop = thread.scrollHeight;
     document.getElementById('msg-send-btn').addEventListener('click', () => adminSendMessage(tenant));
@@ -3461,6 +3509,7 @@ function openMessageThreadSheet(tenant) {
     });
     document.getElementById('msg-input').addEventListener('input', (e) => autoGrowMsgInput(e.target));
     markTenantMessagesRead(tenant.id);
+    refreshAdminMessages(tenant, true); // background pull — catches replies that arrived since the last sync
   });
 }
 
@@ -4747,11 +4796,13 @@ function exitTenantPortalMode() {
 }
 document.getElementById('portalBackBtn').addEventListener('click', () => {
   if (portal.view === 'dashboard') { exitTenantPortalMode(); return; }
+  const leavingView = portal.view;
   portal.view = 'dashboard';
   portalRender();
   // Landing back on the balance card is exactly the "did my payment show up
   // yet" moment — refresh it.
   portalRefreshBalanceData();
+  if (leavingView === 'messages') portalRefreshMessages();
 });
 document.getElementById('portalLogoutBtn').addEventListener('click', async () => {
   if (!confirm('Sign out of your tenant portal?')) return;
@@ -4896,6 +4947,39 @@ async function portalRefreshBalanceData() {
 
 function portalUnreadMessageCount() {
   return portal.messages.filter(m => m.sender === 'admin' && !m.readByTenant).length;
+}
+
+// Portal-side counterpart to portalRefreshBalanceData — re-pulls just this
+// tenant's messages from Firestore. Called both when the Messages screen
+// opens (so a reply sent while it was closed shows up without a manual
+// pull-to-refresh) and when the tenant navigates away from it (so the
+// unread badge elsewhere reflects anything that arrived meanwhile).
+let portalMessagesRefreshBusy = false;
+async function portalRefreshMessages() {
+  if (!portal.user || !portal.adminUid || portalMessagesRefreshBusy) return;
+  portalMessagesRefreshBusy = true;
+  try {
+    const msgSnap = await portal.store.collection('users').doc(portal.adminUid).collection('messages').where('tenantId', '==', portal.tenantId).get();
+    portal.messages = []; msgSnap.forEach(d => portal.messages.push(d.data()));
+    portal.messages = portal.messages.filter(m => !m.deleted);
+    portal.messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    if (portal.view === 'messages') {
+      const thread = document.getElementById('portalMsgThread');
+      if (thread) {
+        thread.innerHTML = msgThreadHTML(portal.messages, 'tenant', '🏠', initials(portal.tenant && portal.tenant.fullName));
+        thread.scrollTop = thread.scrollHeight;
+      }
+      portalMarkAdminMessagesRead();
+    } else {
+      // Left the Messages screen already (or never had it open) — just
+      // redraw whatever's on screen now so an unread badge stays in sync.
+      portalRender();
+    }
+  } catch (err) {
+    console.warn('Portal messages refresh failed', err);
+  } finally {
+    portalMessagesRefreshBusy = false;
+  }
 }
 /** A tenant only ever has (at most) one settlement — surfaced as soon as
  *  the admin saves a draft, not just once it's finalized, so the tenant
@@ -5309,6 +5393,7 @@ function portalRenderMessages() {
   });
   document.getElementById('p-msg-input').addEventListener('input', (e) => autoGrowMsgInput(e.target));
   portalMarkAdminMessagesRead();
+  portalRefreshMessages(); // background pull — catches replies sent while this was closed
 }
 
 async function portalSendMessage() {
