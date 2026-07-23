@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_12.html -->
+<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_14.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -3058,20 +3058,22 @@ function renderUnitUtilityBlock(tenant, unit) {
     <div class="section-label" style="margin-top:14px;">${monthLabel(period)} utility bill</div>
     <div class="detail-hero">
       ${bill ? `
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div>${bill.electricityDueDate ? `<div class="muted" style="font-size:.72rem; margin-top:2px;">due ${bill.electricityDueDate}</div>` : ''}</div>
-          <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div>${bill.waterDueDate ? `<div class="muted" style="font-size:.72rem; margin-top:2px;">due ${bill.waterDueDate}</div>` : ''}</div>
-          <div style="background:${isPaid ? 'var(--peso-soft)' : 'var(--amber-soft)'}; border-radius:12px; padding:12px 16px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span class="k" style="font-size:.78rem; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">Total</span>
-              ${isPaid ? `<span class="stamp small">PAID</span>` : ''}
-            </div>
-            <div style="font-size:2.3rem; font-weight:700; line-height:1.2; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">${peso(elecAmt + waterAmt)}</div>
+        <div style="display:flex; gap:16px; align-items:flex-start;">
+          <div style="display:flex; flex-direction:column; gap:10px; flex:1; min-width:0;">
+            <div class="kv"><div class="k">⚡ Electricity</div><div class="v">${peso(elecAmt)}${bill.electricity && bill.electricity.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.electricity.currReading) || 0) - (Number(bill.electricity.prevReading) || 0))} kWh)</span>` : ''}</div>${bill.electricityDueDate ? `<div class="muted" style="font-size:.72rem; margin-top:2px;">due ${bill.electricityDueDate}</div>` : ''}</div>
+            <div class="kv"><div class="k">💧 Water</div><div class="v">${peso(waterAmt)}${bill.water && bill.water.mode === 'submeter' ? ` <span class="muted" style="font-size:.72rem;">(${Math.max(0, (Number(bill.water.currReading) || 0) - (Number(bill.water.prevReading) || 0))} cu.m)</span>` : ''}</div>${bill.waterDueDate ? `<div class="muted" style="font-size:.72rem; margin-top:2px;">due ${bill.waterDueDate}</div>` : ''}</div>
           </div>
-        </div>
-        <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;">
-          <button class="btn btn-primary btn-sm" id="editUtilityBillBtn">✏️ Edit bill</button>
-          ${pastBillsBtn}
+          <div style="display:flex; flex-direction:column; gap:8px; flex-shrink:0;">
+            <div style="background:${isPaid ? 'var(--peso-soft)' : 'var(--amber-soft)'}; border-radius:12px; padding:12px 16px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="k" style="font-size:.78rem; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">Total</span>
+                ${isPaid ? `<span class="stamp small">PAID</span>` : ''}
+              </div>
+              <div style="font-size:2.3rem; font-weight:700; line-height:1.2; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">${peso(elecAmt + waterAmt)}</div>
+            </div>
+            ${pastBillsBtn ? `<div style="align-self:flex-end;">${pastBillsBtn}</div>` : ''}
+            <button class="btn btn-primary btn-sm" id="editUtilityBillBtn" style="align-self:flex-end;">✏️ Edit bill</button>
+          </div>
         </div>
       ` : `
         <p class="muted" style="font-size:.85rem;">No utility bill entered for ${monthLabel(period)} yet.</p>
