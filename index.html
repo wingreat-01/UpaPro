@@ -3804,11 +3804,11 @@ function renderPortalAccessBlock(tenant) {
   }
   if (tenant.portalUid) {
     wrap.innerHTML = `
-      <div class="settings-item" style="margin-bottom:0; padding:6px 8px; gap:8px; flex-wrap:wrap; row-gap:8px;">
-        <div style="min-width:0;"><div class="si-title">Portal active</div><div class="si-sub">${escapeHTML(tenant.portalEmail || '')}</div></div>
-        <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+      <div class="settings-item" style="margin-bottom:0; padding:6px 8px; gap:8px;">
+        <div style="min-width:0; flex:1;"><div class="si-title">Portal active</div><div class="si-sub" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(tenant.portalEmail || '')}</div></div>
+        <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
           <span class="badge-dot on"></span>
-          <button class="btn btn-danger btn-sm" style="flex:none; white-space:nowrap;" id="revokePortalBtn">Revoke portal access</button>
+          <button class="btn btn-danger btn-sm" style="flex:none; white-space:normal; line-height:1.2; text-align:center; padding:6px 10px;" id="revokePortalBtn">Revoke<br>portal access</button>
         </div>
       </div>`;
     document.getElementById('revokePortalBtn').addEventListener('click', () => revokePortalAccess(tenant));
