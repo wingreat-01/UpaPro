@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_6.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_7.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -3417,12 +3417,15 @@ function msgThreadHTML(messages, meSender, theirAvatar) {
   }
   return messages.map(m => {
     const mine = m.sender === meSender;
+    // The bubble uses white-space:pre-wrap so a message's own line breaks
+    // render correctly — which means any whitespace/newlines THIS template
+    // adds around the content get preserved too. Keeping the text, time
+    // span, and closing tag on one line (no indentation in between) avoids
+    // an extra blank line rendering after the timestamp.
     return `
     <div class="msg-row ${mine ? 'me' : 'them'}">
       ${mine ? '' : `<div class="msg-avatar">${theirAvatar}</div>`}
-      <div class="msg-bubble ${mine ? 'me' : 'them'}">
-        ${escapeHTML(m.text)}<span class="m-time">${msgTimeLabel(m.createdAt)}</span>
-      </div>
+      <div class="msg-bubble ${mine ? 'me' : 'them'}">${escapeHTML(m.text)}<span class="m-time">${msgTimeLabel(m.createdAt)}</span></div>
     </div>`;
   }).join('');
 }
