@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "public": "UpaPro",
+    "public": ".",
     "ignore": [
       "firebase.json",
       "**/.*",

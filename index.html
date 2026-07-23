@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_1.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_2.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -293,6 +293,19 @@
   .kv{background:var(--paper-2); border-radius:9px; padding:8px 10px;}
   .kv .k{font-size:.66rem; text-transform:uppercase; color:var(--slate); letter-spacing:.03em;}
   .kv .v{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.86rem; margin-top:2px;}
+
+  /* ---------- Compact data table (e.g. Payment summary's recent list) ---------- */
+  .table-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:12px;}
+  table.summary-table{width:100%; border-collapse:collapse; font-size:.78rem; white-space:nowrap;}
+  table.summary-table th{
+    text-align:left; font-size:.64rem; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--slate); font-weight:600; padding:8px 10px; background:var(--paper-2);
+    position:sticky; top:0;
+  }
+  table.summary-table td{padding:9px 10px; border-top:1px solid var(--line); font-family:'JetBrains Mono',monospace;}
+  table.summary-table td:last-child, table.summary-table th:last-child{text-align:right;}
+  table.summary-table tbody tr{cursor:pointer;}
+  table.summary-table tbody tr:active{background:var(--paper-2);}
 
   .toast{
     position:fixed; left:50%; bottom:calc(100px + var(--safe-b)); transform:translateX(-50%);
@@ -1596,20 +1609,34 @@ function openPaymentSummarySheet(tenant) {
       <div class="kv"><div class="k">🔒 Deposit paid</div><div class="v">${peso(totalsByTag.deposit)}</div></div>
     </div>
     <div class="section-label" style="margin-top:16px;">Most recent</div>
-    <div class="card-list" id="paymentSummaryRecent">
-      ${recent.length ? recent.map(p => `
-        <div class="row-card" data-payment-detail="${p.id}">
-          <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
-          <div class="rc-main">
-            <div class="rc-title">${p.tag === 'deposit' ? 'Deposit' : escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
-            <div class="rc-sub">${tagLabel[p.tag] || 'Rent'} · Paid ${p.datePaid || '—'}</div>
-          </div>
-          <div class="rc-amt">${peso(p.amountPaid)}</div>
-        </div>`).join('') : emptyHTML('🧾', 'No payments logged', 'Log the first payment for this tenant.')}
-    </div>
+    ${recent.length ? `
+    <div class="table-wrap">
+      <table class="summary-table" id="paymentSummaryTable">
+        <thead>
+          <tr>
+            <th>Date paid</th>
+            <th>Period covered</th>
+            <th>Charge</th>
+            <th>Method</th>
+            <th>Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${recent.map(p => `
+          <tr data-payment-detail="${p.id}">
+            <td>${p.datePaid || '—'}</td>
+            <td>${p.tag === 'deposit' ? '—' : escapeHTML(p.coveredPeriod || '—')}</td>
+            <td>${tagLabel[p.tag] || 'Rent'}</td>
+            <td>${escapeHTML(p.method || '—')}</td>
+            <td>${peso(p.amountPaid)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : emptyHTML('🧾', 'No payments logged', 'Log the first payment for this tenant.')}
     ${payments.length > recent.length ? `<p class="muted" style="text-align:center; margin-top:10px;">+${payments.length - recent.length} more — full list is further down the unit page.</p>` : ''}
   `, () => {
-    document.getElementById('paymentSummaryRecent').querySelectorAll('[data-payment-detail]').forEach(row =>
+    const table = document.getElementById('paymentSummaryTable');
+    if (table) table.querySelectorAll('[data-payment-detail]').forEach(row =>
       row.addEventListener('click', () => openPaymentDetailSheet(row.dataset.paymentDetail)));
   });
 }
