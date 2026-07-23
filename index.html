@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_16.html -->
+<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_17.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -3805,11 +3805,13 @@ function renderPortalAccessBlock(tenant) {
   }
   if (tenant.portalUid) {
     wrap.innerHTML = `
-      <div class="settings-item" style="margin-bottom:0;">
+      <div class="settings-item" style="margin-bottom:0; padding:6px 8px; gap:10px;">
         <div><div class="si-title">Portal active</div><div class="si-sub">${escapeHTML(tenant.portalEmail || '')}</div></div>
-        <span class="badge-dot on"></span>
-      </div>
-      <button class="btn btn-danger btn-sm" style="width:100%; margin-top:8px;" id="revokePortalBtn">Revoke portal access</button>`;
+        <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+          <span class="badge-dot on"></span>
+          <button class="btn btn-danger btn-sm" style="flex:none; white-space:nowrap;" id="revokePortalBtn">Revoke portal access</button>
+        </div>
+      </div>`;
     document.getElementById('revokePortalBtn').addEventListener('click', () => revokePortalAccess(tenant));
   } else if (tenant.portalInvite && !tenant.portalInvite.used) {
     wrap.innerHTML = `
