@@ -1,25 +1,25 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
+<!-- saved from url=(0050)file:///C:/Users/INVENTORY-PC/Downloads/index.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>UpaPro — Admin</title>
 <meta name="theme-color" content="#1C2B33">
-<link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="icon" href="icon-192.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="manifest" href="file:///C:/Users/INVENTORY-PC/Downloads/manifest.json">
+<link rel="apple-touch-icon" href="file:///C:/Users/INVENTORY-PC/Downloads/icon-192.png">
+<link rel="icon" href="file:///C:/Users/INVENTORY-PC/Downloads/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
+<link href="./index_files/css2" rel="stylesheet">
 <!-- Cloud sync (M4) — Firebase Auth + Firestore, same compat SDK as Pautang Pro.
      Pautang Pro self-hosts these under vendor/; CDN works identically if you'd
      rather not vendor them locally. -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="./index_files/firebase-app-compat.js.download"></script>
+<script src="./index_files/firebase-auth-compat.js.download"></script>
+<script src="./index_files/firebase-firestore-compat.js.download"></script>
 <!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
      now lives on Supabase Storage instead of Firebase Storage. -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="./index_files/supabase.min.js.download"></script>
 <style>
   :root{
     --ink:#1C2B33;
@@ -436,12 +436,21 @@
   <main>
 
     <!-- DASHBOARD -->
-    <section class="view" id="view-dashboard">
+    <section class="view active" id="view-dashboard">
       <div class="section-label">Overview</div>
-      <div class="stat-grid" id="dashStats"></div>
+      <div class="stat-grid" id="dashStats">
+    <div class="stat-card"><div class="val">1</div><div class="lbl">Total units · 1 locations</div></div>
+    <div class="stat-card "><div class="val">0/1</div><div class="lbl">Occupied</div></div>
+    <div class="stat-card ok"><div class="val">₱0</div><div class="lbl">Collected · Jul 2026</div></div>
+    <div class="stat-card"><div class="val">₱0</div><div class="lbl">Expected this month</div></div>
+    <div class="stat-card wide ok">
+      <div><div class="lbl" style="margin-bottom:2px;">Overdue right now</div><div class="val">0 tenants</div></div>
+      <div class="stamp  small">CLEAR</div>
+    </div>
+  </div>
 
       <div class="section-label">Due soon &amp; overdue</div>
-      <div class="card-list" id="dashOverdue"></div>
+      <div class="card-list" id="dashOverdue"><div class="empty"><div class="e-icon">✅</div><p><strong>Nothing due soon</strong></p><p>Every occupied unit is settled for now.</p></div></div>
     </section>
 
     <!-- LOCATIONS LIST -->
@@ -483,7 +492,7 @@
       <input type="file" id="importFile" accept="application/json" style="display:none;">
 
       <div class="section-label">Cloud sync</div>
-      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not configured — running local-only</div></div><span class="badge-dot" id="firebaseDot"></span></div>
+      <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not signed in — data stays on this device</div></div><span class="badge-dot" id="firebaseDot"></span></div>
 
       <div class="section-label">Tenant portal</div>
       <div class="settings-item" id="btnPendingReviews"><div><div class="si-title">Pending payment reviews</div><div class="si-sub" id="pendingReviewsSub">Nothing waiting</div></div><span class="badge-dot" id="pendingReviewsDot"></span></div>
@@ -495,7 +504,7 @@
 
   </main>
 
-  <button class="fab" id="fabAdd" title="Quick add">+</button>
+  <button class="fab" id="fabAdd" title="Quick add" style="display: none;">+</button>
 
   <nav class="bottomnav">
     <button data-nav="dashboard" class="active"><span class="ic">🏠</span>Dashboard</button>
@@ -542,7 +551,7 @@
 </div>
 <div class="img-lightbox-backdrop" id="imgLightboxBackdrop">
   <button class="img-lightbox-close" id="imgLightboxCloseBtn" aria-label="Close">✕</button>
-  <img id="imgLightboxImg" src="" alt="Document preview">
+  <img id="imgLightboxImg" src="file:///C:/Users/INVENTORY-PC/Downloads/index.html" alt="Document preview">
 </div>
 
 <!-- ============================================================
@@ -1012,6 +1021,9 @@ function openCloudSyncSheet() {
       closeSheet();
     });
     document.getElementById('cs-sync-now-btn').addEventListener('click', () => runFullCloudSync(true));
+    document.getElementById('cs-password').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('cs-signin-btn').click();
+    });
   });
 }
 
@@ -1093,6 +1105,54 @@ function activeTenantForUnit(unitId) {
 function paymentsForTenant(tenantId) {
   return state.cache.payments.filter(p => p.tenantId === tenantId)
     .sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
+}
+/** Condensed, at-a-glance version of a tenant's payment history — the
+ *  "🧾 Payment summary" button on the unit page opens this instead of
+ *  making the admin scroll the full (potentially long) payment log just to
+ *  see totals. Shows totals by charge type plus the last few payments; the
+ *  complete list still lives further down the unit page for anyone who
+ *  needs the full detail. */
+function openPaymentSummarySheet(tenant) {
+  const payments = paymentsForTenant(tenant.id);
+  const tagLabel = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' };
+  const totalsByTag = { rent: 0, electricity: 0, water: 0, deposit: 0 };
+  payments.forEach(p => {
+    const tag = p.tag || 'rent';
+    totalsByTag[tag] = (totalsByTag[tag] || 0) + (Number(p.amountPaid) || 0);
+  });
+  const grandTotal = payments.reduce((s, p) => s + (Number(p.amountPaid) || 0), 0);
+  const last = payments[0]; // paymentsForTenant is already sorted most-recent-first
+  const recentCount = 5;
+  const recent = payments.slice(0, recentCount);
+
+  openSheet(`
+    <h2>Payment summary</h2>
+    <p class="muted" style="margin-top:-6px;">${escapeHTML(tenant.fullName)} · ${payments.length} payment${payments.length === 1 ? '' : 's'} logged</p>
+    <div class="kv-grid">
+      <div class="kv"><div class="k">Total paid (all time)</div><div class="v" style="font-weight:700;">${peso(grandTotal)}</div></div>
+      <div class="kv"><div class="k">Last payment</div><div class="v">${last ? peso(last.amountPaid) + ' · ' + (last.datePaid || '—') : '—'}</div></div>
+      <div class="kv"><div class="k">Rent paid</div><div class="v">${peso(totalsByTag.rent)}</div></div>
+      <div class="kv"><div class="k">⚡ Electricity paid</div><div class="v">${peso(totalsByTag.electricity)}</div></div>
+      <div class="kv"><div class="k">💧 Water paid</div><div class="v">${peso(totalsByTag.water)}</div></div>
+      <div class="kv"><div class="k">🔒 Deposit paid</div><div class="v">${peso(totalsByTag.deposit)}</div></div>
+    </div>
+    <div class="section-label" style="margin-top:16px;">Most recent</div>
+    <div class="card-list" id="paymentSummaryRecent">
+      ${recent.length ? recent.map(p => `
+        <div class="row-card" data-payment-detail="${p.id}">
+          <div class="stamp small ${p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '')}">${p.status.toUpperCase()}</div>
+          <div class="rc-main">
+            <div class="rc-title">${p.tag === 'deposit' ? 'Deposit' : escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
+            <div class="rc-sub">${tagLabel[p.tag] || 'Rent'} · Paid ${p.datePaid || '—'}</div>
+          </div>
+          <div class="rc-amt">${peso(p.amountPaid)}</div>
+        </div>`).join('') : emptyHTML('🧾', 'No payments logged', 'Log the first payment for this tenant.')}
+    </div>
+    ${payments.length > recent.length ? `<p class="muted" style="text-align:center; margin-top:10px;">+${payments.length - recent.length} more — full list is further down the unit page.</p>` : ''}
+  `, () => {
+    document.getElementById('paymentSummaryRecent').querySelectorAll('[data-payment-detail]').forEach(row =>
+      row.addEventListener('click', () => openPaymentDetailSheet(row.dataset.paymentDetail)));
+  });
 }
 function amountPaidThisPeriod(tenantId, period) {
   return state.cache.payments
@@ -1807,6 +1867,7 @@ function renderUnitDetail(unitId) {
         <div id="tenantPortalAccessBlock"></div>
         <div style="display:flex; gap:8px; margin-top:14px;">
           <button class="btn btn-accent" id="logPaymentBtn">Log payment</button>
+          <button class="btn btn-outline" id="paymentSummaryBtn">🧾 Payment summary</button>
         </div>
         <div style="display:flex; gap:8px; margin-top:8px;">
           <button class="btn btn-primary btn-sm" id="editTenantBtn">✏️ Edit tenant</button>
@@ -1815,6 +1876,7 @@ function renderUnitDetail(unitId) {
         </div>
       </div>`;
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
+    document.getElementById('paymentSummaryBtn').addEventListener('click', () => openPaymentSummarySheet(tenant));
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
     document.getElementById('viewTenantDocsBtn').addEventListener('click', () => openTenantDocumentsSheet(tenant));
@@ -3062,6 +3124,9 @@ function portalRenderLogin() {
     }
   });
   document.getElementById('p-goto-signup').addEventListener('click', () => { portal.view = 'signup'; portalRender(); });
+  document.getElementById('p-password').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('p-login-btn').click();
+  });
 }
 
 function portalRenderSignup() {
@@ -3074,6 +3139,9 @@ function portalRenderSignup() {
     <button class="btn btn-primary" id="p-signup-btn">Create account</button>
   `;
   document.getElementById('p-signup-btn').addEventListener('click', portalRedeemInvite);
+  document.getElementById('p-signup-password').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('p-signup-btn').click();
+  });
 }
 
 async function portalRedeemInvite() {
@@ -3953,5 +4021,6 @@ if ('serviceWorker' in navigator) {
   });
 }
 </script>
-</body>
-</html>
+
+
+</body></html>

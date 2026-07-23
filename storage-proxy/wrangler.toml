@@ -1,0 +1,15 @@
+name = "upapro-storage-proxy"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+# Non-secret config — fine to keep in this file.
+[vars]
+FIREBASE_PROJECT_ID = "upapro-e5763"
+SUPABASE_URL = "https://rwtnjxqmlmvzxuzdsaas.supabase.co"
+SUPABASE_BUCKET = "tenant-docs"
+# ALLOWED_ORIGIN = "https://your-app-domain.example"   # optional — defaults to "*"; the token check is what actually gates access
+
+# Secret — set with `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`, never
+# committed here. This is the key that can bypass RLS entirely, so it must
+# only ever live server-side (Worker secret store), never in the HTML file.
+# SUPABASE_SERVICE_ROLE_KEY
