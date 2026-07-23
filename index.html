@@ -3066,7 +3066,7 @@ function renderUnitUtilityBlock(tenant, unit) {
                 <span class="k" style="font-size:.78rem; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">Total</span>
                 ${isPaid ? `<span class="stamp small">PAID</span>` : ''}
               </div>
-              <div style="font-size:2.3rem; font-weight:700; line-height:1.2; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">${peso(elecAmt + waterAmt)}</div>
+              <div style="font-size:1.5rem; font-weight:700; line-height:1.2; color:${isPaid ? 'var(--peso)' : 'var(--amber)'};">${peso(elecAmt + waterAmt)}</div>
             </div>
             ${pastBillsBtn ? `<div style="align-self:flex-end;">${pastBillsBtn}</div>` : ''}
             <button class="btn btn-primary btn-sm" id="editUtilityBillBtn" style="align-self:flex-end;">✏️ Edit bill</button>
@@ -3804,8 +3804,8 @@ function renderPortalAccessBlock(tenant) {
   }
   if (tenant.portalUid) {
     wrap.innerHTML = `
-      <div class="settings-item" style="margin-bottom:0; padding:6px 8px; gap:10px;">
-        <div><div class="si-title">Portal active</div><div class="si-sub">${escapeHTML(tenant.portalEmail || '')}</div></div>
+      <div class="settings-item" style="margin-bottom:0; padding:6px 8px; gap:8px; flex-wrap:wrap; row-gap:8px;">
+        <div style="min-width:0;"><div class="si-title">Portal active</div><div class="si-sub">${escapeHTML(tenant.portalEmail || '')}</div></div>
         <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
           <span class="badge-dot on"></span>
           <button class="btn btn-danger btn-sm" style="flex:none; white-space:nowrap;" id="revokePortalBtn">Revoke portal access</button>
