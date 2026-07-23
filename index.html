@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_3.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_4.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -249,7 +249,16 @@
      a real desktop screen. Only widens once there's actually room; stays
      identical to .sheet on phones. */
   @media (min-width:700px){
-    .sheet.sheet-wide{max-width:800px;}
+    .sheet.sheet-wide{max-width:960px;}
+    /* On a real desktop screen a bottom-anchored sheet reads oddly for the
+       wide variant specifically (a document/table naturally wants to be
+       read centered, not pinned to the bottom edge) — so once a sheet is
+       both wide AND on a wide-enough viewport, center it vertically and
+       round all four corners like a normal dialog instead. Regular
+       (non-wide) sheets, and everything on phones, are untouched — they
+       still behave as a bottom sheet as before. */
+    .sheet-backdrop:has(.sheet-wide){align-items:center; padding:24px 0;}
+    .sheet-backdrop:has(.sheet-wide) .sheet-wide{border-radius:20px; max-height:82vh;}
   }
   @keyframes sheetup{from{transform:translateY(24px); opacity:.4;} to{transform:translateY(0); opacity:1;}}
   .sheet-grab{width:36px; height:4px; background:var(--line); border-radius:99px; margin:8px auto 14px;}
