@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_2.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_3.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1638,7 +1638,7 @@ function openPaymentSummarySheet(tenant) {
     const table = document.getElementById('paymentSummaryTable');
     if (table) table.querySelectorAll('[data-payment-detail]').forEach(row =>
       row.addEventListener('click', () => openPaymentDetailSheet(row.dataset.paymentDetail)));
-  });
+  }, 'sheet-wide');
 }
 /** Sums every deposit-tagged payment logged for a tenant — this is what
  *  the move-out settlement's "Deposit on file" now pre-fills from, so a
@@ -2351,11 +2351,14 @@ let sheetDirty = false;
 let sheetHistoryPushed = false;
 let ignoreNextPopstate = false;
 
-function openSheet(html, onMount) {
+function openSheet(html, onMount, extraClass) {
   sheetDirty = false;
   document.getElementById('sheetBody').innerHTML =
     `<button class="sheet-close" id="sheetCloseBtn" aria-label="Close">✕</button>
      <div class="sheet-grab"></div>${html}`;
+  // Reset to the base class every time (not just append) so a previous
+  // wide sheet's class can't leak onto the next, unrelated one.
+  document.getElementById('sheetBody').className = 'sheet' + (extraClass ? ' ' + extraClass : '');
   document.getElementById('sheetBackdrop').classList.add('show');
   document.getElementById('sheetCloseBtn').addEventListener('click', requestCloseSheet);
   // Push a history entry so the Android/browser back button closes the
