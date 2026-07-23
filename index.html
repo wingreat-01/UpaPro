@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_4.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_5.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1585,7 +1585,13 @@ function activeTenantForUnit(unitId) {
 }
 function paymentsForTenant(tenantId) {
   return state.cache.payments.filter(p => p.tenantId === tenantId)
-    .sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || ''));
+    // datePaid first (what the tenant/admin actually typed as the payment
+    // date), then updatedAt as a tiebreaker — without this second key,
+    // several payments logged on the same date (common when backfilling
+    // test data, or several payments made the same day) fall back to
+    // whatever order they happen to sit in locally, which doesn't
+    // reliably put the one actually entered last on top.
+    .sort((a, b) => (b.datePaid || '').localeCompare(a.datePaid || '') || (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 /** Condensed, at-a-glance version of a tenant's payment history — the
  *  "🧾 Payment summary" button on the unit page opens this instead of
