@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0053)file:///C:/Users/INVENTORY-PC/Downloads/index_17.html -->
+<!-- saved from url=(0050)file:///C:/Users/INVENTORY-PC/Downloads/index.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -10,13 +10,13 @@
 <link rel="icon" href="file:///C:/Users/USER/Downloads/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com/">
 <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
-<link href="./index_files/css2" rel="stylesheet">
+<link href="file:///C:/Users/INVENTORY-PC/Downloads/index_files/css2" rel="stylesheet">
 <!-- Cloud sync (M4) — Firebase Auth + Firestore, same compat SDK as Pautang Pro.
      Pautang Pro self-hosts these under vendor/; CDN works identically if you'd
      rather not vendor them locally. -->
-<script src="./index_files/firebase-app-compat.js.download"></script>
-<script src="./index_files/firebase-auth-compat.js.download"></script>
-<script src="./index_files/firebase-firestore-compat.js.download"></script>
+<script src="file:///C:/Users/INVENTORY-PC/Downloads/index_files/firebase-app-compat.js.download"></script>
+<script src="file:///C:/Users/INVENTORY-PC/Downloads/index_files/firebase-auth-compat.js.download"></script>
+<script src="file:///C:/Users/INVENTORY-PC/Downloads/index_files/firebase-firestore-compat.js.download"></script>
 <!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
      now lives on Supabase Storage instead of Firebase Storage.
      supabase.min.js REMOVED — the browser no longer talks to Supabase
@@ -2902,9 +2902,9 @@ function renderUnitDetail(unitId) {
     <div class="kv-grid">
       <div class="kv"><div class="k">Rent</div><div class="v">${peso(unit.monthlyRent)}/mo</div></div>
       <div class="kv"><div class="k">Due day</div><div class="v">${unit.dueDay || 1}${nth(unit.dueDay || 1)}</div></div>
+      <div style="display:flex; align-items:flex-end;"><button class="btn btn-primary btn-sm" id="editUnitBtn" style="width:100%;">✏️ Edit unit</button></div>
       <div class="kv"><div class="k">Status</div><div class="v"><span class="chip ${unit.status}">${unit.status}</span></div></div>
     </div>
-    <div style="margin-top:12px;"><button class="btn btn-primary btn-sm" id="editUnitBtn">✏️ Edit unit</button></div>
   `;
   document.getElementById('editUnitBtn').addEventListener('click', () => openUnitForm(unit, unit.locationId));
 
