@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_5.html -->
+<!-- saved from url=(0052)file:///C:/Users/INVENTORY-PC/Downloads/index_6.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1609,8 +1609,6 @@ function openPaymentSummarySheet(tenant) {
   });
   const grandTotal = payments.reduce((s, p) => s + (Number(p.amountPaid) || 0), 0);
   const last = payments[0]; // paymentsForTenant is already sorted most-recent-first
-  const recentCount = 5;
-  const recent = payments.slice(0, recentCount);
 
   openSheet(`
     <h2>Payment summary</h2>
@@ -1623,9 +1621,9 @@ function openPaymentSummarySheet(tenant) {
       <div class="kv"><div class="k">💧 Water paid</div><div class="v">${peso(totalsByTag.water)}</div></div>
       <div class="kv"><div class="k">🔒 Deposit paid</div><div class="v">${peso(totalsByTag.deposit)}</div></div>
     </div>
-    <div class="section-label" style="margin-top:16px;">Most recent</div>
-    ${recent.length ? `
-    <div class="table-wrap">
+    <div class="section-label" style="margin-top:16px;">All payments</div>
+    ${payments.length ? `
+    <div class="table-wrap" style="max-height:320px; overflow-y:auto;">
       <table class="summary-table" id="paymentSummaryTable">
         <thead>
           <tr>
@@ -1637,7 +1635,7 @@ function openPaymentSummarySheet(tenant) {
           </tr>
         </thead>
         <tbody>
-          ${recent.map(p => `
+          ${payments.map(p => `
           <tr data-payment-detail="${p.id}">
             <td>${p.datePaid || '—'}</td>
             <td>${p.tag === 'deposit' ? '—' : escapeHTML(p.coveredPeriod || '—')}</td>
@@ -1648,7 +1646,6 @@ function openPaymentSummarySheet(tenant) {
         </tbody>
       </table>
     </div>` : emptyHTML('🧾', 'No payments logged', 'Log the first payment for this tenant.')}
-    ${payments.length > recent.length ? `<p class="muted" style="text-align:center; margin-top:10px;">+${payments.length - recent.length} more — full list is further down the unit page.</p>` : ''}
   `, () => {
     const table = document.getElementById('paymentSummaryTable');
     if (table) table.querySelectorAll('[data-payment-detail]').forEach(row =>
