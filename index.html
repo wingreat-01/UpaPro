@@ -16,6 +16,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-functions-compat.js"></script>
 <!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
      now lives on Supabase Storage instead of Firebase Storage.
      supabase.min.js REMOVED — the browser no longer talks to Supabase
@@ -736,6 +737,7 @@
       <div class="section-label">Tenant portal</div>
       <div class="settings-item" id="btnPendingReviews"><div><div class="si-title">Pending payment reviews</div><div class="si-sub" id="pendingReviewsSub">Nothing waiting</div></div><span class="badge-dot" id="pendingReviewsDot"></span></div>
       <div class="settings-item" id="btnMaintenanceRequests"><div><div class="si-title">Maintenance requests</div><div class="si-sub" id="maintenanceRequestsSub">Nothing open</div></div><span class="badge-dot" id="maintenanceRequestsDot"></span></div>
+      <div class="settings-item" id="btnAiAssistant"><div><div class="si-title">AI Assistant</div><div class="si-sub">Ask about payments, tenants, maintenance</div></div></div>
       <div class="settings-item" id="btnPendingChecks"><div><div class="si-title">Pending checks</div><div class="si-sub" id="pendingChecksSub">Nothing waiting</div></div><span class="badge-dot" id="pendingChecksDot"></span></div>
       <div class="settings-item" id="btnOpenPortal"><div><div class="si-title">Open tenant portal</div><div class="si-sub">Preview what tenants see, or share the link</div></div><span>↗️</span></div>
 
@@ -4408,6 +4410,7 @@ async function renderSettings() {
 }
 document.getElementById('btnPendingReviews').addEventListener('click', openPendingReviewsSheet);
 document.getElementById('btnMaintenanceRequests').addEventListener('click', openMaintenanceRequestsSheet);
+document.getElementById('btnAiAssistant').addEventListener('click', openAiAssistantSheet);
 document.getElementById('btnPendingChecks').addEventListener('click', openPendingChecksSheet);
 document.getElementById('btnOpenPortal').addEventListener('click', openPortalPreviewSheet);
 /** One-time data fix: approvePendingPayment() didn't copy portalUid onto the
@@ -4635,6 +4638,73 @@ async function rejectPendingPayment(id) {
   await refreshCache();
   renderPendingReviewsList();
   showToast('Payment claim rejected');
+}
+
+/* ------------------------- AI ASSISTANT (admin) -------------------------
+   Calls the `askAgent` Cloud Function (see agent-openrouter.js), which
+   has tool access to Firestore (payment status, open maintenance
+   requests, etc). Chat history is kept in memory only — nothing is
+   persisted, so it resets each time the sheet is reopened. */
+let aiChatHistory = []; // [{ role: 'user'|'assistant', content: '...' }]
+let aiChatBusy = false;
+
+function openAiAssistantSheet() {
+  aiChatHistory = [];
+  openSheet(`
+    <h2>AI Assistant</h2>
+    <div class="card-list" id="aiChatLog" style="min-height:200px; max-height:50vh; overflow-y:auto;"></div>
+    <div class="field-row" style="margin-top:10px;">
+      <input type="text" id="aiChatInput" placeholder="Ask about a tenant, payment, or maintenance ticket..." style="flex:1;">
+      <button class="btn btn-primary" id="aiChatSend">Send</button>
+    </div>
+  `, () => {
+    renderAiChatLog();
+    const input = document.getElementById('aiChatInput');
+    const send = () => sendAiChatMessage();
+    document.getElementById('aiChatSend').addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    input.focus();
+  });
+}
+
+function renderAiChatLog() {
+  const log = document.getElementById('aiChatLog');
+  if (!log) return;
+  log.innerHTML = aiChatHistory.length ? aiChatHistory.map(m => `
+    <div class="row-card" style="cursor:default; ${m.role === 'user' ? 'background:var(--accent-light,#eef2ff);' : ''}">
+      <div class="rc-main">
+        <div class="rc-sub" style="font-weight:600;">${m.role === 'user' ? 'You' : 'Assistant'}</div>
+        <div>${escapeHTML(m.content)}</div>
+      </div>
+    </div>`).join('') : emptyHTML('🤖', 'Ask me anything', 'e.g. "Is tenant John paid up this month?"');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendAiChatMessage() {
+  if (aiChatBusy) return;
+  const input = document.getElementById('aiChatInput');
+  const message = (input.value || '').trim();
+  if (!message) return;
+  input.value = '';
+  aiChatHistory.push({ role: 'user', content: message });
+  renderAiChatLog();
+
+  aiChatBusy = true;
+  const sendBtn = document.getElementById('aiChatSend');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '...'; }
+
+  try {
+    const askAgent = firebase.functions().httpsCallable('askAgent');
+    const result = await askAgent({ message });
+    aiChatHistory.push({ role: 'assistant', content: result.data.reply || "Sorry, I didn't get a response." });
+  } catch (err) {
+    console.error('askAgent error:', err);
+    aiChatHistory.push({ role: 'assistant', content: "Agent's a bit busy — try again in a moment." });
+  } finally {
+    aiChatBusy = false;
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send'; }
+    renderAiChatLog();
+  }
 }
 
 /* ------------------------- MAINTENANCE REQUESTS (admin) -------------------------
