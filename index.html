@@ -735,6 +735,7 @@
 
       <div class="section-label">Tenant portal</div>
       <div class="settings-item" id="btnPendingReviews"><div><div class="si-title">Pending payment reviews</div><div class="si-sub" id="pendingReviewsSub">Nothing waiting</div></div><span class="badge-dot" id="pendingReviewsDot"></span></div>
+      <div class="settings-item" id="btnMaintenanceRequests"><div><div class="si-title">Maintenance requests</div><div class="si-sub" id="maintenanceRequestsSub">Nothing open</div></div><span class="badge-dot" id="maintenanceRequestsDot"></span></div>
       <div class="settings-item" id="btnPendingChecks"><div><div class="si-title">Pending checks</div><div class="si-sub" id="pendingChecksSub">Nothing waiting</div></div><span class="badge-dot" id="pendingChecksDot"></span></div>
       <div class="settings-item" id="btnOpenPortal"><div><div class="si-title">Open tenant portal</div><div class="si-sub">Preview what tenants see, or share the link</div></div><span>↗️</span></div>
 
@@ -829,7 +830,7 @@
 
 const APP_ID = 'upaPro';
 const DB_NAME = 'upapro_db';
-const DB_VERSION = 6; // v6: + moveoutSettlements store (deposit deduction breakdown at move-out)
+const DB_VERSION = 7; // v7: + maintenanceRequests store (tenant-submitted repair/issue tickets)
 let db;
 
 const uid = () => 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -925,6 +926,21 @@ function openDB() {
         s.createIndex('tenantId', 'tenantId');
         s.createIndex('unitId', 'unitId');
       }
+      // v7 — tenant-submitted maintenance/repair requests. One doc per
+      // ticket: {tenantId, unitId, portalUid, title, category, urgency,
+      // description, photos:[{storagePath,name}], status: 'open' |
+      // 'in_progress' | 'resolved' | 'cancelled', adminNotes, createdAt,
+      // updatedAt, resolvedAt}. Synced the same generic way as every other
+      // store (see SYNCED_STORES) — tenant creates land straight in
+      // Firestore under the admin's uid (same shape as pendingPayments/
+      // messages), the admin then updates `status`/`adminNotes` from the
+      // dashboard, which flows back to the outbox like any other admin write.
+      if (!d.objectStoreNames.contains('maintenanceRequests')) {
+        const s = d.createObjectStore('maintenanceRequests', { keyPath: 'id' });
+        s.createIndex('tenantId', 'tenantId');
+        s.createIndex('unitId', 'unitId');
+        s.createIndex('status', 'status');
+      }
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = (e) => reject(e.target.error);
@@ -1005,7 +1021,7 @@ const firebaseEnabled = !!firebaseConfig.apiKey;
 // (a client-side-only check can be skipped via devtools). The old
 // ADMIN_INVITE_CODE constant is gone; there's nothing to edit here per
 // client anymore.
-const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages', 'moveoutSettlements'];
+const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPayments', 'utilityBills', 'messages', 'moveoutSettlements', 'maintenanceRequests'];
 
 /* ---------------------------------------------------------------
    ACCOUNT-SWITCH GUARD — the local IndexedDB cache (upapro_db) is one
@@ -1593,8 +1609,8 @@ const state = {
 function currentRoute() { return state.navStack[state.navStack.length - 1]; }
 
 async function refreshCache() {
-  const [locations, units, tenants, payments, pendingPayments, utilityBills, messages, moveoutSettlements] = await Promise.all([
-    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills'), dbGetAll('messages'), dbGetAll('moveoutSettlements')
+  const [locations, units, tenants, payments, pendingPayments, utilityBills, messages, moveoutSettlements, maintenanceRequests] = await Promise.all([
+    dbGetAll('locations'), dbGetAll('units'), dbGetAll('tenants'), dbGetAll('payments'), dbGetAll('pendingPayments'), dbGetAll('utilityBills'), dbGetAll('messages'), dbGetAll('moveoutSettlements'), dbGetAll('maintenanceRequests')
   ]);
   // Filter out soft-deleted (tombstoned) records here — the single place
   // all rendering reads from state.cache. Raw dbGetAll() calls elsewhere
@@ -1609,7 +1625,11 @@ async function refreshCache() {
     utilityBills: utilityBills.filter(r => !r.deleted),
     messages: messages.filter(r => !r.deleted),
     moveoutSettlements: moveoutSettlements.filter(r => !r.deleted),
+    maintenanceRequests: maintenanceRequests.filter(r => !r.deleted),
   };
+}
+function openMaintenanceRequestCount() {
+  return state.cache.maintenanceRequests.filter(m => m.status === 'open').length;
 }
 
 /* ------------------------------ DOMAIN LOGIC ------------------------------ */
@@ -4366,6 +4386,9 @@ async function renderSettings() {
     ? `${checks.length} waiting${readyCount ? ` · ${readyCount} ready to deposit` : ''}`
     : 'Nothing waiting';
   document.getElementById('pendingChecksDot').classList.toggle('on', readyCount > 0);
+  const openMaint = openMaintenanceRequestCount();
+  document.getElementById('maintenanceRequestsSub').textContent = openMaint ? `${openMaint} open` : 'Nothing open';
+  document.getElementById('maintenanceRequestsDot').classList.toggle('on', openMaint > 0);
   // Self-hiding one-time fix: once every tenant-submitted payment already
   // has portalUid (true for a fresh install, and true for anyone who's
   // already run this once), there's nothing left for this button to do —
@@ -4374,6 +4397,7 @@ async function renderSettings() {
   document.getElementById('btnBackfillPortalUid').style.display = needsBackfill ? '' : 'none';
 }
 document.getElementById('btnPendingReviews').addEventListener('click', openPendingReviewsSheet);
+document.getElementById('btnMaintenanceRequests').addEventListener('click', openMaintenanceRequestsSheet);
 document.getElementById('btnPendingChecks').addEventListener('click', openPendingChecksSheet);
 document.getElementById('btnOpenPortal').addEventListener('click', openPortalPreviewSheet);
 /** One-time data fix: approvePendingPayment() didn't copy portalUid onto the
@@ -4603,6 +4627,97 @@ async function rejectPendingPayment(id) {
   showToast('Payment claim rejected');
 }
 
+/* ------------------------- MAINTENANCE REQUESTS (admin) -------------------------
+   Tenants submit repair/issue tickets from the portal; they land here as
+   `maintenanceRequests` (status: 'open' initially). Admin moves each through
+   open -> in_progress -> resolved (or cancelled), same generic dbPut +
+   queueRecordSync write path as every other admin-side store. */
+let maintenanceFilter = 'active'; // 'active' (open + in_progress) | 'all' | 'resolved'
+function openMaintenanceRequestsSheet() {
+  maintenanceFilter = 'active';
+  openSheet(`
+    <h2>Maintenance requests</h2>
+    <div class="field-row" style="margin-bottom:10px;">
+      <button class="btn btn-outline btn-sm" data-mfilter="active" style="flex:1;">Active</button>
+      <button class="btn btn-outline btn-sm" data-mfilter="all" style="flex:1;">All</button>
+      <button class="btn btn-outline btn-sm" data-mfilter="resolved" style="flex:1;">Resolved</button>
+    </div>
+    <div class="card-list" id="maintenanceRequestsList"></div>
+  `, () => renderMaintenanceRequestsList());
+}
+function renderMaintenanceRequestsList() {
+  const list = document.getElementById('maintenanceRequestsList');
+  if (!list) return;
+  document.querySelectorAll('[data-mfilter]').forEach(btn => {
+    btn.classList.toggle('btn-outline', btn.dataset.mfilter !== maintenanceFilter);
+    btn.classList.toggle('btn-primary', btn.dataset.mfilter === maintenanceFilter);
+    btn.onclick = () => { maintenanceFilter = btn.dataset.mfilter; renderMaintenanceRequestsList(); };
+  });
+  const urgencyRank = { high: 0, medium: 1, low: 2 };
+  const rows = state.cache.maintenanceRequests
+    .filter(m => maintenanceFilter === 'all' ? true
+      : maintenanceFilter === 'resolved' ? (m.status === 'resolved' || m.status === 'cancelled')
+      : (m.status === 'open' || m.status === 'in_progress'))
+    .sort((a, b) => (urgencyRank[a.urgency] ?? 1) - (urgencyRank[b.urgency] ?? 1) || (b.createdAt || 0) - (a.createdAt || 0));
+  const statusLabel = { open: 'OPEN', in_progress: 'IN PROGRESS', resolved: 'RESOLVED', cancelled: 'CANCELLED' };
+  const urgencyLabel = { high: '🔴 High', medium: '🟠 Medium', low: '🟢 Low' };
+  list.innerHTML = rows.length ? rows.map(m => {
+    const tenant = state.cache.tenants.find(t => t.id === m.tenantId);
+    const unit = state.cache.units.find(u => u.id === m.unitId);
+    const photos = (m.photos || []).map(p => `
+      <div class="proof-thumb-wrap">
+        <img class="proof-thumb" src="" data-storage-path="${escapeAttr(p.storagePath || '')}" alt="Photo">
+      </div>`).join('');
+    return `
+      <div class="row-card" style="cursor:default; flex-wrap:wrap;">
+        <div class="stamp small due">${statusLabel[m.status] || 'OPEN'}</div>
+        <div class="rc-main">
+          <div class="rc-title">${escapeHTML(m.title || 'Maintenance request')}</div>
+          <div class="rc-sub">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')} · ${escapeHTML(unit ? unit.unitLabel : '')} · ${urgencyLabel[m.urgency] || m.urgency || ''}</div>
+          <div class="rc-sub">${escapeHTML(m.category || 'General')} · ${m.createdAt ? new Date(m.createdAt).toLocaleDateString('en-PH') : ''}</div>
+        </div>
+        ${m.description ? `<p class="muted" style="width:100%; margin:6px 0 0;">${escapeHTML(m.description)}</p>` : ''}
+        ${photos ? `<div class="proof-thumb-row" style="width:100%;">${photos}</div>` : ''}
+        ${m.adminNotes ? `<p class="muted" style="width:100%; margin:6px 0 0;"><strong>Note:</strong> ${escapeHTML(m.adminNotes)}</p>` : ''}
+        <div style="width:100%; display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+          ${m.status === 'open' ? `<button class="btn btn-primary btn-sm" style="flex:1;" data-mstatus="in_progress" data-mid="${m.id}">Start work</button>` : ''}
+          ${m.status === 'in_progress' ? `<button class="btn btn-accent btn-sm" style="flex:1;" data-mstatus="resolved" data-mid="${m.id}">Mark resolved</button>` : ''}
+          ${(m.status === 'open' || m.status === 'in_progress') ? `<button class="btn btn-danger btn-sm" style="flex:1;" data-mstatus="cancelled" data-mid="${m.id}">Cancel</button>` : ''}
+          ${(m.status === 'open' || m.status === 'in_progress') ? `<button class="btn btn-outline btn-sm" style="flex:1;" data-mnote="${m.id}">Add note</button>` : ''}
+        </div>
+      </div>`;
+  }).join('') : emptyHTML('🔧', 'Nothing here', 'No maintenance requests in this view.');
+  list.querySelectorAll('[data-mstatus]').forEach(btn => {
+    btn.addEventListener('click', () => updateMaintenanceRequestStatus(btn.dataset.mid, btn.dataset.mstatus));
+  });
+  list.querySelectorAll('[data-mnote]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = state.cache.maintenanceRequests.find(x => x.id === btn.dataset.mnote);
+      const note = prompt('Note for the tenant (optional, e.g. "Plumber coming Thursday"):', (m && m.adminNotes) || '');
+      if (note === null) return;
+      updateMaintenanceRequestStatus(btn.dataset.mnote, null, note);
+    });
+  });
+  list.querySelectorAll('.proof-thumb').forEach(img => img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox || img.dataset.fallbackUrl)));
+  hydrateDocRefs(list);
+}
+async function updateMaintenanceRequestStatus(id, status, adminNotes) {
+  const m = state.cache.maintenanceRequests.find(x => x.id === id);
+  if (!m) return;
+  const updated = { ...m, updatedAt: Date.now() };
+  if (status) {
+    updated.status = status;
+    if (status === 'resolved' || status === 'cancelled') updated.resolvedAt = Date.now();
+  }
+  if (adminNotes !== undefined && adminNotes !== null) updated.adminNotes = adminNotes;
+  await dbPut('maintenanceRequests', updated);
+  queueRecordSync('maintenanceRequests', updated);
+  await refreshCache();
+  renderMaintenanceRequestsList();
+  renderSettings();
+  showToast(status ? `Marked ${(status || '').replace('_', ' ')}` : 'Note saved');
+}
+
 /* ------------------------------- TENANT PORTAL LINK (admin) ------------------------------- */
 function openPortalPreviewSheet() {
   const portalUrl = location.origin + location.pathname + '?portal=1';
@@ -4754,8 +4869,8 @@ document.getElementById('searchBtn').addEventListener('click', () => {
 const portal = {
   app: null, auth: null, store: null,
   user: null, adminUid: null, tenantId: null, unitId: null,
-  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [], messages: [], settlements: [],
-  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents' | 'messages' | 'settlement'
+  tenant: null, unit: null, payments: [], pendingPayments: [], utilityBills: [], messages: [], settlements: [], maintenanceRequests: [],
+  view: 'login', // 'login' | 'signup' | 'dashboard' | 'history' | 'utilities' | 'documents' | 'messages' | 'settlement' | 'maintenance'
 };
 // True while portalRedeemInvite() is setting up a fresh account — see onPortalAuthChanged.
 let portalRedeeming = false;
@@ -4892,7 +5007,7 @@ async function onPortalAuthChanged(user) {
 }
 
 async function portalLoadData() {
-  const [tSnap, uSnap, paySnap, pendSnap, billSnap, msgSnap, setSnap] = await Promise.all([
+  const [tSnap, uSnap, paySnap, pendSnap, billSnap, msgSnap, setSnap, maintSnap] = await Promise.all([
     portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('units').doc(portal.unitId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('payments').where('tenantId', '==', portal.tenantId).get(),
@@ -4900,6 +5015,7 @@ async function portalLoadData() {
     portal.store.collection('users').doc(portal.adminUid).collection('utilityBills').where('tenantId', '==', portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('messages').where('tenantId', '==', portal.tenantId).get(),
     portal.store.collection('users').doc(portal.adminUid).collection('moveoutSettlements').where('tenantId', '==', portal.tenantId).get(),
+    portal.store.collection('users').doc(portal.adminUid).collection('maintenanceRequests').where('tenantId', '==', portal.tenantId).get(),
   ]);
   portal.tenant = tSnap.exists ? tSnap.data() : null;
   portal.unit = uSnap.exists ? uSnap.data() : null;
@@ -4917,6 +5033,23 @@ async function portalLoadData() {
   portal.messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   portal.settlements = []; setSnap.forEach(d => portal.settlements.push(d.data()));
   portal.settlements = portal.settlements.filter(s => !s.deleted).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  portal.maintenanceRequests = []; maintSnap.forEach(d => portal.maintenanceRequests.push(d.data()));
+  portal.maintenanceRequests = portal.maintenanceRequests.filter(m => !m.deleted).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+// Re-pulls just this tenant's maintenance requests — called when the
+// Maintenance screen opens, same shape as portalRefreshMessages, so a
+// status change the admin just made (or a fresh submission) shows up
+// without a manual pull-to-refresh.
+async function portalRefreshMaintenanceRequests() {
+  if (!portal.user || !portal.adminUid) return;
+  try {
+    const snap = await portal.store.collection('users').doc(portal.adminUid).collection('maintenanceRequests').where('tenantId', '==', portal.tenantId).get();
+    portal.maintenanceRequests = []; snap.forEach(d => portal.maintenanceRequests.push(d.data()));
+    portal.maintenanceRequests = portal.maintenanceRequests.filter(m => !m.deleted).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    if (portal.view === 'maintenance') portalRender();
+  } catch (err) {
+    console.warn('Portal maintenance refresh failed', err);
+  }
 }
 // Portal-side counterpart to refreshBalanceDataOnOpen — the tenant portal
 // doesn't have a local IndexedDB merge step to lean on (it reads Firestore
@@ -4952,6 +5085,9 @@ async function portalRefreshBalanceData() {
 
 function portalUnreadMessageCount() {
   return portal.messages.filter(m => m.sender === 'admin' && !m.readByTenant).length;
+}
+function portalOpenMaintenanceCount() {
+  return portal.maintenanceRequests.filter(m => m.status === 'open' || m.status === 'in_progress').length;
 }
 
 // Portal-side counterpart to portalRefreshBalanceData — re-pulls just this
@@ -5005,6 +5141,7 @@ function portalRender() {
   if (portal.view === 'documents') return portalRenderDocuments();
   if (portal.view === 'messages') return portalRenderMessages();
   if (portal.view === 'settlement') return portalRenderSettlement();
+  if (portal.view === 'maintenance') return portalRenderMaintenance();
 }
 
 /* ---------------------------- LOGIN / SIGNUP ---------------------------- */
@@ -5335,12 +5472,14 @@ function portalRenderDashboard() {
       <button class="btn btn-outline" id="p-history-btn">History</button>
     </div>
     <div class="settings-item" id="p-messages-btn"><div><div class="si-title">Messages${portalUnreadMessageCount() ? `<span class="msg-unread-badge">${portalUnreadMessageCount()}</span>` : ''}</div><div class="si-sub">Chat with your landlord</div></div><span>💬</span></div>
+    <div class="settings-item" id="p-maintenance-btn"><div><div class="si-title">Maintenance</div><div class="si-sub">${portalOpenMaintenanceCount() ? `${portalOpenMaintenanceCount()} open request${portalOpenMaintenanceCount() > 1 ? 's' : ''}` : 'Report an issue with your unit'}</div></div><span>🔧</span></div>
     <div class="settings-item" id="p-utilities-btn"><div><div class="si-title">Utility bills</div><div class="si-sub">Electricity &amp; water, by month</div></div><span>⚡</span></div>
     <div class="settings-item" id="p-documents-btn"><div><div class="si-title">My documents</div><div class="si-sub">ID photo &amp; signed contract</div></div><span>📄</span></div>
   `;
   document.getElementById('p-submit-payment-btn').addEventListener('click', portalOpenSubmitPaymentSheet);
   document.getElementById('p-history-btn').addEventListener('click', () => { portal.view = 'history'; portalRender(); portalRefreshBalanceData(); });
   document.getElementById('p-messages-btn').addEventListener('click', () => { portal.view = 'messages'; portalRender(); });
+  document.getElementById('p-maintenance-btn').addEventListener('click', () => { portal.view = 'maintenance'; portalRender(); portalRefreshMaintenanceRequests(); });
   document.getElementById('p-utilities-btn').addEventListener('click', () => { portal.view = 'utilities'; portalRender(); });
   document.getElementById('p-documents-btn').addEventListener('click', () => { portal.view = 'documents'; portalRender(); });
   if (settlement) document.getElementById('p-settlement-btn').addEventListener('click', () => { portal.view = 'settlement'; portalRender(); });
@@ -5438,6 +5577,105 @@ async function portalMarkAdminMessagesRead() {
     } catch (err) {
       console.warn('Could not mark message read', err);
     }
+  }
+}
+
+/* -------------------------- MAINTENANCE REQUESTS (tenant) --------------------------
+   Tenant-submitted repair/issue tickets. Read-only list here (status/notes are
+   admin-only, set from the dashboard — see updateMaintenanceRequestStatus);
+   the tenant's only write is creating a new one. */
+const MAINTENANCE_CATEGORIES = [
+  ['plumbing', '🚰 Plumbing'],
+  ['electrical', '💡 Electrical'],
+  ['appliance', '🔌 Appliance'],
+  ['structural', '🧱 Structural'],
+  ['pest', '🐜 Pest control'],
+  ['other', '🔧 Other'],
+];
+function portalRenderMaintenance() {
+  const statusLabel = { open: 'Open', in_progress: 'In progress', resolved: 'Resolved', cancelled: 'Cancelled' };
+  const statusColor = { open: 'var(--rust)', in_progress: 'var(--peso)', resolved: 'var(--slate)', cancelled: 'var(--slate)' };
+  const urgencyLabel = { high: '🔴 High', medium: '🟠 Medium', low: '🟢 Low' };
+  const rows = portal.maintenanceRequests;
+  document.getElementById('portalMain').innerHTML = `
+    <div class="section-label">🔧 Maintenance</div>
+    <div class="portal-actions" style="margin-bottom:16px;">
+      <button class="btn btn-accent" id="p-new-maintenance-btn">Report an issue</button>
+    </div>
+    <div class="card-list">
+      ${rows.length ? rows.map(m => `
+        <div class="row-card" style="cursor:default; flex-wrap:wrap;">
+          <div class="rc-main">
+            <div class="rc-title">${escapeHTML(m.title || 'Maintenance request')}</div>
+            <div class="rc-sub">${escapeHTML((MAINTENANCE_CATEGORIES.find(c => c[0] === m.category) || [, m.category])[1] || 'Other')} · ${urgencyLabel[m.urgency] || ''} · ${m.createdAt ? new Date(m.createdAt).toLocaleDateString('en-PH') : ''}</div>
+          </div>
+          <div class="rc-amt" style="color:${statusColor[m.status] || 'var(--slate)'}; font-size:.8rem; font-weight:700;">${statusLabel[m.status] || 'Open'}</div>
+          ${m.description ? `<p class="muted" style="width:100%; margin:6px 0 0;">${escapeHTML(m.description)}</p>` : ''}
+          ${m.adminNotes ? `<p class="muted" style="width:100%; margin:6px 0 0;"><strong>From your landlord:</strong> ${escapeHTML(m.adminNotes)}</p>` : ''}
+        </div>`).join('') : emptyHTML('🔧', 'No requests yet', 'Report a repair or issue and your landlord will see it right away.')}
+    </div>
+  `;
+  document.getElementById('p-new-maintenance-btn').addEventListener('click', portalOpenNewMaintenanceRequestSheet);
+}
+function portalOpenNewMaintenanceRequestSheet() {
+  portalOpenSheet(`
+    <h2>Report an issue</h2>
+    <p class="muted" style="margin-top:-6px;">Your landlord will see this right away.</p>
+    <div class="field"><label>What's wrong?</label><input id="mr-title" placeholder="e.g. Kitchen faucet leaking"></div>
+    <div class="field-row">
+      <div class="field"><label>Category</label>
+        <select id="mr-category">${MAINTENANCE_CATEGORIES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Urgency</label>
+        <select id="mr-urgency">
+          <option value="low">🟢 Low</option>
+          <option value="medium" selected>🟠 Medium</option>
+          <option value="high">🔴 High — needs attention soon</option>
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Details</label><textarea id="mr-desc" placeholder="Anything that helps — when it started, how bad it is, etc."></textarea></div>
+    <div class="field"><label>Photo (optional)</label><input id="mr-photo" type="file" accept="image/*"></div>
+    <div class="sheet-actions"><button class="btn btn-accent" id="mr-save-btn">Submit request</button></div>
+  `, () => {
+    document.getElementById('mr-save-btn').addEventListener('click', portalSubmitMaintenanceRequest);
+  });
+}
+async function portalSubmitMaintenanceRequest() {
+  const title = document.getElementById('mr-title').value.trim();
+  if (!title) return portalShowToast('Describe what\'s wrong first');
+  const file = document.getElementById('mr-photo').files[0];
+  if (file && file.size > MAX_DOC_BYTES) return portalShowToast('Photo is too large — max 15MB');
+  const saveBtn = document.getElementById('mr-save-btn');
+  saveBtn.disabled = true; saveBtn.textContent = 'Submitting…';
+  try {
+    const photos = [];
+    if (file) {
+      if (!storageProxyEnabled) throw new Error('SUPABASE_NOT_CONFIGURED');
+      const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
+      const path = `portalUploads/${portal.user.uid}/maintenance-${Date.now()}.${ext}`;
+      await storageProxyUpload(path, file);
+      photos.push({ storagePath: path, name: file.name });
+    }
+    const request = {
+      id: uid(), tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
+      title, category: document.getElementById('mr-category').value,
+      urgency: document.getElementById('mr-urgency').value,
+      description: document.getElementById('mr-desc').value.trim(),
+      photos, status: 'open', createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    await portal.store.collection('users').doc(portal.adminUid).collection('maintenanceRequests').doc(request.id).set(request);
+    portal.maintenanceRequests.unshift(request);
+    portalCloseSheet();
+    portalShowToast('Reported — your landlord will follow up');
+    portalRenderMaintenance();
+  } catch (err) {
+    console.warn('Maintenance request submission failed', err);
+    portalShowToast(err && err.message === 'SUPABASE_NOT_CONFIGURED'
+      ? 'Photo uploads aren\'t set up yet — you can still submit without one'
+      : 'Could not submit — check your connection');
+  } finally {
+    saveBtn.disabled = false; saveBtn.textContent = 'Submit request';
   }
 }
 
