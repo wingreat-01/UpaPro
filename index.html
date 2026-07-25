@@ -3034,6 +3034,7 @@ function renderUnitDetail(unitId) {
         <div class="rc-main">
           <div class="rc-title">${p.tag === 'deposit' ? 'Deposit' : escapeHTML(p.coveredPeriod)} · ${escapeHTML(p.method)}</div>
           <div class="rc-sub">${tagLabel[p.tag] || 'Rent'} · Paid ${p.datePaid || '—'}${p.proof ? ' · 📎 proof attached' : ''}</div>
+          ${p.method === 'check' ? `<div class="rc-sub">${p.checkNumber ? '#' + escapeHTML(p.checkNumber) + ' · ' : ''}${escapeHTML(p.bankName || 'Bank n/a')} · dated ${escapeHTML(p.checkDate || '—')}</div>` : ''}
         </div>
         <div class="rc-amt">${peso(p.amountPaid)}</div>
       </div>`).join('')
@@ -3344,6 +3345,15 @@ function openPaymentDetailSheet(paymentId) {
       <div class="field"><label>Date paid</label><div class="rc-title">${escapeHTML(p.datePaid || '—')}</div></div>
     </div>
     <div class="field"><label>Method</label><div class="rc-title">${escapeHTML(p.method || '—')}</div></div>
+    ${p.method === 'check' ? `
+    <div class="field-row">
+      <div class="field"><label>Check #</label><div class="rc-title">${p.checkNumber ? escapeHTML(p.checkNumber) : '—'}</div></div>
+      <div class="field"><label>Bank</label><div class="rc-title">${p.bankName ? escapeHTML(p.bankName) : '—'}</div></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Check date</label><div class="rc-title">${p.checkDate ? escapeHTML(p.checkDate) : '—'}</div></div>
+      <div class="field"><label>Clearance</label><div class="rc-title">${p.clearanceStatus ? escapeHTML(p.clearanceStatus.toUpperCase()) : '—'}</div></div>
+    </div>` : ''}
     ${p.notes ? `<div class="field"><label>Notes</label><div class="rc-sub">${escapeHTML(p.notes)}</div></div>` : ''}
     <div class="field"><label>Proof of payment</label>${proofBlock}</div>
     ${isTenantSubmitted
@@ -5849,7 +5859,8 @@ function portalRenderHistory() {
     if (r._kind === 'approved') {
       return `<div class="row-card" data-portal-payment="${r.id}">
         <div class="stamp small ${r.status === 'late' ? 'overdue' : (r.status === 'partial' ? 'due' : '')}">${(r.status || 'paid').toUpperCase()}</div>
-        <div class="rc-main"><div class="rc-title">${escapeHTML(r.coveredPeriod)} · ${escapeHTML(r.method)}</div><div class="rc-sub">Paid ${r.datePaid || '—'}${r.proof ? ' · 📎 proof attached' : ''}</div></div>
+        <div class="rc-main"><div class="rc-title">${escapeHTML(r.coveredPeriod)} · ${escapeHTML(r.method)}</div><div class="rc-sub">Paid ${r.datePaid || '—'}${r.proof ? ' · 📎 proof attached' : ''}</div>
+        ${r.method === 'check' ? `<div class="rc-sub">${r.checkNumber ? '#' + escapeHTML(r.checkNumber) + ' · ' : ''}${escapeHTML(r.bankName || 'Bank n/a')} · dated ${escapeHTML(r.checkDate || '—')}</div>` : ''}</div>
         <div class="rc-amt">${peso(r.amountPaid)}</div>
       </div>`;
     }
@@ -5965,6 +5976,12 @@ function portalOpenPaymentDetailSheet(r, isClaim) {
       <div class="field"><label>${isClaim ? 'Submitted' : 'Date paid'}</label><div class="rc-title">${escapeHTML(isClaim ? new Date(r.submittedAt).toLocaleDateString('en-PH') : (r.datePaid || '—'))}</div></div>
     </div>
     <div class="field"><label>Method</label><div class="rc-title">${escapeHTML(r.method || '—')}</div></div>
+    ${r.method === 'check' ? `
+    <div class="field-row">
+      <div class="field"><label>Check #</label><div class="rc-title">${r.checkNumber ? escapeHTML(r.checkNumber) : '—'}</div></div>
+      <div class="field"><label>Bank</label><div class="rc-title">${r.bankName ? escapeHTML(r.bankName) : '—'}</div></div>
+    </div>
+    <div class="field"><label>Check date</label><div class="rc-title">${r.checkDate ? escapeHTML(r.checkDate) : '—'}</div></div>` : ''}
     ${r.notes ? `<div class="field"><label>Your notes</label><div class="rc-sub">${escapeHTML(r.notes)}</div></div>` : ''}
     ${isClaim && r.status === 'rejected' && r.reviewNote ? `<div class="field"><label>Reason from landlord</label><div class="rc-sub">${escapeHTML(r.reviewNote)}</div></div>` : ''}
     <div class="field"><label>Your proof of payment</label>${proofBlock}</div>
