@@ -240,6 +240,35 @@ behind that function.
     suggestion until the admin confirms. **Not yet deployed or tested** — depends on Issue #10's
     real-name fix being deployed first, since `getTenantCandidates()` needs actual name labels
     (not raw doc IDs) for this suggestion to be meaningful.
+12. **A resolved fuzzy match with zero payment history was indistinguishable from "tenant not
+    found."** Found via real logs from testing #11: querying "Rachelle Bitualla" against real
+    tenant "Rachell Bitualla" correctly scored `distance: 1` and resolved as a fuzzy match — the
+    matching logic worked. But `getTenantPaymentStatus`'s `payments.empty` branch returned only
+    `{ error: "No payment records found for this tenant" }` with no `matchedTenant` field at all.
+    With no way to know the name had actually resolved, the model retried with a shortened name
+    ("Rachelle" alone, distance 9, genuinely no match), then folded both dead ends into one "couldn't
+    find a tenant matching either name" reply — silently losing a real match. **Fixed**: the empty-
+    payments branch now returns `matchedTenant` and `wasExactMatch` alongside the error, and
+    `SYSTEM_PROMPT` now explicitly says a `matchedTenant` field means the name search succeeded
+    (even alongside an error) and the model should not retry with a different spelling once it has
+    one. Also added a debug log line logging whether the payments query was empty and for which
+    resolved tenant, to directly confirm this against real data next test instead of inferring it
+    from behavior. **Not yet deployed or tested.**
+13. **Suggestion tier never fired for a bare first-name query, even a near-perfect one.** Real
+    test: querying "Rachelle" (or "Rachell") against real tenant "Rachell Bitualla" returned a
+    flat "couldn't find a tenant" with no suggestion, despite "Rachell" being a distance-0/1 match
+    to her first name. Root cause: `resolveTenant()` only ever scored the query against the FULL
+    label ("rachell bitualla") — a bare first name is naturally far in edit distance from a
+    two-word label (distance 9 in this case) no matter how exact a match it is to the first name
+    alone, so neither the fuzzy nor the suggestion threshold could ever catch it. **Fixed**: each
+    candidate is now also scored against its individual name tokens (`tokenDistance`, split on
+    whitespace) alongside the existing full-label `distance`. A close token match never auto-
+    resolves (matching one word doesn't confirm full identity) but now feeds the suggestion tier
+    via a new `tokenThreshold`, checked after the existing full-label fuzzy/ambiguous logic and
+    before the final full-label suggestion fallback. Verified against real data from this test:
+    "Rachelle" and "Rachell" against "Rachell Bitualla" both now resolve to `type: "suggestion"`
+    (tokenDistance 1 and 0 respectively) instead of "none," while the existing full-name-typo case
+    ("Rachelle Bitualla") still resolves as `fuzzy` as before. **Not yet deployed or tested.**
 
 ## Known gotchas to watch for
 

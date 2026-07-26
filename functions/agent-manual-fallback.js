@@ -45,8 +45,11 @@ Data model:
 - Payment status values: "paid" (settled), "pending" (awaiting confirmation), "overdue" (past due date, unpaid).
 - Maintenance status values: "open" (not yet started), "in_progress" (being worked on). Urgency is a plain descriptive field (e.g. low/medium/high), not a fixed enum you should re-derive.
 
+You can list all tenants on file with listTenants — use it whenever the admin asks to see everyone, how many tenants they have, or similar broad requests. If that result includes a "note" field, mention it briefly (some records have no name on file and were left out of the list) rather than ignoring it or explaining the underlying cause.
+
 Tenant lookups (getTenantPaymentStatus) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
 - If the result includes "wasExactMatch: false", a close-but-imperfect match was used — briefly confirm which tenant you're showing before answering (e.g. "Showing results for Rachel Bituala — let me know if that's not who you meant.").
+- If the result includes a "matchedTenant" field, the name search succeeded — even if the same result also carries an "error" about missing payment records. Treat this as "found the tenant, no payment history on file," never as "couldn't find the tenant." Once you have a matchedTenant, do not call the tool again with a shortened or different spelling of the same name — you already have your answer.
 - If the result is an error naming multiple close matches ("candidates"), list those names back to the admin and ask which one they meant. Don't pick one yourself.
 - If the result includes a "suggestedTenant" field, no match was confident enough to use automatically — this is different from "wasExactMatch: false" above, where the tool already ran with a close match. Here, ask the admin directly, e.g. "I didn't find an exact match for [query] — did you mean [suggestedTenant]?" Do not treat the suggestion as if it were the answer, and do not look up or state any payment details for it until the admin confirms.
 - If the result is a "no tenant found" error with no "suggestedTenant" field, say so plainly and ask the admin to double-check the spelling or give a unit number instead. Don't imply the tenant has no payment history — the name just didn't match anyone.
@@ -70,6 +73,14 @@ const toolDefs = [
     name: "listOpenMaintenanceRequests",
     description: "List maintenance requests still open or in_progress",
     params: { olderThanDays: "number (optional)" },
+  },
+  {
+    name: "listTenants",
+    description:
+      "List all tenants on file for this admin, by name. Use this when the admin asks to " +
+      "see all tenants, how many they have, or similar broad requests — not for looking up " +
+      "one specific tenant, which getTenantPaymentStatus already handles.",
+    params: {},
   },
 ];
 
@@ -442,17 +453,37 @@ async function resolveTenant(query, adminUid) {
   const normalizedQuery = query.trim().toLowerCase();
   const scored = nameable.map((c) => {
     const normalizedLabel = c.label.trim().toLowerCase();
+    // Score the query against the full label AND against each individual
+    // word in it (first name, last name, etc). A bare first name like
+    // "Rachelle" is naturally far in edit distance from a full two-word
+    // label like "rachell bitualla" — the full-label distance alone would
+    // never clear either threshold below, no matter how close a typo it is
+    // to the first name specifically. tokenDistance catches that case.
+    const tokens = normalizedLabel.split(/\s+/).filter(Boolean);
+    let tokenDistance = Infinity;
+    for (const t of tokens) {
+      const d = levenshtein(normalizedQuery, t);
+      if (d < tokenDistance) tokenDistance = d;
+    }
     return {
       ...c,
       exact: normalizedLabel === normalizedQuery,
       distance: levenshtein(normalizedQuery, normalizedLabel),
+      tokenDistance,
     };
   });
 
   // ---- TEMPORARY DEBUG — remove once tenant matching is confirmed ----
   console.log(
     "SCORED CANDIDATES:",
-    JSON.stringify(scored.map((s) => ({ label: s.label, distance: s.distance, exact: s.exact })))
+    JSON.stringify(
+      scored.map((s) => ({
+        label: s.label,
+        distance: s.distance,
+        tokenDistance: s.tokenDistance,
+        exact: s.exact,
+      }))
+    )
   );
   // ----------------------------------------------------------------------
 
@@ -479,11 +510,24 @@ async function resolveTenant(query, adminUid) {
     return { type: "ambiguous", matches: tied.slice(0, 5) };
   }
 
-  // Nothing was close enough to auto-use. Before giving up entirely,
-  // check whether the single nearest candidate is at least plausible —
-  // a middle tier between "confident enough to run with" and "no idea
-  // what you meant". This is a suggestion only: the caller must not use
-  // it to answer the question, only to offer it back to the admin.
+  // Nothing on the FULL label was close enough to auto-use. Before
+  // falling back further, check for a token-level near-miss — the admin
+  // typed (something close to) just one name from the label, e.g. a
+  // first name alone. This never auto-resolves — matching one word
+  // doesn't confirm the whole identity — but it's a strong enough signal
+  // to suggest and let the admin confirm, rather than a flat rejection.
+  const tokenThreshold = Math.max(1, Math.round(normalizedQuery.length * 0.3));
+  const tokenClose = scored
+    .filter((s) => s.tokenDistance <= tokenThreshold)
+    .sort((a, b) => a.tokenDistance - b.tokenDistance);
+
+  if (tokenClose.length > 0) {
+    return { type: "suggestion", matches: [tokenClose[0]] };
+  }
+
+  // Last resort: nearest candidate by full-label distance, for typos
+  // that don't cleanly land on either the full name or a single token
+  // (e.g. a missing middle name, or words in a different order).
   const nearest = scored.slice().sort((a, b) => a.distance - b.distance)[0];
   const suggestThreshold = Math.max(threshold + 2, Math.round(normalizedQuery.length * 0.45));
   if (nearest && nearest.distance <= suggestThreshold) {
@@ -539,7 +583,25 @@ async function executeTool(name, args, adminUid) {
       .where('tenantId', '==', resolved.tenantId)
       .get();
 
-    if (snapshot.empty) return { error: "No payment records found for this tenant" };
+    // ---- TEMPORARY DEBUG — remove once confirmed ----
+    console.log(
+      `PAYMENTS QUERY for matched tenant "${resolved.label}" (tenantId: ${resolved.tenantId}): ` +
+        `${snapshot.empty ? "EMPTY" : `${snapshot.size} record(s)`}`
+    );
+    // ---------------------------------------------------
+
+    if (snapshot.empty) {
+      // A resolved match with zero payment history is NOT the same as
+      // "couldn't find the tenant" — without matchedTenant here, the model
+      // has no way to know the name actually resolved, and (as seen in
+      // testing) will retry with a shortened/different name assuming the
+      // first lookup failed, then conflate both dead ends into one reply.
+      return {
+        matchedTenant: resolved.label,
+        wasExactMatch: resolution.type === "exact",
+        error: "No payment records found for this tenant.",
+      };
+    }
 
     const docs = snapshot.docs.map(d => d.data());
     // Sort by date descending in JS — avoids the composite index requirement
@@ -579,6 +641,27 @@ async function executeTool(name, args, adminUid) {
       status: r.status,
       createdAt: r.createdAt,
     }));
+  }
+
+  if (name === "listTenants") {
+    // Reuses the same candidate-gathering logic getTenantPaymentStatus
+    // scores against, so this stays in sync with resolveTenantLabel()'s
+    // field-name fallback and the "no usable name field" warning — no
+    // separate query/label logic to keep consistent here.
+    const candidates = await getTenantCandidates(adminUid);
+    // Exclude candidates with no resolvable name field (hasName: false) —
+    // those are labeled with a raw Firestore doc ID as a fallback for
+    // fuzzy-matching purposes, which would look like broken data if shown
+    // in a tenant list rather than silently scored against.
+    const named = candidates.filter((c) => c.hasName);
+
+    return {
+      tenants: named.map((c) => c.label),
+      count: named.length,
+      ...(named.length < candidates.length
+        ? { note: `${candidates.length - named.length} additional tenant record(s) on file have no name set and are omitted from this list.` }
+        : {}),
+    };
   }
 }
 
