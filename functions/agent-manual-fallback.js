@@ -39,15 +39,17 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GROQ_KEY = process.env.GROQ_API_KEY;
 const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY;
 
-const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status and open maintenance requests.
+const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status, overdue balances, income collected, and open maintenance requests.
 
 Data model:
 - Payment status values: "paid" (settled), "pending" (awaiting confirmation), "overdue" (past due date, unpaid).
 - Maintenance status values: "open" (not yet started), "in_progress" (being worked on). Urgency is a plain descriptive field (e.g. low/medium/high), not a fixed enum you should re-derive.
+- Money is in Philippine Peso — format amounts with ₱ (e.g. ₱4,500). Dates should be shown in a Philippine date format (day month year, e.g. 26 July 2026).
+- There is currently no data source for units, locations, contracts, utility bills, or occupancy status — only tenants, payments, and maintenance requests. If asked about vacant/occupied units, unit numbers, or expected/projected rent (as opposed to what's actually been collected), say plainly: "I don't have enough information to answer that yet." Don't estimate or infer these from tenant/payment data.
 
-You can list all tenants on file with listTenants — use it whenever the admin asks to see everyone, how many tenants they have, or similar broad requests. If that result includes a "note" field, mention it briefly (some records have no name on file and were left out of the list) rather than ignoring it or explaining the underlying cause.
+You can list all tenants on file with getAllTenants — use it whenever the admin asks to see everyone, how many tenants they have, or similar broad requests. If that result includes a "note" field, mention it briefly (some records have no name on file and were left out of the list) rather than ignoring it or explaining the underlying cause. getOverdueTenants and getPayments work the same way for their respective broad requests — no tenant name needed.
 
-Tenant lookups (getTenantPaymentStatus) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
+Tenant lookups (getTenantPaymentStatus, getTenantByName) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
 - If the result includes "wasExactMatch: false", a close-but-imperfect match was used — briefly confirm which tenant you're showing before answering (e.g. "Showing results for Rachel Bituala — let me know if that's not who you meant.").
 - If the result includes a "matchedTenant" field, the name search succeeded — even if the same result also carries an "error" about missing payment records. Treat this as "found the tenant, no payment history on file," never as "couldn't find the tenant." Once you have a matchedTenant, do not call the tool again with a shortened or different spelling of the same name — you already have your answer.
 - If the result is an error naming multiple close matches ("candidates"), list those names back to the admin and ask which one they meant. Don't pick one yourself.
@@ -55,12 +57,22 @@ Tenant lookups (getTenantPaymentStatus) are matched by name, not by an exact sys
 - If the result is a "no tenant found" error with no "suggestedTenant" field, say so plainly and ask the admin to double-check the spelling or give a unit number instead. Don't imply the tenant has no payment history — the name just didn't match anyone.
 
 Behavior:
-- Never invent tenant names, amounts, dates, or statuses. If a tool result is missing a field, say it's missing rather than filling in a plausible-sounding value.
+- Never invent tenant names, amounts, dates, statuses, unit numbers, or occupancy figures. If a tool result is missing a field, or the data doesn't exist at all, say so rather than filling in a plausible-sounding value.
 - Be concise. Admins are checking this between other tasks, not having a conversation.
 - You have no visibility into anything outside what the tools return — don't reference dates, tenants, or requests you haven't looked up in this conversation.`;
 
 // Tool schema defined once in a neutral shape; each adapter converts it
 // into the format that provider expects.
+//
+// NOTE: units/locations/contracts/utility-bills tools (getUnitByNumber,
+// getVacantUnits, getOccupiedUnits, getDashboardStats, getAllUnits,
+// getExpectedIncome) are deliberately NOT included yet. The real schema
+// only confirms users/{adminUid}/tenants, payments, and
+// maintenanceRequests exist (see firestore.rules) — there's no confirmed
+// units/locations collection to query. Guessing at a shape here would
+// either throw or silently return empty results that look like "zero
+// vacant units" instead of "this feature doesn't exist yet." Add these
+// once the Firestore console confirms the real collection/field names.
 const toolDefs = [
   {
     name: "getTenantPaymentStatus",
@@ -70,17 +82,42 @@ const toolDefs = [
     params: { tenantName: "string" },
   },
   {
-    name: "listOpenMaintenanceRequests",
-    description: "List maintenance requests still open or in_progress",
-    params: { olderThanDays: "number (optional)" },
+    name: "getTenantByName",
+    description:
+      "Look up whether a tenant exists by name, without pulling payment details. Use this for " +
+      "'is there a tenant named X' or 'do I have a tenant called X' — for payment status, use " +
+      "getTenantPaymentStatus instead, which already includes name resolution.",
+    params: { tenantName: "string" },
   },
   {
-    name: "listTenants",
+    name: "getAllTenants",
     description:
       "List all tenants on file for this admin, by name. Use this when the admin asks to " +
       "see all tenants, how many they have, or similar broad requests — not for looking up " +
-      "one specific tenant, which getTenantPaymentStatus already handles.",
+      "one specific tenant.",
     params: {},
+  },
+  {
+    name: "getOverdueTenants",
+    description: "List all tenants whose most recent payment status is overdue, with balance owed.",
+    params: {},
+  },
+  {
+    name: "getPayments",
+    description: "List raw payment records, most recent first. Optionally filter by status.",
+    params: { status: "string (optional: paid, pending, or overdue)" },
+  },
+  {
+    name: "getMonthlyIncome",
+    description:
+      "Total amount actually collected (status: paid) so far in the current calendar month. " +
+      "Does not include expected/projected rent — there's no confirmed data source for that yet.",
+    params: {},
+  },
+  {
+    name: "getMaintenanceRequests",
+    description: "List maintenance requests still open or in_progress",
+    params: { olderThanDays: "number (optional)" },
   },
 ];
 
@@ -133,7 +170,7 @@ function buildGeminiContents(messages) {
               id: m.toolCallId,
               // Gemini's functionResponse.response field must be a JSON
               // object, not an array (400: "Proto field is not
-              // repeating, cannot start list") — listOpenMaintenanceRequests
+              // repeating, cannot start list") — getMaintenanceRequests
               // returns an array, so non-object results get wrapped.
               response: wrapAsObject(safeParse(m.content)),
             },
@@ -622,7 +659,7 @@ async function executeTool(name, args, adminUid) {
     };
   }
 
-  if (name === "listOpenMaintenanceRequests") {
+  if (name === "getMaintenanceRequests") {
     const snapshot = await adminRef.collection('maintenanceRequests')
       .where('status', 'in', ['open', 'in_progress'])
       .get();
@@ -643,7 +680,39 @@ async function executeTool(name, args, adminUid) {
     }));
   }
 
-  if (name === "listTenants") {
+  if (name === "getTenantByName") {
+    // Identity lookup only — no payment query. Reuses resolveTenant() so
+    // it stays consistent with getTenantPaymentStatus's matching behavior
+    // (exact/fuzzy/suggestion/ambiguous/none), without pulling payment data
+    // the admin didn't ask for.
+    const resolution = await resolveTenant(args.tenantName, adminUid);
+
+    if (resolution.type === "none") {
+      return {
+        error: `No tenant found matching "${args.tenantName}". Ask the admin to double-check the spelling or provide a unit number.`,
+      };
+    }
+    if (resolution.type === "suggestion") {
+      return {
+        error: `No confident match for "${args.tenantName}".`,
+        suggestedTenant: resolution.matches[0].label,
+      };
+    }
+    if (resolution.type === "ambiguous") {
+      return {
+        error: `Multiple tenants closely match "${args.tenantName}".`,
+        candidates: resolution.matches.map((m) => m.label),
+      };
+    }
+
+    const resolved = resolution.matches[0];
+    return {
+      matchedTenant: resolved.label,
+      wasExactMatch: resolution.type === "exact",
+    };
+  }
+
+  if (name === "getAllTenants") {
     // Reuses the same candidate-gathering logic getTenantPaymentStatus
     // scores against, so this stays in sync with resolveTenantLabel()'s
     // field-name fallback and the "no usable name field" warning — no
@@ -662,6 +731,82 @@ async function executeTool(name, args, adminUid) {
         ? { note: `${candidates.length - named.length} additional tenant record(s) on file have no name set and are omitted from this list.` }
         : {}),
     };
+  }
+
+  if (name === "getOverdueTenants") {
+    // Pull every payment, keep only each tenant's single most recent
+    // record (same "sort in JS, skip the composite index" approach as
+    // getTenantPaymentStatus), then filter to status === "overdue".
+    const snapshot = await adminRef.collection('payments').get();
+    const byTenant = new Map();
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      if (!data.tenantId) continue;
+      const existing = byTenant.get(data.tenantId);
+      const time = data.date?.toMillis ? data.date.toMillis() : new Date(data.date).getTime();
+      const existingTime = existing
+        ? (existing.date?.toMillis ? existing.date.toMillis() : new Date(existing.date).getTime())
+        : -Infinity;
+      if (!existing || time > existingTime) byTenant.set(data.tenantId, data);
+    }
+
+    const candidates = await getTenantCandidates(adminUid);
+    const labelById = new Map(candidates.map((c) => [c.tenantId, c.label]));
+
+    const overdue = [...byTenant.entries()]
+      .filter(([, data]) => data.status === "overdue")
+      .map(([tenantId, data]) => ({
+        tenantName: labelById.get(tenantId) || tenantId,
+        balance: data.balance ?? data.amount ?? null,
+      }));
+
+    return { overdueTenants: overdue, count: overdue.length };
+  }
+
+  if (name === "getPayments") {
+    let query = adminRef.collection('payments');
+    if (args.status) query = query.where('status', '==', args.status);
+    const snapshot = await query.get();
+
+    const docs = snapshot.docs.map(d => d.data());
+    docs.sort((a, b) => {
+      const aTime = a.date?.toMillis ? a.date.toMillis() : new Date(a.date).getTime();
+      const bTime = b.date?.toMillis ? b.date.toMillis() : new Date(b.date).getTime();
+      return bTime - aTime;
+    });
+
+    const candidates = await getTenantCandidates(adminUid);
+    const labelById = new Map(candidates.map((c) => [c.tenantId, c.label]));
+
+    return docs.map((d) => ({
+      tenantName: labelById.get(d.tenantId) || d.tenantId,
+      status: d.status,
+      amount: d.amount,
+      date: d.date,
+      balance: d.balance ?? null,
+    }));
+  }
+
+  if (name === "getMonthlyIncome") {
+    // Only counts payments actually marked "paid" within the current
+    // calendar month. There's no confirmed rent/lease-amount data source
+    // yet (that would live under a units/contracts collection that isn't
+    // confirmed to exist), so this can't report an "expected" figure to
+    // compare against — see the note in toolDefs above.
+    const snapshot = await adminRef.collection('payments')
+      .where('status', '==', 'paid')
+      .get();
+
+    const now = new Date();
+    const thisMonth = snapshot.docs
+      .map(d => d.data())
+      .filter((d) => {
+        const t = d.date?.toMillis ? new Date(d.date.toMillis()) : new Date(d.date);
+        return t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth();
+      });
+
+    const total = thisMonth.reduce((sum, d) => sum + (d.amount || 0), 0);
+    return { collectedThisMonth: total, paymentCount: thisMonth.length };
   }
 }
 

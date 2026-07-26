@@ -269,6 +269,40 @@ behind that function.
     "Rachelle" and "Rachell" against "Rachell Bitualla" both now resolve to `type: "suggestion"`
     (tokenDistance 1 and 0 respectively) instead of "none," while the existing full-name-typo case
     ("Rachelle Bitualla") still resolves as `fuzzy` as before. **Not yet deployed or tested.**
+14. **No tool existed to list all tenants** — asking "give me the list of all tenants I have" got
+    a polite "I don't have a tool for that" from the model, which was correct: there wasn't one.
+    **Fixed**: added a new `listTenants` tool (no params) alongside the existing two. It reuses
+    `getTenantCandidates()` rather than a separate query, so it stays in sync with
+    `resolveTenantLabel()`'s field-name fallback for free. Deliberately filters out candidates
+    with `hasName: false` (the raw-doc-ID fallback used internally for fuzzy-scoring unnamed
+    legacy docs) so the admin-facing list never shows a bare Firestore ID as if it were a tenant
+    name — instead returns a `note` field naming how many such records were left out.
+    `SYSTEM_PROMPT` and the tool's own description were both updated so the model knows to reach
+    for it on broad "show me everyone" asks, not just specific-name lookups. **Not yet deployed or
+    tested.**
+15. **Expanded the tool set from a proposed getter list, deduped, and renamed to match.** The
+    proposed list (`getAllTenants`, `getTenantByName`, `getOverdueTenants`, `getPayments`,
+    `getMonthlyIncome`, `getMaintenanceRequests`, plus several unit/location/dashboard getters)
+    had duplicate entries and assumed data (units, locations, contracts, utility bills, occupancy)
+    that isn't confirmed to exist anywhere in the real schema — only `tenants`, `payments`, and
+    `maintenanceRequests` are confirmed (see Issue #8). **Deliberately deferred**: `getUnitByNumber`,
+    `getVacantUnits`, `getOccupiedUnits`, `getDashboardStats`, `getAllUnits`, `getExpectedIncome` —
+    none added yet, pending a Firestore console check to confirm whether a units/locations
+    collection actually exists and what it's shaped like. Guessing here risked either a thrown
+    error or, worse, a tool that silently returns "zero vacant units" for a feature that was never
+    wired up. **Implemented now** (all backed by the confirmed schema): renamed `listTenants` →
+    `getAllTenants` and `listOpenMaintenanceRequests` → `getMaintenanceRequests` to match the
+    requested convention; added `getTenantByName` (identity-only lookup, reuses `resolveTenant()`
+    without querying payments), `getOverdueTenants` (latest payment per tenant, filtered to
+    `status: "overdue"`, joined against tenant labels via `getTenantCandidates()`), `getPayments`
+    (raw payment list, optional `status` filter), and `getMonthlyIncome` (sum of `status: "paid"`
+    payments dated in the current calendar month — explicitly does NOT report an "expected"
+    figure, since that needs a rent/lease amount with no confirmed data source yet).
+    `SYSTEM_PROMPT` updated to: reference the renamed tools, add Peso (₱) formatting and
+    Philippine date-format conventions (pulled from the admin's proposed prompt), and explicitly
+    tell the model to say "I don't have enough information to answer that yet" for any
+    unit/location/occupancy/expected-income question rather than inferring or estimating from
+    tenant/payment data. **Not yet deployed or tested.**
 
 ## Known gotchas to watch for
 
