@@ -23,6 +23,13 @@
  * request isn't successful, and askAgent() now logs the final result
  * right before returning it, so you can see exactly what's being sent
  * back to the app. Safe to remove once everything is confirmed working.
+ *
+ * MULTI-TENANT ADMIN SCOPING: askAgent() and executeTool() both require
+ * an adminUid, and every Firestore query goes through users/{adminUid}/...
+ * — matching the real schema in firestore.rules. The Admin SDK used here
+ * bypasses those rules entirely, so this scoping is enforced in code, not
+ * by Firestore. adminUid must come from the caller's verified auth (see
+ * index.js's admins/{adminUid} check) — never from client input.
  */
 
 const admin = require("firebase-admin");
@@ -32,13 +39,31 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GROQ_KEY = process.env.GROQ_API_KEY;
 const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY;
 
+const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status and open maintenance requests.
+
+Data model:
+- Payment status values: "paid" (settled), "pending" (awaiting confirmation), "overdue" (past due date, unpaid).
+- Maintenance status values: "open" (not yet started), "in_progress" (being worked on). Urgency is a plain descriptive field (e.g. low/medium/high), not a fixed enum you should re-derive.
+
+Tenant lookups (getTenantPaymentStatus) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
+- If the result includes "wasExactMatch: false", a close-but-imperfect match was used — briefly confirm which tenant you're showing before answering (e.g. "Showing results for Rachel Bituala — let me know if that's not who you meant.").
+- If the result is an error naming multiple close matches ("candidates"), list those names back to the admin and ask which one they meant. Don't pick one yourself.
+- If the result is a "no tenant found" error, say so plainly and ask the admin to double-check the spelling or give a unit number instead. Don't imply the tenant has no payment history — the name just didn't match anyone.
+
+Behavior:
+- Never invent tenant names, amounts, dates, or statuses. If a tool result is missing a field, say it's missing rather than filling in a plausible-sounding value.
+- Be concise. Admins are checking this between other tasks, not having a conversation.
+- You have no visibility into anything outside what the tools return — don't reference dates, tenants, or requests you haven't looked up in this conversation.`;
+
 // Tool schema defined once in a neutral shape; each adapter converts it
 // into the format that provider expects.
 const toolDefs = [
   {
     name: "getTenantPaymentStatus",
-    description: "Look up a tenant's current rent payment status and balance",
-    params: { tenantId: "string" },
+    description:
+      "Look up a tenant's current rent payment status and balance by name. Small typos are " +
+      "tolerated — pass whatever name the admin gave, even if the spelling might be slightly off.",
+    params: { tenantName: "string" },
   },
   {
     name: "listOpenMaintenanceRequests",
@@ -94,7 +119,11 @@ function buildGeminiContents(messages) {
             functionResponse: {
               name: m.name,
               id: m.toolCallId,
-              response: safeParse(m.content),
+              // Gemini's functionResponse.response field must be a JSON
+              // object, not an array (400: "Proto field is not
+              // repeating, cannot start list") — listOpenMaintenanceRequests
+              // returns an array, so non-object results get wrapped.
+              response: wrapAsObject(safeParse(m.content)),
             },
           },
         ],
@@ -260,6 +289,12 @@ function safeParse(str) {
   }
 }
 
+function wrapAsObject(value) {
+  const isPlainObject =
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  return isPlainObject ? value : { result: value };
+}
+
 // Every provider's response gets normalized to the same shape so the
 // rest of your app (tool execution, UI rendering) doesn't care which
 // provider answered. toolCalls now always carry an `id` so the result
@@ -292,17 +327,145 @@ function normalizeGeminiResponse(data) {
   };
 }
 
+// ---------- Tenant name resolution (fuzzy match) ----------
+// Admins search by name, not by the tenantId Firestore actually stores.
+// This resolves a possibly-misspelled name to zero, one, or several
+// candidate tenantId values without needing to know in advance whether
+// there's a dedicated `tenants` collection or whether `tenantId` on
+// payment docs already holds the name directly — it checks the former
+// first and falls back to deriving candidates from `payments`.
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+async function getTenantCandidates(adminUid) {
+  const adminRef = db.collection("users").doc(adminUid);
+
+  // users/{adminUid}/tenants is the real, rules-confirmed source of
+  // truth for tenant records (see firestore.rules — tenants store under
+  // the owner rule, plus dedicated tenant-portal carve-outs). Each doc's
+  // ID is the tenantId used everywhere else (payments, maintenanceRequests).
+  const tenantsSnap = await adminRef.collection("tenants").limit(1000).get();
+  if (!tenantsSnap.empty) {
+    return tenantsSnap.docs.map((d) => ({
+      tenantId: d.id,
+      label: d.data().name || d.id,
+    }));
+  }
+
+  // Defensive fallback only — shouldn't normally be needed given the
+  // above, but covers a tenants subcollection that's empty/not yet
+  // populated for this admin while payments already exist.
+  const paySnap = await adminRef.collection("payments").select("tenantId").get();
+  const seen = new Set();
+  const candidates = [];
+  for (const doc of paySnap.docs) {
+    const id = doc.data().tenantId;
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      candidates.push({ tenantId: id, label: id });
+    }
+  }
+  return candidates;
+}
+
+async function resolveTenant(query, adminUid) {
+  const candidates = await getTenantCandidates(adminUid);
+
+  // ---- TEMPORARY DEBUG — remove once tenant matching is confirmed ----
+  console.log(
+    `TENANT CANDIDATES (${candidates.length}) for query "${query}":`,
+    JSON.stringify(candidates.map((c) => c.label))
+  );
+  // ----------------------------------------------------------------------
+
+  if (candidates.length === 0) return { type: "none", matches: [] };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const scored = candidates.map((c) => {
+    const normalizedLabel = c.label.trim().toLowerCase();
+    return {
+      ...c,
+      exact: normalizedLabel === normalizedQuery,
+      distance: levenshtein(normalizedQuery, normalizedLabel),
+    };
+  });
+
+  // ---- TEMPORARY DEBUG — remove once tenant matching is confirmed ----
+  console.log(
+    "SCORED CANDIDATES:",
+    JSON.stringify(scored.map((s) => ({ label: s.label, distance: s.distance, exact: s.exact })))
+  );
+  // ----------------------------------------------------------------------
+
+  const exactMatches = scored.filter((s) => s.exact);
+  if (exactMatches.length === 1) return { type: "exact", matches: exactMatches };
+  if (exactMatches.length > 1) return { type: "ambiguous", matches: exactMatches };
+
+  // No exact match — allow a small number of edits, scaled loosely to
+  // name length, so a single missing/wrong character still resolves.
+  const threshold = Math.max(1, Math.round(normalizedQuery.length * 0.2));
+  const close = scored
+    .filter((s) => s.distance <= threshold)
+    .sort((a, b) => a.distance - b.distance);
+
+  if (close.length === 0) return { type: "none", matches: [] };
+  if (close.length === 1) return { type: "fuzzy", matches: close };
+  // Multiple candidates within the threshold — only treat as ambiguous
+  // if more than one is close to the *best* distance found, so one
+  // clearly-closer match still wins over distant runners-up.
+  const bestDistance = close[0].distance;
+  const tied = close.filter((s) => s.distance === bestDistance);
+  if (tied.length === 1) return { type: "fuzzy", matches: tied };
+  return { type: "ambiguous", matches: tied.slice(0, 5) };
+}
+
 // ---------- Tool execution (Firestore) ----------
 // Same logic already wired into agent-openrouter.js — the tool results
 // don't depend on which provider is asking for them.
 //
+// SCOPING: every query here is scoped under users/{adminUid}/{store},
+// matching the real schema in firestore.rules. The Admin SDK bypasses
+// security rules entirely, so this scoping has to be enforced here in
+// code — nothing stops an unscoped query from reading every admin's
+// data at once. adminUid comes from the caller's verified auth (see
+// index.js), never from the model or the request body.
+//
 // NOTE: getTenantPaymentStatus sorts in JavaScript instead of using
 // Firestore's .orderBy() — that avoids needing a composite Firestore
 // index (where + orderBy together require one to be manually created).
-async function executeTool(name, args) {
+async function executeTool(name, args, adminUid) {
+  const adminRef = db.collection("users").doc(adminUid);
+
   if (name === "getTenantPaymentStatus") {
-    const snapshot = await db.collection('payments')
-      .where('tenantId', '==', args.tenantId)
+    const resolution = await resolveTenant(args.tenantName, adminUid);
+
+    if (resolution.type === "none") {
+      return {
+        error: `No tenant found matching "${args.tenantName}". Ask the admin to double-check the spelling or provide a unit number.`,
+      };
+    }
+    if (resolution.type === "ambiguous") {
+      return {
+        error: `Multiple tenants closely match "${args.tenantName}".`,
+        candidates: resolution.matches.map((m) => m.label),
+      };
+    }
+
+    const resolved = resolution.matches[0];
+    const snapshot = await adminRef.collection('payments')
+      .where('tenantId', '==', resolved.tenantId)
       .get();
 
     if (snapshot.empty) return { error: "No payment records found for this tenant" };
@@ -317,6 +480,8 @@ async function executeTool(name, args) {
     const latest = docs[0];
 
     return {
+      matchedTenant: resolved.label,
+      wasExactMatch: resolution.type === "exact",
       status: latest.status,        // e.g. "paid", "pending", "overdue"
       amount: latest.amount,
       date: latest.date,
@@ -325,7 +490,7 @@ async function executeTool(name, args) {
   }
 
   if (name === "listOpenMaintenanceRequests") {
-    const snapshot = await db.collection('maintenanceRequests')
+    const snapshot = await adminRef.collection('maintenanceRequests')
       .where('status', 'in', ['open', 'in_progress'])
       .get();
 
@@ -353,9 +518,13 @@ const PROVIDER_CHAIN = [
   { name: "cerebras", call: callCerebras },
 ];
 
-async function askAgent(userMessage, history = []) {
+async function askAgent(userMessage, history = [], adminUid) {
+  if (!adminUid) {
+    throw new Error("askAgent requires adminUid — every Firestore query must be scoped to a specific admin's data.");
+  }
+
   const messages = [
-    { role: "system", content: "You are the UpaPro admin assistant. Be concise." },
+    { role: "system", content: SYSTEM_PROMPT },
     ...history,
     { role: "user", content: userMessage },
   ];
@@ -369,7 +538,7 @@ async function askAgent(userMessage, history = []) {
         const toolResultMessages = await Promise.all(
           result.toolCalls.map(async (call) => {
             const args = JSON.parse(call.arguments || "{}");
-            const toolResult = await executeTool(call.name, args);
+            const toolResult = await executeTool(call.name, args, adminUid);
             return {
               role: "tool",
               toolCallId: call.id,
