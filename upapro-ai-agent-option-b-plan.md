@@ -22,19 +22,34 @@ behind that function.
 
 ## 📍 Where we are right now
 
-- **Gemini: working end-to-end**, including name-based tenant lookup with typo tolerance.
-- **Multi-admin data scoping: just fixed in code, NOT yet deployed or tested.** This was a
-  significant find (see Issue #8) — `executeTool()` was querying flat, unscoped Firestore
-  collections with no concept of which of the 2 admin accounts was asking. `index.js` and
-  `agent-manual-fallback.js` have both been rewritten to scope every query to
-  `users/{adminUid}/...` and to verify the caller against `admins/{adminUid}` before running
-  anything. **Next step: deploy this and test with both landlord accounts before doing anything
-  else** — this should take priority over Groq/Cerebras testing below, since it affects whether
-  Gemini's already-working responses are even reading the right admin's data.
+- **Multi-admin scoping fix: deployed** (revision `askagent-00016-wob`, 2026-07-26 ~00:09 UTC) —
+  no longer just written, it's live. Re-tested against Gemini afterward: the "Rachell Bitualla"
+  lookup still correctly returns "no tenant found" (expected — she's not a UpaPro tenant, so
+  this confirms the scoped query path works, not a regression).
+- **New bug found in that same post-deploy test session — Issue #9: tool-call loop only ran
+  once.** A compound ask ("list open maintenance requests" → model then chained into checking
+  payment status for unit "301") needs two sequential tool round-trips. The old code only did
+  one call → tool → follow-up call and returned whatever came back — even if that follow-up
+  response was itself another `functionCall`. The last log line ends exactly there: a second
+  `getTenantPaymentStatus` functionCall for `"301"` came back as the "final" result, which has
+  no `.text`, so the client would have silently received `{ reply: undefined }`. **Fixed in
+  code** — `askAgent()` now loops (`while`, capped at `MAX_TOOL_ROUNDS = 5`) instead of doing a
+  single round-trip. **Not yet deployed or tested.**
+- **Gemini: working end-to-end** for single-tool-call requests, including name-based tenant
+  lookup with typo tolerance. Multi-tool-call chains were broken until the Issue #9 fix above —
+  need to re-test those specifically once deployed.
 - **Groq, Cerebras: still untested** — every real test so far has been answered by Gemini
   before the chain reached them.
 - One open question flagged in gotchas: whether `users/{adminUid}/tenants/{tenantId}` docs
   actually have a `name` field — worth a quick console check.
+- **New addition — Issue #11: added a "suggestion" middle tier to `resolveTenant()`.** Failed
+  lookups used to be a flat "no tenant found" with zero information even when a genuinely close
+  candidate existed just outside the auto-use fuzzy threshold. Now the nearest candidate gets
+  checked against a looser threshold and surfaced as `suggestedTenant` so the admin gets "did you
+  mean X?" instead. **Code written, not yet deployed or tested** — and won't be meaningful until
+  Issue #10's real-name fix is deployed, since suggestions need real labels, not raw doc IDs.
+- Still outstanding from before: **test with both admin accounts** specifically to confirm
+  cross-tenant isolation — the logs so far only show one admin's session.
 
 ---
 
@@ -105,14 +120,17 @@ behind that function.
 - [ ] Not yet wired in — holding off until the base 3-provider chain is confirmed working first
 
 ### 6. Deploy
-- [x] Deployed multiple times while debugging (currently on revision `askagent-00007-rid`)
-- [ ] **Deploy the multi-admin scoping fix** (`index.js` + `agent-manual-fallback.js` as of
-      Issue #8) — written but not yet pushed. `firebase deploy --only functions:askAgent` from
-      the project root once both files are copied into `functions/`.
-- [ ] **Test with both admin accounts** after that deploy — sign in as each landlord, confirm
-      each only ever sees their own tenants/payments/maintenance requests, and confirm a non-
-      admin caller gets a clean `permission-denied` rather than either silent failure or someone
-      else's data.
+- [x] Deployed multiple times while debugging (currently on revision `askagent-00016-wob`)
+- [x] **Deploy the multi-admin scoping fix** (`index.js` + `agent-manual-fallback.js` as of
+      Issue #8) — pushed 2026-07-26 ~00:09 UTC.
+- [ ] **Test with both admin accounts** — logs so far only show one admin's session; still need
+      to sign in as the second landlord and confirm isolation, plus confirm a non-admin caller
+      gets a clean `permission-denied`.
+- [ ] **Deploy the Issue #9 tool-loop fix** (`agent-manual-fallback.js` — `askAgent()` now loops
+      over tool rounds instead of doing one round-trip) — written, not yet pushed.
+- [ ] **Re-test a compound request** after that deploy (e.g. "list open maintenance requests,
+      then check payment status for unit 301") to confirm it now returns real text instead of a
+      raw toolCalls array.
 
 ### 7. Test each provider individually
 - [x] Gemini — **confirmed working end-to-end** for the original flat-collection queries.
@@ -120,8 +138,10 @@ behind that function.
       answer back, with `toolCalls: []` on the final result. Took several rounds of fixes to get
       here (quota-limit-0, deprecated model name, two multi-turn tool-calling format issues —
       Issues #5/#6 — plus the array-response fix in Issue #7). Name-based fuzzy tenant lookup
-      also confirmed working for the "no match found" case. **Needs re-confirming after the
-      multi-admin scoping deploy above**, since queries now point at a different Firestore path.
+      also confirmed working for the "no match found" case. **Re-confirmed working post-scoping-
+      deploy for single-tool-call requests** — but that same test session surfaced Issue #9
+      (compound/chained tool calls weren't handled). Needs one more re-test once the Issue #9
+      fix is deployed.
 - [ ] Groq — **in progress**. Crashed once on an unhandled error (the real reason was hidden
       because the code didn't check `res.ok`). Debug logging now added; awaiting next test to see
       the actual error body.
@@ -178,7 +198,48 @@ behind that function.
    (b) Every Firestore query in `agent-manual-fallback.js` was unscoped, so with 2 real admin
    accounts now live, the agent had no way to tell them apart — at best returning nothing (if
    real data only exists nested under each admin), at worst mixing data across landlords if any
-   flat legacy data existed. **Fixed in code, not yet deployed** — see section 6.
+   flat legacy data existed. **Fixed and deployed** — see section 6.
+9. **Tool-call loop only handled one round-trip** — found right after the Issue #8 deploy, when
+   a request chained two tool calls in sequence (list maintenance requests, then look up payment
+   status for a specific unit). `askAgent()` only ever called the provider once, ran the tool
+   once, called the provider a second time, and returned that second response unconditionally —
+   even when that second response was itself another `functionCall` instead of final text. The
+   caller got `result.text === undefined` with no error thrown, so `index.js` would return
+   `{ reply: undefined }` to the app with nothing visibly wrong in the logs (the last log line
+   just shows a second `functionCall` sitting there as the "FINAL RESULT"). **Fixed**: the
+   single `if` block is now a `while` loop capped at `MAX_TOOL_ROUNDS = 5`, so it keeps feeding
+   tool results back until the model returns real text (or the cap is hit, in which case it
+   returns a plain apology string instead of silence). **Not yet deployed.**
+10. **Tenant docs don't have a `name` field — confirmed, not just suspected.** Admin A's real
+    debug logs show `getTenantCandidates()` returning labels like `"id_mruew5ln90g2ie"` for a
+    query of `"Rachell Bitualla"` even though that admin genuinely has tenants named "Rachelle
+    Bitualla" and "Richard Eugenio" on file. The fallback `d.data().name || d.id` was silently
+    resolving to the raw Firestore doc ID for every candidate, so every fuzzy comparison was
+    matching a real name against a meaningless ID string (distance 16-17) instead of against
+    "Rachelle Bitualla" (which would've scored a distance-1 near-miss, well inside the fuzzy
+    threshold — the matching *algorithm* was never the problem). **Fixed**: `getTenantCandidates()`
+    now tries `name`, `fullName`, `tenantName`, `displayName`, then `firstName`+`lastName`, in
+    that order via a new `resolveTenantLabel()` helper, and logs a loud console warning naming
+    which doc ID lacks a usable field instead of silently falling back to it. `resolveTenant()`
+    also now excludes any candidate with no resolvable name from fuzzy scoring entirely, so a
+    handful of un-named legacy docs can't crowd out or interfere with real matches. **Not yet
+    deployed** — still need the actual Firestore console check to confirm which field name(s)
+    are really in use, so the right one ends up first in the fallback chain (right now `name` is
+    still tried first on the original assumption; reorder once confirmed).
+11. **No middle tier between "confident fuzzy match" and "no tenant found"** — flagged while
+    reviewing a real failed lookup ("Rachelle Bitualla" / "Rachelle") that returned a flat
+    "double-check the spelling or provide a unit number" with zero information, even though a
+    genuinely close candidate may exist just outside the auto-use threshold. **Fixed**:
+    `resolveTenant()` now has a third path — when nothing clears the existing fuzzy threshold, it
+    checks the single nearest candidate against a looser `suggestThreshold`
+    (`max(threshold + 2, queryLength * 0.45)`) and returns `{ type: "suggestion", matches: [nearest] }`
+    instead of an unconditional `"none"`. `executeTool()` surfaces this as a `suggestedTenant`
+    field alongside the existing `error` string (kept separate from `wasExactMatch: false`, which
+    already ran the lookup — a suggestion has NOT been looked up). `SYSTEM_PROMPT` now tells the
+    model to ask "did you mean X?" and explicitly not to look up or state payment details for the
+    suggestion until the admin confirms. **Not yet deployed or tested** — depends on Issue #10's
+    real-name fix being deployed first, since `getTenantCandidates()` needs actual name labels
+    (not raw doc IDs) for this suggestion to be meaningful.
 
 ## Known gotchas to watch for
 

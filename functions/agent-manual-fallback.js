@@ -48,7 +48,8 @@ Data model:
 Tenant lookups (getTenantPaymentStatus) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
 - If the result includes "wasExactMatch: false", a close-but-imperfect match was used — briefly confirm which tenant you're showing before answering (e.g. "Showing results for Rachel Bituala — let me know if that's not who you meant.").
 - If the result is an error naming multiple close matches ("candidates"), list those names back to the admin and ask which one they meant. Don't pick one yourself.
-- If the result is a "no tenant found" error, say so plainly and ask the admin to double-check the spelling or give a unit number instead. Don't imply the tenant has no payment history — the name just didn't match anyone.
+- If the result includes a "suggestedTenant" field, no match was confident enough to use automatically — this is different from "wasExactMatch: false" above, where the tool already ran with a close match. Here, ask the admin directly, e.g. "I didn't find an exact match for [query] — did you mean [suggestedTenant]?" Do not treat the suggestion as if it were the answer, and do not look up or state any payment details for it until the admin confirms.
+- If the result is a "no tenant found" error with no "suggestedTenant" field, say so plainly and ask the admin to double-check the spelling or give a unit number instead. Don't imply the tenant has no payment history — the name just didn't match anyone.
 
 Behavior:
 - Never invent tenant names, amounts, dates, or statuses. If a tool result is missing a field, say it's missing rather than filling in a plausible-sounding value.
@@ -349,6 +350,23 @@ function levenshtein(a, b) {
   return dp[m][n];
 }
 
+// Falls back through the field names a tenant's display name might
+// actually be stored under. `name` was the original assumption but the
+// debug logs showed real candidates coming back labeled with raw
+// Firestore doc IDs (e.g. "id_mruew5ln90g2ie") — meaning `name` doesn't
+// exist on these docs and every fuzzy match was silently comparing the
+// admin's query against an ID string instead of an actual name.
+function resolveTenantLabel(data) {
+  if (data.name) return data.name;
+  if (data.fullName) return data.fullName;
+  if (data.tenantName) return data.tenantName;
+  if (data.displayName) return data.displayName;
+  if (data.firstName || data.lastName) {
+    return [data.firstName, data.lastName].filter(Boolean).join(" ");
+  }
+  return null;
+}
+
 async function getTenantCandidates(adminUid) {
   const adminRef = db.collection("users").doc(adminUid);
 
@@ -358,10 +376,26 @@ async function getTenantCandidates(adminUid) {
   // ID is the tenantId used everywhere else (payments, maintenanceRequests).
   const tenantsSnap = await adminRef.collection("tenants").limit(1000).get();
   if (!tenantsSnap.empty) {
-    return tenantsSnap.docs.map((d) => ({
-      tenantId: d.id,
-      label: d.data().name || d.id,
-    }));
+    return tenantsSnap.docs.map((d) => {
+      const data = d.data();
+      const label = resolveTenantLabel(data);
+      if (!label) {
+        // ---- TEMPORARY DEBUG — remove once the field name is confirmed ----
+        console.log(
+          `WARNING: tenant ${d.id} has no usable name field — matching this ` +
+            `candidate by name will never succeed. Doc fields present:`,
+          Object.keys(data)
+        );
+        // ---------------------------------------------------------------------
+      }
+      // hasName lets resolveTenant() tell "no name on record" apart from
+      // "name didn't match" — matching a real query against a raw doc ID
+      // isn't a meaningful fuzzy comparison, so these get excluded from
+      // scoring rather than silently costing every real tenant a shot at
+      // matching (a bad distance-16 "candidate" doesn't crowd out a good one,
+      // but it's still noise, and the console warning above is the real fix).
+      return { tenantId: d.id, label: label || d.id, hasName: !!label };
+    });
   }
 
   // Defensive fallback only — shouldn't normally be needed given the
@@ -374,7 +408,7 @@ async function getTenantCandidates(adminUid) {
     const id = doc.data().tenantId;
     if (id && !seen.has(id)) {
       seen.add(id);
-      candidates.push({ tenantId: id, label: id });
+      candidates.push({ tenantId: id, label: id, hasName: false });
     }
   }
   return candidates;
@@ -386,14 +420,27 @@ async function resolveTenant(query, adminUid) {
   // ---- TEMPORARY DEBUG — remove once tenant matching is confirmed ----
   console.log(
     `TENANT CANDIDATES (${candidates.length}) for query "${query}":`,
-    JSON.stringify(candidates.map((c) => c.label))
+    JSON.stringify(candidates.map((c) => ({ label: c.label, hasName: c.hasName })))
   );
   // ----------------------------------------------------------------------
 
   if (candidates.length === 0) return { type: "none", matches: [] };
 
+  // Candidates with no real name on record can't be meaningfully compared
+  // against a name query — matching "Rachell Bitualla" against an ID
+  // string like "id_mruew5ln90g2ie" isn't a fuzzy near-miss, it's noise
+  // that should never win. Score only the ones with an actual name.
+  const nameable = candidates.filter((c) => c.hasName);
+  if (nameable.length === 0) {
+    console.log(
+      `No tenant candidates for admin have a resolvable name field — ` +
+        `check the Firestore schema (see resolveTenantLabel).`
+    );
+    return { type: "none", matches: [] };
+  }
+
   const normalizedQuery = query.trim().toLowerCase();
-  const scored = candidates.map((c) => {
+  const scored = nameable.map((c) => {
     const normalizedLabel = c.label.trim().toLowerCase();
     return {
       ...c,
@@ -409,6 +456,7 @@ async function resolveTenant(query, adminUid) {
   );
   // ----------------------------------------------------------------------
 
+
   const exactMatches = scored.filter((s) => s.exact);
   if (exactMatches.length === 1) return { type: "exact", matches: exactMatches };
   if (exactMatches.length > 1) return { type: "ambiguous", matches: exactMatches };
@@ -420,15 +468,29 @@ async function resolveTenant(query, adminUid) {
     .filter((s) => s.distance <= threshold)
     .sort((a, b) => a.distance - b.distance);
 
-  if (close.length === 0) return { type: "none", matches: [] };
   if (close.length === 1) return { type: "fuzzy", matches: close };
-  // Multiple candidates within the threshold — only treat as ambiguous
-  // if more than one is close to the *best* distance found, so one
-  // clearly-closer match still wins over distant runners-up.
-  const bestDistance = close[0].distance;
-  const tied = close.filter((s) => s.distance === bestDistance);
-  if (tied.length === 1) return { type: "fuzzy", matches: tied };
-  return { type: "ambiguous", matches: tied.slice(0, 5) };
+  if (close.length > 1) {
+    // Multiple candidates within the threshold — only treat as ambiguous
+    // if more than one is close to the *best* distance found, so one
+    // clearly-closer match still wins over distant runners-up.
+    const bestDistance = close[0].distance;
+    const tied = close.filter((s) => s.distance === bestDistance);
+    if (tied.length === 1) return { type: "fuzzy", matches: tied };
+    return { type: "ambiguous", matches: tied.slice(0, 5) };
+  }
+
+  // Nothing was close enough to auto-use. Before giving up entirely,
+  // check whether the single nearest candidate is at least plausible —
+  // a middle tier between "confident enough to run with" and "no idea
+  // what you meant". This is a suggestion only: the caller must not use
+  // it to answer the question, only to offer it back to the admin.
+  const nearest = scored.slice().sort((a, b) => a.distance - b.distance)[0];
+  const suggestThreshold = Math.max(threshold + 2, Math.round(normalizedQuery.length * 0.45));
+  if (nearest && nearest.distance <= suggestThreshold) {
+    return { type: "suggestion", matches: [nearest] };
+  }
+
+  return { type: "none", matches: [] };
 }
 
 // ---------- Tool execution (Firestore) ----------
@@ -454,6 +516,15 @@ async function executeTool(name, args, adminUid) {
     if (resolution.type === "none") {
       return {
         error: `No tenant found matching "${args.tenantName}". Ask the admin to double-check the spelling or provide a unit number.`,
+      };
+    }
+    if (resolution.type === "suggestion") {
+      // Not confident enough to use automatically — surface the nearest
+      // candidate as a suggestion only. The model must ask before using it,
+      // never treat this the way it treats wasExactMatch: false.
+      return {
+        error: `No confident match for "${args.tenantName}".`,
+        suggestedTenant: resolution.matches[0].label,
       };
     }
     if (resolution.type === "ambiguous") {
@@ -518,12 +589,18 @@ const PROVIDER_CHAIN = [
   { name: "cerebras", call: callCerebras },
 ];
 
+// Cap on how many tool-call round-trips a single askAgent() call will do
+// before giving up. Needed because some admin requests chain naturally
+// (e.g. "list open requests, then check payment status for unit 301") —
+// see Issue #9.
+const MAX_TOOL_ROUNDS = 5;
+
 async function askAgent(userMessage, history = [], adminUid) {
   if (!adminUid) {
     throw new Error("askAgent requires adminUid — every Firestore query must be scoped to a specific admin's data.");
   }
 
-  const messages = [
+  const baseMessages = [
     { role: "system", content: SYSTEM_PROMPT },
     ...history,
     { role: "user", content: userMessage },
@@ -531,10 +608,20 @@ async function askAgent(userMessage, history = [], adminUid) {
 
   for (const provider of PROVIDER_CHAIN) {
     try {
-      const result = await provider.call(messages);
+      let messages = baseMessages;
+      let result = await provider.call(messages);
+      let rounds = 0;
 
-      // If the model wants to call a tool, run it and get a final answer
-      if (result.toolCalls && result.toolCalls.length > 0) {
+      // Loop as long as the model keeps asking for tools, instead of
+      // handling only a single call/result round-trip. The old version
+      // ran the tool once, asked the provider exactly one follow-up
+      // question, and returned whatever came back — even if THAT
+      // response was itself another functionCall. In that case `.text`
+      // was undefined and index.js sent the client `{ reply: undefined }`
+      // with no error anywhere (see Issue #9).
+      while (result.toolCalls && result.toolCalls.length > 0 && rounds < MAX_TOOL_ROUNDS) {
+        rounds++;
+
         const toolResultMessages = await Promise.all(
           result.toolCalls.map(async (call) => {
             const args = JSON.parse(call.arguments || "{}");
@@ -557,22 +644,27 @@ async function askAgent(userMessage, history = [], adminUid) {
           toolCalls: result.toolCalls,
         };
 
-        // Ask the same provider again with the tool results included
-        const followUp = await provider.call([
-          ...messages,
-          assistantToolCallMessage,
-          ...toolResultMessages,
-        ]);
+        messages = [...messages, assistantToolCallMessage, ...toolResultMessages];
+        result = await provider.call(messages);
 
         // ---- TEMPORARY DEBUG — remove once verified ----
-        console.log(`FINAL RESULT (after tool call, provider: ${provider.name}):`, JSON.stringify(followUp));
+        console.log(`TOOL ROUND ${rounds} RESULT (provider: ${provider.name}):`, JSON.stringify(result));
         // -------------------------------------------------
+      }
 
-        return followUp;
+      if (result.toolCalls && result.toolCalls.length > 0) {
+        // Hit MAX_TOOL_ROUNDS without a final text answer. Return
+        // something the client can actually show, instead of a bare
+        // toolCalls array with no .text.
+        console.log(`Gave up after ${MAX_TOOL_ROUNDS} tool rounds, provider: ${provider.name}`);
+        return {
+          text: "Sorry, I couldn't finish that one — could you try asking for one thing at a time?",
+          toolCalls: [],
+        };
       }
 
       // ---- TEMPORARY DEBUG — remove once verified ----
-      console.log(`FINAL RESULT (no tool call, provider: ${provider.name}):`, JSON.stringify(result));
+      console.log(`FINAL RESULT (provider: ${provider.name}, rounds: ${rounds}):`, JSON.stringify(result));
       // -------------------------------------------------
 
       return result;
