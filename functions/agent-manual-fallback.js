@@ -246,12 +246,21 @@ function buildGeminiContents(messages) {
 async function callGemini(messages) {
   const contents = buildGeminiContents(messages);
 
+  // buildGeminiContents() correctly skips role:"system" out of `contents`
+  // (Gemini doesn't accept a "system" role turn there) — but nothing ever
+  // put it anywhere else either. Gemini's REST API takes the system
+  // prompt via a separate top-level `systemInstruction` field; without
+  // this, SYSTEM_PROMPT (data-model rules, tenant-matching behavior,
+  // formatting) was being silently dropped on every single call.
+  const systemMessage = messages.find((m) => m.role === "system");
+
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_KEY}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        ...(systemMessage ? { systemInstruction: { parts: [{ text: systemMessage.content }] } } : {}),
         contents,
         tools: [
           {
