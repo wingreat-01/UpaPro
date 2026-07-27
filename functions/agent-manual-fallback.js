@@ -42,7 +42,7 @@ const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY;
 const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status, overdue balances, income collected, and open maintenance requests.
 
 Data model:
-- Payment status values: "paid" (settled), "pending" (awaiting confirmation), "overdue" (past due date, unpaid).
+- A payment record's "status" reflects payment CONFIRMATION only — e.g. "paid" once accepted (tenant-portal submissions can be "pending" before confirmation). It is never "overdue" — whether a tenant is overdue is calculated from their unit's due day and payment history (via getOverdueTenants/getTenantPaymentStatus), not read off any stored field.
 - Maintenance status values: "open" (not yet started), "in_progress" (being worked on). Urgency is a plain descriptive field (e.g. low/medium/high), not a fixed enum you should re-derive.
 - Money is in Philippine Peso — format amounts with ₱ (e.g. ₱4,500). Dates should be shown in a Philippine date format (day month year, e.g. 26 July 2026).
 - Units and locations (properties) exist in the data source: each unit has a label (e.g. "301"), belongs to a location/property (e.g. "Caloocan"), and has a status (occupied/vacant) and a monthlyRent. Use getTenantByUnit for "who is in unit X" / "who is in [property] unit X", getVacantUnits / getOccupiedUnits for broad occupancy requests, and getExpectedIncome for projected income based on occupied units' rent (distinct from getMonthlyIncome, which is what's actually been collected). There is still no data source for lease contracts or utility bills — if asked about those, say plainly: "I don't have enough information to answer that yet." Don't estimate or infer them.
@@ -86,8 +86,10 @@ const toolDefs = [
   {
     name: "getTenantPaymentStatus",
     description:
-      "Look up a tenant's current rent payment status and balance by name. Small typos are " +
-      "tolerated — pass whatever name the admin gave, even if the spelling might be slightly off.",
+      "Look up a tenant's rent status by name: whether they're overdue, how many consecutive " +
+      "months, and the total balance owed — calculated from their unit's due day and payment " +
+      "history (not a stored status field). Small typos in the name are tolerated — pass " +
+      "whatever the admin gave, even if the spelling might be slightly off.",
     params: { tenantName: "string" },
   },
   {
@@ -137,13 +139,19 @@ const toolDefs = [
   },
   {
     name: "getOverdueTenants",
-    description: "List all tenants whose most recent payment status is overdue, with balance owed.",
+    description:
+      "List all tenants currently behind on rent — calculated month-by-month from each unit's " +
+      "due day against payment history, not a stored status field — with consecutive months " +
+      "overdue and total balance owed for each.",
     params: {},
   },
   {
     name: "getPayments",
-    description: "List raw payment records, most recent first. Optionally filter by status.",
-    params: { status: "string (optional: paid, pending, or overdue)" },
+    description:
+      "List raw payment records, most recent first. The optional status filter is a payment " +
+      "CONFIRMATION state (e.g. \"paid\"), not whether a tenant is overdue — for that, use " +
+      "getOverdueTenants or getTenantPaymentStatus instead.",
+    params: { status: "string (optional, e.g. paid)" },
   },
   {
     name: "getMonthlyIncome",
@@ -612,6 +620,109 @@ async function resolveTenant(query, adminUid) {
   return { type: "none", matches: [] };
 }
 
+// ---------- Rent-overdue calculation ----------
+// CONFIRMED (Firestore console, 2026-07-27): payments docs have no
+// status:"overdue" value — status is a payment-CONFIRMATION state
+// (e.g. "paid" once a tenant-portal submission is accepted), never a
+// tenant-overdue state. "Overdue" is never stored anywhere; the app
+// itself derives it live by walking every calendar month from the
+// tenant's moveInDate to today and comparing that month's rent balance
+// against the unit's fixed dueDay (see chargeStatus()/
+// computeOverdueHistory()/computeOutstandingBalance() in index.html —
+// this is a direct Node port of that same logic, so the agent's answer
+// matches what the admin sees on screen). Rent-only for now — electricity
+// /water aren't included since utilityBills isn't populated yet; add the
+// same weighted-split treatment index.html uses once it is.
+function monthKeyOf(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function periodsBetween(fromPeriod, toPeriod) {
+  const periods = [];
+  let [y, m] = fromPeriod.split("-").map(Number);
+  const [y2, m2] = toPeriod.split("-").map(Number);
+  let guard = 0;
+  while ((y < y2 || (y === y2 && m <= m2)) && guard < 240) {
+    periods.push(`${y}-${String(m).padStart(2, "0")}`);
+    m++;
+    if (m > 12) { m = 1; y++; }
+    guard++;
+  }
+  return periods;
+}
+
+// balance>0 and due date already passed => overdue; within 3 days => due-soon;
+// further out => upcoming; no balance => paid. Mirrors chargeStatus() exactly.
+function chargeStatus(balance, dueDate, today) {
+  const daysDiff = Math.floor((today - dueDate) / 86400000);
+  let status = "paid";
+  if (balance > 0) {
+    if (daysDiff > 0) status = "overdue";
+    else if (daysDiff >= -3) status = "due-soon";
+    else status = "upcoming";
+  }
+  return { status, daysOverdue: Math.max(0, daysDiff) };
+}
+
+// Sums rent paid for one tenant+period from a pre-fetched list of that
+// tenant's payment docs. Untagged payments count fully toward rent since
+// there's no utility bill this period to split against yet (mirrors
+// amountPaidForCharge()'s fallback when totalExpected === rentAmt).
+// Bounced checks and deposit-tagged payments never count toward rent.
+function rentPaidForPeriod(paymentsForTenant, period) {
+  return paymentsForTenant
+    .filter((p) => p.coveredPeriod === period && p.tag !== "deposit" && p.clearanceStatus !== "bounced")
+    .reduce((sum, p) => {
+      const amt = Number(p.amountPaid) || 0;
+      if (!amt) return sum;
+      if (p.tag) return p.tag === "rent" ? sum + amt : sum;
+      return sum + amt;
+    }, 0);
+}
+
+// Consecutive overdue months counting backward from today, stopping at
+// the first caught-up month — exactly computeOverdueHistory()'s behavior
+// (a due-soon/upcoming month is skipped, not a break, since it isn't due yet).
+function computeMonthsOverdue(tenant, unit, paymentsForTenant, today) {
+  const rentAmt = Number(unit.monthlyRent) || 0;
+  if (!rentAmt) return 0;
+  const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
+  const moveIn = tenant.moveInDate ? new Date(tenant.moveInDate + "T00:00:00") : today;
+  const periods = periodsBetween(monthKeyOf(moveIn), monthKeyOf(today));
+  let months = 0;
+  for (let i = periods.length - 1; i >= 0; i--) {
+    const [y, m] = periods[i].split("-").map(Number);
+    const dueDate = new Date(y, m - 1, dueDay);
+    const paid = rentPaidForPeriod(paymentsForTenant, periods[i]);
+    const balance = Math.max(0, rentAmt - paid);
+    const { status } = chargeStatus(balance, dueDate, today);
+    if (status === "paid") break;
+    if (status !== "overdue") continue;
+    months++;
+  }
+  return months;
+}
+
+// Total rent balance outstanding across EVERY overdue period from
+// moveInDate to today (not just the consecutive streak) — matches
+// computeOutstandingBalance()'s rent total.
+function computeOutstandingRent(tenant, unit, paymentsForTenant, today) {
+  const rentAmt = Number(unit.monthlyRent) || 0;
+  if (!rentAmt) return 0;
+  const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
+  const moveIn = tenant.moveInDate ? new Date(tenant.moveInDate + "T00:00:00") : today;
+  const periods = periodsBetween(monthKeyOf(moveIn), monthKeyOf(today));
+  let total = 0;
+  for (const period of periods) {
+    const [y, m] = period.split("-").map(Number);
+    const dueDate = new Date(y, m - 1, dueDay);
+    const paid = rentPaidForPeriod(paymentsForTenant, period);
+    const balance = Math.max(0, rentAmt - paid);
+    if (chargeStatus(balance, dueDate, today).status === "overdue") total += balance;
+  }
+  return Math.round(total);
+}
+
 // ---------- Tool execution (Firestore) ----------
 // Same logic already wired into agent-openrouter.js — the tool results
 // don't depend on which provider is asking for them.
@@ -654,6 +765,19 @@ async function executeTool(name, args, adminUid) {
     }
 
     const resolved = resolution.matches[0];
+    const tenantDoc = await adminRef.collection('tenants').doc(resolved.tenantId).get();
+    const tenant = tenantDoc.exists ? tenantDoc.data() : null;
+    const unitDoc = tenant && tenant.unitId ? await adminRef.collection('units').doc(tenant.unitId).get() : null;
+    const unit = unitDoc && unitDoc.exists ? unitDoc.data() : null;
+
+    if (!tenant || !unit) {
+      return {
+        matchedTenant: resolved.label,
+        wasExactMatch: resolution.type === "exact",
+        error: "This tenant has no unit assigned, so rent status can't be calculated.",
+      };
+    }
+
     const snapshot = await adminRef.collection('payments')
       .where('tenantId', '==', resolved.tenantId)
       .get();
@@ -665,12 +789,13 @@ async function executeTool(name, args, adminUid) {
     );
     // ---------------------------------------------------
 
-    if (snapshot.empty) {
-      // A resolved match with zero payment history is NOT the same as
-      // "couldn't find the tenant" — without matchedTenant here, the model
-      // has no way to know the name actually resolved, and (as seen in
-      // testing) will retry with a shortened/different name assuming the
-      // first lookup failed, then conflate both dead ends into one reply.
+    // A resolved match with zero payment history is NOT the same as
+    // "couldn't find the tenant" — without matchedTenant here, the model
+    // has no way to know the name actually resolved, and (as seen in
+    // testing) will retry with a shortened/different name assuming the
+    // first lookup failed, then conflate both dead ends into one reply.
+    const paymentsForTenant = snapshot.docs.map(d => d.data());
+    if (paymentsForTenant.length === 0 && !tenant.moveInDate) {
       return {
         matchedTenant: resolved.label,
         wasExactMatch: resolution.type === "exact",
@@ -678,22 +803,22 @@ async function executeTool(name, args, adminUid) {
       };
     }
 
-    const docs = snapshot.docs.map(d => d.data());
-    // Sort by date descending in JS — avoids the composite index requirement
-    docs.sort((a, b) => {
-      const aTime = a.date?.toMillis ? a.date.toMillis() : new Date(a.date).getTime();
-      const bTime = b.date?.toMillis ? b.date.toMillis() : new Date(b.date).getTime();
-      return bTime - aTime;
-    });
-    const latest = docs[0];
+    const today = new Date();
+    const monthsOverdue = computeMonthsOverdue(tenant, unit, paymentsForTenant, today);
+    const balanceOwed = computeOutstandingRent(tenant, unit, paymentsForTenant, today);
+
+    paymentsForTenant.sort((a, b) => (b.datePaid || "").localeCompare(a.datePaid || ""));
+    const latest = paymentsForTenant[0] || null;
 
     return {
       matchedTenant: resolved.label,
       wasExactMatch: resolution.type === "exact",
-      status: latest.status,        // e.g. "paid", "pending", "overdue"
-      amount: latest.amount,
-      date: latest.date,
-      balance: latest.balance ?? null,
+      status: monthsOverdue > 0 ? "overdue" : "current",
+      monthsOverdue,
+      balanceOwed,
+      lastPayment: latest
+        ? { amount: latest.amountPaid, date: latest.datePaid, coveredPeriod: latest.coveredPeriod }
+        : null,
     };
   }
 
@@ -772,32 +897,48 @@ async function executeTool(name, args, adminUid) {
   }
 
   if (name === "getOverdueTenants") {
-    // Pull every payment, keep only each tenant's single most recent
-    // record (same "sort in JS, skip the composite index" approach as
-    // getTenantPaymentStatus), then filter to status === "overdue".
-    const snapshot = await adminRef.collection('payments').get();
-    const byTenant = new Map();
-    for (const doc of snapshot.docs) {
+    // "Overdue" isn't a stored field on any payment doc — see the
+    // comment above computeMonthsOverdue(). Derive it the same way the
+    // app itself does: for every active tenant with an assigned unit,
+    // walk rent month-by-month from moveInDate to today against the
+    // unit's dueDay.
+    const [tenantsSnap, unitsSnap, paymentsSnap] = await Promise.all([
+      adminRef.collection('tenants').limit(1000).get(),
+      adminRef.collection('units').limit(1000).get(),
+      adminRef.collection('payments').limit(5000).get(),
+    ]);
+
+    const unitById = new Map(unitsSnap.docs.map((d) => [d.id, d.data()]));
+    const paymentsByTenant = new Map();
+    for (const doc of paymentsSnap.docs) {
       const data = doc.data();
       if (!data.tenantId) continue;
-      const existing = byTenant.get(data.tenantId);
-      const time = data.date?.toMillis ? data.date.toMillis() : new Date(data.date).getTime();
-      const existingTime = existing
-        ? (existing.date?.toMillis ? existing.date.toMillis() : new Date(existing.date).getTime())
-        : -Infinity;
-      if (!existing || time > existingTime) byTenant.set(data.tenantId, data);
+      const list = paymentsByTenant.get(data.tenantId) || [];
+      list.push(data);
+      paymentsByTenant.set(data.tenantId, list);
     }
 
-    const candidates = await getTenantCandidates(adminUid);
-    const labelById = new Map(candidates.map((c) => [c.tenantId, c.label]));
+    const today = new Date();
+    const overdue = [];
+    for (const doc of tenantsSnap.docs) {
+      const tenant = doc.data();
+      if (tenant.active === false) continue; // moved-out tenants aren't currently overdue
+      const unit = tenant.unitId ? unitById.get(tenant.unitId) : null;
+      if (!unit) continue; // no unit assigned — nothing to be overdue on
+      const label = resolveTenantLabel(tenant);
+      if (!label) continue;
+      const paymentsForTenant = paymentsByTenant.get(doc.id) || [];
+      const monthsOverdue = computeMonthsOverdue(tenant, unit, paymentsForTenant, today);
+      if (monthsOverdue > 0) {
+        overdue.push({
+          tenantName: label,
+          monthsOverdue,
+          balance: computeOutstandingRent(tenant, unit, paymentsForTenant, today),
+        });
+      }
+    }
 
-    const overdue = [...byTenant.entries()]
-      .filter(([, data]) => data.status === "overdue")
-      .map(([tenantId, data]) => ({
-        tenantName: labelById.get(tenantId) || tenantId,
-        balance: data.balance ?? data.amount ?? null,
-      }));
-
+    overdue.sort((a, b) => b.monthsOverdue - a.monthsOverdue);
     return { overdueTenants: overdue, count: overdue.length };
   }
 
@@ -807,21 +948,20 @@ async function executeTool(name, args, adminUid) {
     const snapshot = await query.get();
 
     const docs = snapshot.docs.map(d => d.data());
-    docs.sort((a, b) => {
-      const aTime = a.date?.toMillis ? a.date.toMillis() : new Date(a.date).getTime();
-      const bTime = b.date?.toMillis ? b.date.toMillis() : new Date(b.date).getTime();
-      return bTime - aTime;
-    });
+    // Sort by datePaid descending — the real field name (confirmed in the
+    // Firestore console); "date" never existed on these docs.
+    docs.sort((a, b) => (b.datePaid || "").localeCompare(a.datePaid || ""));
 
     const candidates = await getTenantCandidates(adminUid);
     const labelById = new Map(candidates.map((c) => [c.tenantId, c.label]));
 
     return docs.map((d) => ({
       tenantName: labelById.get(d.tenantId) || d.tenantId,
-      status: d.status,
-      amount: d.amount,
-      date: d.date,
-      balance: d.balance ?? null,
+      status: d.status,          // payment-confirmation state (e.g. "paid"), not overdue status
+      amount: d.amountPaid,
+      coveredPeriod: d.coveredPeriod,
+      date: d.datePaid,
+      tag: d.tag,
     }));
   }
 
@@ -970,10 +1110,9 @@ async function executeTool(name, args, adminUid) {
 
   if (name === "getMonthlyIncome") {
     // Only counts payments actually marked "paid" within the current
-    // calendar month. There's no confirmed rent/lease-amount data source
-    // yet (that would live under a units/contracts collection that isn't
-    // confirmed to exist), so this can't report an "expected" figure to
-    // compare against — see the note in toolDefs above.
+    // calendar month, using the real field names confirmed in the
+    // Firestore console (amountPaid/datePaid — not amount/date, which
+    // never existed on these docs and silently made this always return 0).
     const snapshot = await adminRef.collection('payments')
       .where('status', '==', 'paid')
       .get();
@@ -982,12 +1121,13 @@ async function executeTool(name, args, adminUid) {
     const thisMonth = snapshot.docs
       .map(d => d.data())
       .filter((d) => {
-        const t = d.date?.toMillis ? new Date(d.date.toMillis()) : new Date(d.date);
+        if (!d.datePaid) return false;
+        const t = new Date(d.datePaid + 'T00:00:00');
         return t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth();
       });
 
-    const total = thisMonth.reduce((sum, d) => sum + (d.amount || 0), 0);
-    return { collectedThisMonth: total, paymentCount: thisMonth.length };
+    const total = thisMonth.reduce((sum, d) => sum + (Number(d.amountPaid) || 0), 0);
+    return { collectedThisMonth: Math.round(total), paymentCount: thisMonth.length };
   }
 }
 
