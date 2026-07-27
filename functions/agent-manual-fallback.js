@@ -45,9 +45,16 @@ Data model:
 - Payment status values: "paid" (settled), "pending" (awaiting confirmation), "overdue" (past due date, unpaid).
 - Maintenance status values: "open" (not yet started), "in_progress" (being worked on). Urgency is a plain descriptive field (e.g. low/medium/high), not a fixed enum you should re-derive.
 - Money is in Philippine Peso — format amounts with ₱ (e.g. ₱4,500). Dates should be shown in a Philippine date format (day month year, e.g. 26 July 2026).
-- There is currently no data source for units, locations, contracts, utility bills, or occupancy status — only tenants, payments, and maintenance requests. If asked about vacant/occupied units, unit numbers, or expected/projected rent (as opposed to what's actually been collected), say plainly: "I don't have enough information to answer that yet." Don't estimate or infer these from tenant/payment data.
+- Units and locations (properties) exist in the data source: each unit has a label (e.g. "301"), belongs to a location/property (e.g. "Caloocan"), and has a status (occupied/vacant) and a monthlyRent. Use getTenantByUnit for "who is in unit X" / "who is in [property] unit X", getVacantUnits / getOccupiedUnits for broad occupancy requests, and getExpectedIncome for projected income based on occupied units' rent (distinct from getMonthlyIncome, which is what's actually been collected). There is still no data source for lease contracts or utility bills — if asked about those, say plainly: "I don't have enough information to answer that yet." Don't estimate or infer them.
 
-You can list all tenants on file with getAllTenants — use it whenever the admin asks to see everyone, how many tenants they have, or similar broad requests. If that result includes a "note" field, mention it briefly (some records have no name on file and were left out of the list) rather than ignoring it or explaining the underlying cause. getOverdueTenants and getPayments work the same way for their respective broad requests — no tenant name needed.
+Unit lookups (getTenantByUnit) are matched by unit label and, optionally, a location/property name. React to what the tool returns:
+- If the result includes a "tenants" array, those are the tenant(s) currently linked to that unit — if it's empty, say plainly that no tenant is currently linked to that unit (don't imply the unit itself doesn't exist).
+- If the result is an error naming multiple "candidates" (either several locations matching the name given, or the same unit label existing at more than one property), list those back to the admin and ask which one they meant. Don't pick one yourself.
+- If the result is a "no unit found" or "no location found" error, say so plainly and ask the admin to double-check the unit number or property name.
+
+getVacantUnits and getOccupiedUnits return a plain list — if either comes back empty, say so plainly (e.g. "No vacant units right now") rather than treating it as an error. getExpectedIncome is a projection, not a collected total — always describe it as expected/projected, never phrase it the way you'd phrase getMonthlyIncome's actual figure.
+
+You can list all tenants on file with getAllTenants — use it whenever the admin asks to see everyone, how many tenants they have, or similar broad requests. If that result includes a "note" field, mention it briefly (some records have no name on file and were left out of the list) rather than ignoring it or explaining the underlying cause. getOverdueTenants and getPayments work the same way for their respective broad requests — no tenant name needed. getVacantUnits and getOccupiedUnits work the same way for occupancy requests — no unit label needed.
 
 Tenant lookups (getTenantPaymentStatus, getTenantByName) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
 - If the result includes "wasExactMatch: false", a close-but-imperfect match was used — briefly confirm which tenant you're showing before answering (e.g. "Showing results for Rachel Bituala — let me know if that's not who you meant.").
@@ -64,15 +71,17 @@ Behavior:
 // Tool schema defined once in a neutral shape; each adapter converts it
 // into the format that provider expects.
 //
-// NOTE: units/locations/contracts/utility-bills tools (getUnitByNumber,
-// getVacantUnits, getOccupiedUnits, getDashboardStats, getAllUnits,
-// getExpectedIncome) are deliberately NOT included yet. The real schema
-// only confirms users/{adminUid}/tenants, payments, and
-// maintenanceRequests exist (see firestore.rules) — there's no confirmed
-// units/locations collection to query. Guessing at a shape here would
-// either throw or silently return empty results that look like "zero
-// vacant units" instead of "this feature doesn't exist yet." Add these
-// once the Firestore console confirms the real collection/field names.
+// NOTE: units/locations ARE confirmed collections under users/{adminUid}/
+// (verified directly in the Firestore console — units: unitLabel,
+// locationId, status, monthlyRent, dueDay, electricityBilling/Rate,
+// waterBilling/Rate; locations: name, address). getTenantByUnit,
+// getVacantUnits, getOccupiedUnits, and getExpectedIncome all use this.
+// getExpectedIncome sums monthlyRent across occupied units only — it's a
+// projection, distinct from getMonthlyIncome's actual-collected figure.
+// Still deliberately NOT included: getUnitByNumber (getTenantByUnit
+// already covers "who's in unit X"; a bare unit-details lookup with no
+// tenant join hasn't been asked for), getDashboardStats, getAllUnits —
+// add these once there's a concrete need for their specific shape.
 const toolDefs = [
   {
     name: "getTenantPaymentStatus",
@@ -88,6 +97,35 @@ const toolDefs = [
       "'is there a tenant named X' or 'do I have a tenant called X' — for payment status, use " +
       "getTenantPaymentStatus instead, which already includes name resolution.",
     params: { tenantName: "string" },
+  },
+  {
+    name: "getTenantByUnit",
+    description:
+      "Look up which tenant(s) occupy a specific unit, by unit label and optionally a location/property " +
+      "name (e.g. unitLabel: '301', locationName: 'Caloocan'). Use this for 'who is in unit X' or 'who " +
+      "lives in [property] unit X' — for looking up a tenant by name instead, use getTenantPaymentStatus " +
+      "or getTenantByName.",
+    params: { unitLabel: "string", locationName: "string (optional)" },
+  },
+  {
+    name: "getVacantUnits",
+    description: "List all units currently marked vacant, with their location/property and monthly rent.",
+    params: {},
+  },
+  {
+    name: "getOccupiedUnits",
+    description:
+      "List all units currently marked occupied, with their location/property, monthly rent, and the " +
+      "tenant name(s) linked to each unit.",
+    params: {},
+  },
+  {
+    name: "getExpectedIncome",
+    description:
+      "Total expected monthly income — the sum of monthlyRent across all currently occupied units. This " +
+      "is a projection based on unit records, not what's actually been collected — for actual collections " +
+      "use getMonthlyIncome instead.",
+    params: {},
   },
   {
     name: "getAllTenants",
@@ -785,6 +823,149 @@ async function executeTool(name, args, adminUid) {
       date: d.date,
       balance: d.balance ?? null,
     }));
+  }
+
+  if (name === "getTenantByUnit") {
+    const rawUnitLabel = (args.unitLabel || "").toString().trim();
+    const rawLocationName = (args.locationName || "").toString().trim();
+
+    if (!rawUnitLabel) {
+      return { error: "No unit number/label provided." };
+    }
+
+    // Loose match helper: strips spaces/punctuation and lowercases, so
+    // "Unit 301", "301", and " 301 " all compare equal, and location
+    // names tolerate partial matches ("Caloocan" vs "Caloocan City").
+    const normalize = (s) => (s || "").toString().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    // Resolve location first if given — narrows which unit(s) count as a
+    // match, since the same unit label can exist at more than one property.
+    let locationIds = null;
+    let matchedLocationName = null;
+    if (rawLocationName) {
+      const locSnap = await adminRef.collection('locations').limit(1000).get();
+      const normalizedQuery = normalize(rawLocationName);
+      const locMatches = locSnap.docs.filter((d) => {
+        const locName = normalize(d.data().name);
+        return locName === normalizedQuery || locName.includes(normalizedQuery) || normalizedQuery.includes(locName);
+      });
+      if (locMatches.length === 0) {
+        return { error: `No location found matching "${rawLocationName}".` };
+      }
+      if (locMatches.length > 1) {
+        return {
+          error: `Multiple locations match "${rawLocationName}".`,
+          candidates: locMatches.map((d) => d.data().name),
+        };
+      }
+      locationIds = [locMatches[0].id];
+      matchedLocationName = locMatches[0].data().name;
+    }
+
+    const unitsSnap = await adminRef.collection('units').limit(1000).get();
+    const normalizedUnitQuery = normalize(rawUnitLabel);
+    let unitMatches = unitsSnap.docs.filter((d) => normalize(d.data().unitLabel) === normalizedUnitQuery);
+    if (locationIds) {
+      unitMatches = unitMatches.filter((d) => locationIds.includes(d.data().locationId));
+    }
+
+    if (unitMatches.length === 0) {
+      return {
+        error: `No unit found matching "${rawUnitLabel}"${matchedLocationName ? ` in ${matchedLocationName}` : ""}.`,
+      };
+    }
+
+    if (unitMatches.length > 1) {
+      // Same unit label at more than one property — don't guess which
+      // one the admin meant, ask them (via the calling model) instead.
+      const locSnap = await adminRef.collection('locations').limit(1000).get();
+      const locNameById = new Map(locSnap.docs.map((d) => [d.id, d.data().name]));
+      return {
+        error: `Multiple units are labeled "${rawUnitLabel}" across different properties.`,
+        candidates: unitMatches.map((d) => locNameById.get(d.data().locationId) || d.data().locationId),
+      };
+    }
+
+    const unitDoc = unitMatches[0];
+    const unit = unitDoc.data();
+
+    let locationName = matchedLocationName;
+    if (!locationName && unit.locationId) {
+      const locDoc = await adminRef.collection('locations').doc(unit.locationId).get();
+      locationName = locDoc.exists ? locDoc.data().name : null;
+    }
+
+    const tenantsSnap = await adminRef.collection('tenants')
+      .where('unitId', '==', unitDoc.id)
+      .limit(5)
+      .get();
+    const tenantNames = tenantsSnap.docs
+      .map((d) => resolveTenantLabel(d.data()))
+      .filter(Boolean);
+
+    return {
+      unitLabel: unit.unitLabel ?? rawUnitLabel,
+      location: locationName ?? null,
+      status: unit.status ?? null,
+      monthlyRent: unit.monthlyRent ?? null,
+      tenants: tenantNames,
+    };
+  }
+
+  if (name === "getVacantUnits") {
+    const unitsSnap = await adminRef.collection('units').limit(1000).get();
+    const locSnap = await adminRef.collection('locations').limit(1000).get();
+    const locNameById = new Map(locSnap.docs.map((d) => [d.id, d.data().name]));
+
+    const vacant = unitsSnap.docs.filter((d) => d.data().status === 'vacant');
+    return vacant.map((d) => {
+      const u = d.data();
+      return {
+        unitLabel: u.unitLabel ?? d.id,
+        location: locNameById.get(u.locationId) || null,
+        monthlyRent: u.monthlyRent ?? null,
+      };
+    });
+  }
+
+  if (name === "getOccupiedUnits") {
+    const unitsSnap = await adminRef.collection('units').limit(1000).get();
+    const locSnap = await adminRef.collection('locations').limit(1000).get();
+    const locNameById = new Map(locSnap.docs.map((d) => [d.id, d.data().name]));
+
+    // Group tenants by unitId once, instead of a per-unit query, since we
+    // need this for every occupied unit in the result.
+    const tenantsSnap = await adminRef.collection('tenants').limit(1000).get();
+    const tenantsByUnitId = new Map();
+    for (const d of tenantsSnap.docs) {
+      const data = d.data();
+      if (!data.unitId) continue;
+      const label = resolveTenantLabel(data);
+      if (!label) continue;
+      const list = tenantsByUnitId.get(data.unitId) || [];
+      list.push(label);
+      tenantsByUnitId.set(data.unitId, list);
+    }
+
+    const occupied = unitsSnap.docs.filter((d) => d.data().status === 'occupied');
+    return occupied.map((d) => {
+      const u = d.data();
+      return {
+        unitLabel: u.unitLabel ?? d.id,
+        location: locNameById.get(u.locationId) || null,
+        monthlyRent: u.monthlyRent ?? null,
+        tenants: tenantsByUnitId.get(d.id) || [],
+      };
+    });
+  }
+
+  if (name === "getExpectedIncome") {
+    // Projection from unit records (monthlyRent on occupied units), not
+    // actual collections — see getMonthlyIncome for what's been paid.
+    const unitsSnap = await adminRef.collection('units').limit(1000).get();
+    const occupied = unitsSnap.docs.filter((d) => d.data().status === 'occupied');
+    const total = occupied.reduce((sum, d) => sum + (d.data().monthlyRent || 0), 0);
+    return { expectedMonthlyIncome: total, occupiedUnitCount: occupied.length };
   }
 
   if (name === "getMonthlyIncome") {
