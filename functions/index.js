@@ -12,6 +12,10 @@ const {askAgent} = require("./agent-manual-fallback");
 // running at the same time.
 setGlobalOptions({ maxInstances: 10 });
 
+// Cap on stored messages per admin's thread doc — keeps the doc size and
+// future context payloads bounded as a thread ages over weeks/months.
+const MAX_STORED_MESSAGES = 60;
+
 exports.askAgent = onCall(
   { secrets: ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY"] },
   async (request) => {
@@ -32,7 +36,44 @@ exports.askAgent = onCall(
     }
 
     const { message } = request.data;
-    const result = await askAgent(message, [], adminUid);
-    return { reply: result.text };
+
+    // The client sends its own recent scrollback as context (see
+    // loadAiChatHistory()/sendAiChatMessage() in index.html). It's the
+    // same admin's own data either way — already gated by the auth check
+    // above — so there's no cross-tenant trust concern in accepting it;
+    // worst case a malformed entry just gets filtered out below.
+    const history = Array.isArray(request.data.history)
+      ? request.data.history
+          .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+          .map((m) => ({ role: m.role, content: m.content }))
+      : [];
+
+    const result = await askAgent(message, history, adminUid);
+    const reply = result.text || "Sorry, I didn't get a response.";
+
+    // Persist the exchange server-side, so what's stored always matches
+    // what was actually sent to the model — not just whatever the client
+    // happened to have in memory. A transaction avoids clobbering another
+    // near-simultaneous write to the same thread doc.
+    try {
+      const threadRef = db.collection("users").doc(adminUid).collection("aiAssistant").doc("thread");
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(threadRef);
+        const existing = snap.exists && Array.isArray(snap.data().messages) ? snap.data().messages : [];
+        const updated = [
+          ...existing,
+          { role: "user", content: message, at: Date.now() },
+          { role: "assistant", content: reply, at: Date.now() },
+        ].slice(-MAX_STORED_MESSAGES);
+        tx.set(threadRef, { messages: updated, updatedAt: Date.now() });
+      });
+    } catch (err) {
+      // Don't fail the whole call just because persistence failed — the
+      // admin still got their answer; they just won't have it remembered
+      // next time they open the sheet.
+      logger.error("Failed to persist AI chat history:", err);
+    }
+
+    return { reply };
   }
 );

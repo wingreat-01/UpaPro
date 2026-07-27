@@ -4648,6 +4648,9 @@ async function rejectPendingPayment(id) {
    persisted, so it resets each time the sheet is reopened. */
 let aiChatHistory = []; // [{ role: 'user'|'assistant', content: '...' }]
 let aiChatBusy = false;
+// How many prior turns to send back to askAgent as context each time —
+// keeps the payload/token usage bounded even as a thread grows over weeks.
+const AI_CHAT_HISTORY_LIMIT = 20;
 
 function openAiAssistantSheet() {
   aiChatHistory = [];
@@ -4665,7 +4668,29 @@ function openAiAssistantSheet() {
     document.getElementById('aiChatSend').addEventListener('click', send);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
     input.focus();
+    loadAiChatHistory();
   });
+}
+
+// Pulls the persisted thread (written server-side by the askAgent Cloud
+// Function after each reply) so the assistant remembers earlier
+// conversations instead of resetting every time the sheet reopens.
+// Fails quietly — the assistant still works for this session without it.
+async function loadAiChatHistory() {
+  if (!fbUser || !fbStore) return;
+  try {
+    const doc = await fbStore.collection('users').doc(fbUser.uid)
+      .collection('aiAssistant').doc('thread').get();
+    if (doc.exists) {
+      const data = doc.data();
+      if (Array.isArray(data.messages)) {
+        aiChatHistory = data.messages.map(m => ({ role: m.role, content: m.content }));
+        renderAiChatLog();
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load AI chat history:', err);
+  }
 }
 
 function renderAiChatLog() {
@@ -4696,7 +4721,11 @@ async function sendAiChatMessage() {
 
   try {
     const askAgent = firebase.functions().httpsCallable('askAgent');
-    const result = await askAgent({ message });
+    // Send recent turns as context (excluding the one just pushed above,
+    // which the server appends on its own) — capped so this doesn't grow
+    // unbounded as a thread ages.
+    const historyToSend = aiChatHistory.slice(0, -1).slice(-AI_CHAT_HISTORY_LIMIT);
+    const result = await askAgent({ message, history: historyToSend });
     aiChatHistory.push({ role: 'assistant', content: result.data.reply || "Sorry, I didn't get a response." });
   } catch (err) {
     console.error('askAgent error:', err);
