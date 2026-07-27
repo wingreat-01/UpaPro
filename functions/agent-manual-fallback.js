@@ -86,8 +86,16 @@ Behavior:
 // NOTE: units/locations ARE confirmed collections under users/{adminUid}/
 // (verified directly in the Firestore console — units: unitLabel,
 // locationId, status, monthlyRent, dueDay, electricityBilling/Rate,
-// waterBilling/Rate; locations: name, address). getTenantByUnit,
-// getVacantUnits, getOccupiedUnits, and getExpectedIncome all use this.
+// waterBilling/Rate; locations: name, address). getTenantByUnit uses
+// unit.status directly (just to surface it on the result, not to gate
+// anything). getVacantUnits, getOccupiedUnits, and getExpectedIncome do
+// NOT trust unit.status for vacancy/occupancy — that field is
+// hand-editable from the admin UI's "Edit unit" form independent
+// of tenant assignment, so it can drift (a unit left "occupied" after its
+// tenant moved out some other way than the Move-out flow). Instead they
+// derive occupied/vacant from whether an active tenant is actually linked
+// to the unit, same rule the app's own frontend uses — status is only
+// consulted to detect "maintenance", which has no tenant-based signal.
 // getExpectedIncome sums monthlyRent across occupied units only — it's a
 // projection, distinct from getMonthlyIncome's actual-collected figure.
 // Still deliberately NOT included: getUnitByNumber (getTenantByUnit
@@ -1103,34 +1111,23 @@ async function executeTool(name, args, adminUid) {
     };
   }
 
-  if (name === "getVacantUnits") {
+  if (name === "getVacantUnits" || name === "getOccupiedUnits") {
     const unitsSnap = await adminRef.collection('units').limit(1000).get();
     const locSnap = await adminRef.collection('locations').limit(1000).get();
     const locNameById = new Map(locSnap.docs.map((d) => [d.id, d.data().name]));
 
-    const vacant = unitsSnap.docs.filter((d) => d.data().status === 'vacant');
-    return vacant.map((d) => {
-      const u = d.data();
-      return {
-        unitLabel: u.unitLabel ?? d.id,
-        location: locNameById.get(u.locationId) || null,
-        monthlyRent: u.monthlyRent ?? null,
-      };
-    });
-  }
-
-  if (name === "getOccupiedUnits") {
-    const unitsSnap = await adminRef.collection('units').limit(1000).get();
-    const locSnap = await adminRef.collection('locations').limit(1000).get();
-    const locNameById = new Map(locSnap.docs.map((d) => [d.id, d.data().name]));
-
-    // Group tenants by unitId once, instead of a per-unit query, since we
-    // need this for every occupied unit in the result.
+    // Group ACTIVE tenants by unitId once, instead of a per-unit query,
+    // since we need this to classify every unit either way. unit.status is
+    // hand-editable from the admin's "Edit unit" form independent of
+    // whether a tenant is actually assigned, so it can drift out of sync
+    // (e.g. a unit left marked "occupied" after its tenant moved out some
+    // other way than the Move-out flow) — trust actual active tenant
+    // assignment instead, same rule the app's own UI uses.
     const tenantsSnap = await adminRef.collection('tenants').limit(1000).get();
     const tenantsByUnitId = new Map();
     for (const d of tenantsSnap.docs) {
       const data = d.data();
-      if (!data.unitId) continue;
+      if (!data.unitId || data.active === false) continue;
       const label = resolveTenantLabel(data);
       if (!label) continue;
       const list = tenantsByUnitId.get(data.unitId) || [];
@@ -1138,7 +1135,24 @@ async function executeTool(name, args, adminUid) {
       tenantsByUnitId.set(data.unitId, list);
     }
 
-    const occupied = unitsSnap.docs.filter((d) => d.data().status === 'occupied');
+    if (name === "getVacantUnits") {
+      // "Maintenance" is a deliberate admin flag with no tenant-based signal
+      // to check it against, so a unit flagged that way is excluded from
+      // "vacant" (it's not available to rent out) rather than folded in.
+      const vacant = unitsSnap.docs.filter(
+        (d) => d.data().status !== 'maintenance' && !(tenantsByUnitId.get(d.id) || []).length
+      );
+      return vacant.map((d) => {
+        const u = d.data();
+        return {
+          unitLabel: u.unitLabel ?? d.id,
+          location: locNameById.get(u.locationId) || null,
+          monthlyRent: u.monthlyRent ?? null,
+        };
+      });
+    }
+
+    const occupied = unitsSnap.docs.filter((d) => (tenantsByUnitId.get(d.id) || []).length > 0);
     return occupied.map((d) => {
       const u = d.data();
       return {
@@ -1151,10 +1165,20 @@ async function executeTool(name, args, adminUid) {
   }
 
   if (name === "getExpectedIncome") {
-    // Projection from unit records (monthlyRent on occupied units), not
-    // actual collections — see getMonthlyIncome for what's been paid.
+    // Projection from unit records (monthlyRent on units with an actual
+    // active tenant), not actual collections — see getMonthlyIncome for
+    // what's been paid. Uses active tenant links rather than unit.status
+    // for the same reason as getVacantUnits/getOccupiedUnits above: status
+    // is hand-editable and can drift out of sync with reality.
     const unitsSnap = await adminRef.collection('units').limit(1000).get();
-    const occupied = unitsSnap.docs.filter((d) => d.data().status === 'occupied');
+    const tenantsSnap = await adminRef.collection('tenants').limit(1000).get();
+    const activeUnitIds = new Set(
+      tenantsSnap.docs
+        .map((d) => d.data())
+        .filter((data) => data.unitId && data.active !== false)
+        .map((data) => data.unitId)
+    );
+    const occupied = unitsSnap.docs.filter((d) => activeUnitIds.has(d.id));
     const total = occupied.reduce((sum, d) => sum + (d.data().monthlyRent || 0), 0);
     return { expectedMonthlyIncome: total, occupiedUnitCount: occupied.length };
   }
