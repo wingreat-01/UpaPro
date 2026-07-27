@@ -39,13 +39,14 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GROQ_KEY = process.env.GROQ_API_KEY;
 const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY;
 
-const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status, overdue balances, income collected, and open maintenance requests.
+const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status, overdue balances, income collected, and open maintenance requests — and, when asked, send rent-due reminders directly to tenants.
 
 Data model:
 - A payment record's "status" reflects payment CONFIRMATION only — e.g. "paid" once accepted (tenant-portal submissions can be "pending" before confirmation). It is never "overdue" — whether a tenant is overdue is calculated from their unit's due day and payment history (via getOverdueTenants/getTenantPaymentStatus), not read off any stored field.
 - Maintenance status values: "open" (not yet started), "in_progress" (being worked on). Urgency is a plain descriptive field (e.g. low/medium/high), not a fixed enum you should re-derive.
 - Money is in Philippine Peso — format amounts with ₱ (e.g. ₱4,500). Dates should be shown in a Philippine date format (day month year, e.g. 26 July 2026).
 - Units and locations (properties) exist in the data source: each unit has a label (e.g. "301"), belongs to a location/property (e.g. "Caloocan"), and has a status (occupied/vacant) and a monthlyRent. Use getTenantByUnit for "who is in unit X" / "who is in [property] unit X", getVacantUnits / getOccupiedUnits for broad occupancy requests, and getExpectedIncome for projected income based on occupied units' rent (distinct from getMonthlyIncome, which is what's actually been collected). There is still no data source for lease contracts or utility bills — if asked about those, say plainly: "I don't have enough information to answer that yet." Don't estimate or infer them.
+- sendPaymentReminder is the only tool that changes anything — it sends a real message into the tenant's chat thread. Every other tool listed here is read-only.
 
 Unit lookups (getTenantByUnit) are matched by unit label and, optionally, a location/property name. React to what the tool returns:
 - If the result includes a "tenants" array, those are the tenant(s) currently linked to that unit — if it's empty, say plainly that no tenant is currently linked to that unit (don't imply the unit itself doesn't exist).
@@ -63,6 +64,8 @@ Tenant lookups (getTenantPaymentStatus, getTenantByName) are matched by name, no
 - If the result is an error naming multiple close matches ("candidates"), list those names back to the admin and ask which one they meant. Don't pick one yourself.
 - If the result includes a "suggestedTenant" field, no match was confident enough to use automatically — this is different from "wasExactMatch: false" above, where the tool already ran with a close match. Here, ask the admin directly, e.g. "I didn't find an exact match for [query] — did you mean [suggestedTenant]?" Do not treat the suggestion as if it were the answer, and do not look up or state any payment details for it until the admin confirms.
 - If the result is a "no tenant found" error with no "suggestedTenant" field, say so plainly and ask the admin to double-check the spelling or give a unit number instead. Don't imply the tenant has no payment history — the name just didn't match anyone.
+
+sendPaymentReminder ACTUALLY SENDS a message to the tenant, immediately, once called — it isn't a lookup. Only call it when the admin has clearly asked for a reminder to go out (e.g. "remind John about his rent", "send Maria a reminder", "nudge unit 301 about their balance") — not when they're just asking whether someone is overdue or what they owe (use getTenantPaymentStatus/getOverdueTenants for that instead, and only follow up with sendPaymentReminder if they then ask you to actually send something). It resolves the tenant name the same way getTenantPaymentStatus does — react to "candidates", "suggestedTenant", and "no tenant found" exactly as described above, and don't send anything until a single tenant is confidently resolved. If the result includes "alreadyPaid: true", nothing was sent — tell the admin this tenant is already paid up rather than implying a reminder went out. If the result includes "sent: true", confirm to the admin that the reminder went out, and you can mention the "unitLabel" it was sent about; don't re-send for the same tenant later in the conversation unless the admin explicitly asks again.
 
 Formatting:
 - When an answer has more than one item (a tenant list, overdue list, payment list, etc.), put each item on its own line using markdown — e.g. a numbered or bulleted list — never run them together in one paragraph separated only by spaces. Use an actual newline before the list starts and between each item.
@@ -184,6 +187,18 @@ const toolDefs = [
     name: "getMaintenanceRequests",
     description: "List maintenance requests still open or in_progress",
     params: { olderThanDays: "number (optional)" },
+  },
+  {
+    name: "sendPaymentReminder",
+    description:
+      "Send a rent-due reminder DIRECTLY to a tenant, right now, via the in-app tenant chat " +
+      "(the same thread the admin messages them in — it appears immediately in the tenant's " +
+      "portal). The message text is composed automatically from that tenant's actual due date " +
+      "and balance — this tool does not take custom message text, and is only for rent-due " +
+      "reminders, not general-purpose messaging. Same name matching as getTenantPaymentStatus " +
+      "(small typos tolerated). This actually sends — only call it once the admin has clearly " +
+      "asked for a reminder to go out, not just asked about a tenant's balance.",
+    params: { tenantName: "string" },
   },
 ];
 
@@ -866,6 +881,112 @@ async function executeTool(name, args, adminUid) {
         : null,
     };
   }
+
+  if (name === "sendPaymentReminder") {
+    const resolution = await resolveTenant(args.tenantName, adminUid);
+
+    // Same resolution-handling as getTenantPaymentStatus — never guess
+    // which tenant to message. An ambiguous or low-confidence match must
+    // be confirmed with the admin before anything gets sent.
+    if (resolution.type === "none") {
+      return {
+        error: `No tenant found matching "${args.tenantName}". Ask the admin to double-check the spelling or provide a unit number.`,
+      };
+    }
+    if (resolution.type === "suggestion") {
+      return {
+        error: `No confident match for "${args.tenantName}".`,
+        suggestedTenant: resolution.matches[0].label,
+      };
+    }
+    if (resolution.type === "ambiguous") {
+      return {
+        error: `Multiple tenants closely match "${args.tenantName}".`,
+        candidates: resolution.matches.map((m) => m.label),
+      };
+    }
+
+    const resolved = resolution.matches[0];
+    const tenantDoc = await adminRef.collection('tenants').doc(resolved.tenantId).get();
+    const tenant = tenantDoc.exists ? tenantDoc.data() : null;
+    const unitDoc = tenant && tenant.unitId ? await adminRef.collection('units').doc(tenant.unitId).get() : null;
+    const unit = unitDoc && unitDoc.exists ? unitDoc.data() : null;
+
+    if (!tenant || !unit) {
+      return {
+        matchedTenant: resolved.label,
+        error: "This tenant has no unit assigned, so a rent reminder can't be composed.",
+      };
+    }
+
+    const rentAmt = Number(unit.monthlyRent) || 0;
+    const today = new Date();
+    const dueDay = Math.min(Math.max(Number(unit.dueDay) || 1, 1), 28);
+    const currentPeriod = monthKeyOf(today);
+    const currentDueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+
+    const paymentsSnap = await adminRef.collection('payments')
+      .where('tenantId', '==', resolved.tenantId)
+      .get();
+    const paymentsForTenant = paymentsSnap.docs.map((d) => d.data());
+
+    const currentPaid = rentPaidForPeriod(paymentsForTenant, currentPeriod);
+    const currentBalance = Math.max(0, rentAmt - currentPaid);
+    const currentChargeStatus = chargeStatus(currentBalance, currentDueDate, today);
+    const monthsOverdue = computeMonthsOverdue(tenant, unit, paymentsForTenant, today);
+    const totalOwed = computeOutstandingRent(tenant, unit, paymentsForTenant, today);
+
+    // Nothing to remind them about — don't send a reminder to a tenant
+    // who's actually paid up. The model should tell the admin this rather
+    // than treating the tool call as having gone through.
+    if (currentChargeStatus.status === "paid" && monthsOverdue === 0) {
+      return {
+        matchedTenant: resolved.label,
+        sent: false,
+        alreadyPaid: true,
+        error: "This tenant is fully paid up right now — no reminder was sent.",
+      };
+    }
+
+    const firstName = (tenant.fullName || resolved.label).split(/\s+/)[0];
+    const dueDateLabel = currentDueDate.toLocaleDateString('en-PH', { month: 'long', day: 'numeric' });
+    const pesoAmt = (n) => `₱${Math.round(n).toLocaleString('en-PH')}`;
+    let text;
+    if (monthsOverdue > 0) {
+      text =
+        `Hi ${firstName}, this is a friendly reminder that your rent for Unit ${unit.unitLabel} ` +
+        `is overdue by ${monthsOverdue} month${monthsOverdue === 1 ? "" : "s"}, with a total ` +
+        `balance of ${pesoAmt(totalOwed)}. Kindly settle at your earliest convenience. Thank you!`;
+    } else {
+      text =
+        `Hi ${firstName}, this is a friendly reminder that your rent of ${pesoAmt(rentAmt)} for ` +
+        `Unit ${unit.unitLabel} is due on ${dueDateLabel}. Thank you!`;
+    }
+
+    // Same message doc shape adminSendMessage() writes from the app itself
+    // (see index.html) — this makes the reminder appear in the tenant's
+    // chat thread exactly as if the admin had typed it there.
+    const msgId = adminRef.collection('messages').doc().id;
+    const msg = {
+      id: msgId,
+      tenantId: resolved.tenantId,
+      unitId: tenant.unitId,
+      sender: 'admin',
+      text,
+      createdAt: Date.now(),
+      readByAdmin: true,
+      readByTenant: false,
+    };
+    await adminRef.collection('messages').doc(msgId).set(msg);
+
+    return {
+      matchedTenant: resolved.label,
+      sent: true,
+      unitLabel: unit.unitLabel ?? null,
+      messageText: text,
+    };
+  }
+
 
   if (name === "getMaintenanceRequests") {
     const snapshot = await adminRef.collection('maintenanceRequests')
