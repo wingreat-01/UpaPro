@@ -130,8 +130,22 @@
   .agent-block:last-child{margin-bottom:0;}
   .ai-avatar{
     width:30px; height:30px; border-radius:50%; flex-shrink:0;
-    object-fit:cover; align-self:flex-start; margin-top:2px;
+    object-fit:cover; margin-top:2px;
   }
+  /* ---- AI Assistant chat bubbles — assistant on the left (with avatar),
+     admin's own messages on the right, messenger/WhatsApp-style, so who
+     said what is obvious from position alone without needing a label. ---- */
+  #aiChatLog.card-list{gap:14px;}
+  .ai-msg-row{display:flex; align-items:flex-start; gap:8px;}
+  .ai-msg-row.me{justify-content:flex-end;}
+  .ai-msg-row.them{justify-content:flex-start;}
+  .ai-msg-bubble{
+    max-width:80%; padding:12px 16px; border-radius:16px; font-size:.88rem;
+    line-height:1.35; word-break:break-word; white-space:pre-wrap;
+  }
+  .ai-msg-bubble.me{background:var(--peso); color:#fff; border-bottom-right-radius:4px;}
+  .ai-msg-bubble.them{background:var(--card); color:var(--ink); border:1px solid var(--line); border-bottom-left-radius:4px;}
+  .ai-msg-bubble .agent-reply-title{color:inherit;}
   .row-card .rc-main{flex:1; min-width:0;}
   .row-card .rc-title{font-weight:600; font-size:.96rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .row-card .rc-sub{font-size:.78rem; color:var(--slate); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
@@ -4838,14 +4852,14 @@ async function loadAiChatHistory() {
 function renderAiChatLog() {
   const log = document.getElementById('aiChatLog');
   if (!log) return;
-  log.innerHTML = aiChatHistory.length ? aiChatHistory.map(m => `
-    <div class="row-card" style="cursor:default; ${m.role === 'user' ? 'background:var(--accent-light,#eef2ff);' : ''}">
-      ${m.role === 'assistant' ? `<img src="${AI_AVATAR_SRC}" alt="" class="ai-avatar">` : ''}
-      <div class="rc-main">
-        <div class="rc-sub" style="font-weight:600;">${m.role === 'user' ? 'You' : 'Assistant'}</div>
-        <div style="white-space:pre-wrap;">${m.role === 'user' ? escapeHTML(m.content) : renderAgentText(m.content)}</div>
-      </div>
-    </div>`).join('') : emptyHTML('🤖', 'Ask me anything', 'e.g. "Is tenant John paid up this month?"');
+  log.innerHTML = aiChatHistory.length ? aiChatHistory.map(m => {
+    const mine = m.role === 'user';
+    return `
+    <div class="ai-msg-row ${mine ? 'me' : 'them'}">
+      ${!mine ? `<img src="${AI_AVATAR_SRC}" alt="" class="ai-avatar">` : ''}
+      <div class="ai-msg-bubble ${mine ? 'me' : 'them'}">${mine ? escapeHTML(m.content) : renderAgentText(m.content)}</div>
+    </div>`;
+  }).join('') : emptyHTML('🤖', 'Ask me anything', 'e.g. "Is tenant John paid up this month?"');
   log.scrollTop = log.scrollHeight;
 }
 
@@ -4857,12 +4871,9 @@ function showAiThinkingIndicator() {
   const log = document.getElementById('aiChatLog');
   if (!log) return;
   log.insertAdjacentHTML('beforeend', `
-    <div class="row-card" id="aiThinkingRow" style="cursor:default;">
+    <div class="ai-msg-row them" id="aiThinkingRow">
       <img src="${AI_AVATAR_SRC}" alt="" class="ai-avatar">
-      <div class="rc-main">
-        <div class="rc-sub" style="font-weight:600;">Assistant</div>
-        <div class="ai-thinking-dots"><span></span><span></span><span></span></div>
-      </div>
+      <div class="ai-msg-bubble them"><div class="ai-thinking-dots"><span></span><span></span><span></span></div></div>
     </div>`);
   log.scrollTop = log.scrollHeight;
 }
