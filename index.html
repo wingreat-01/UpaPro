@@ -2518,11 +2518,12 @@ function closeSheet() {
   }
 }
 
-// Any edit inside a form field marks the sheet dirty — except the search box
-// and the message composer, neither of which is something a person "saves"
-// or would expect a discard-confirmation for when closing.
+// Any edit inside a form field marks the sheet dirty — except the search box,
+// the message composer, and the AI Assistant's chat input, none of which is
+// something a person "saves" or would expect a discard-confirmation for
+// when closing.
 document.getElementById('sheetBody').addEventListener('input', (e) => {
-  if (e.target.id !== 'f-search' && e.target.id !== 'msg-input') sheetDirty = true;
+  if (e.target.id !== 'f-search' && e.target.id !== 'msg-input' && e.target.id !== 'aiChatInput') sheetDirty = true;
 });
 
 /* --------- Full-screen image lightbox (payment proof / ID review) ---------
