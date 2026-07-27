@@ -125,6 +125,7 @@
   #aiChatLog.card-list{gap:16px;}
   #aiChatLog .row-card{padding:20px 18px; cursor:default;}
   #aiChatLog .row-card:active{transform:none;}
+  .agent-reply-title{font-weight:700; font-size:.98rem; margin-bottom:10px;}
   .row-card .rc-main{flex:1; min-width:0;}
   .row-card .rc-title{font-weight:600; font-size:.96rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .row-card .rc-sub{font-size:.78rem; color:var(--slate); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
@@ -6629,7 +6630,16 @@ function escapeAttr(str) { return escapeHTML(str); }
 // which is the one marker the agent's system prompt is told to use.
 // Escapes first so this can't be used to inject HTML via a crafted reply.
 function renderAgentText(str) {
-  return escapeHTML(str).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  let html = escapeHTML(str).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // If the reply opens with an emoji + title line (e.g. "💰 Payment History —
+  // Michael Fontanilla"), style that first line as a small header so it
+  // stands apart from the line-item rows below it.
+  const lines = html.split('\n');
+  if (lines[0] && /^\p{Emoji_Presentation}/u.test(lines[0].trim())) {
+    lines[0] = `<div class="agent-reply-title">${lines[0]}</div>`;
+    html = lines.join('\n');
+  }
+  return html;
 }
 function emptyHTML(icon, title, sub) {
   return `<div class="empty"><div class="e-icon">${icon}</div><p><strong>${title}</strong></p><p>${sub}</p></div>`;
