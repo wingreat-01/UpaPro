@@ -4733,7 +4733,7 @@ function openAiAssistantSheet() {
     <h2>AI Assistant</h2>
     <div class="card-list" id="aiChatLog" style="min-height:200px; max-height:50vh; overflow-y:auto;"></div>
     <div class="msg-input-row" style="margin-top:10px;">
-      <input type="text" id="aiChatInput" placeholder="Ask about a tenant, payment, or maintenance ticket...">
+      <textarea id="aiChatInput" rows="1" placeholder="Ask about a tenant, payment, or maintenance ticket..."></textarea>
       <button id="aiChatSend" aria-label="Send">➤</button>
     </div>
   `, () => {
@@ -4741,7 +4741,10 @@ function openAiAssistantSheet() {
     const input = document.getElementById('aiChatInput');
     const send = () => sendAiChatMessage();
     document.getElementById('aiChatSend').addEventListener('click', send);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    // Shift+Enter inserts a newline (matches the tenant message thread) —
+    // plain Enter sends, and is prevented from also adding a newline first.
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+    input.addEventListener('input', (e) => autoGrowMsgInput(e.target));
     input.focus();
     loadAiChatHistory();
   });
@@ -4804,6 +4807,7 @@ async function sendAiChatMessage() {
   const message = (input.value || '').trim();
   if (!message) return;
   input.value = '';
+  autoGrowMsgInput(input);
   aiChatHistory.push({ role: 'user', content: message });
   renderAiChatLog();
   showAiThinkingIndicator();
