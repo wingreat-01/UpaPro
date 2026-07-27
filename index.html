@@ -125,7 +125,9 @@
   #aiChatLog.card-list{gap:16px;}
   #aiChatLog .row-card{padding:20px 18px; cursor:default;}
   #aiChatLog .row-card:active{transform:none;}
-  .agent-reply-title{font-weight:700; font-size:.98rem; margin-bottom:10px;}
+  .agent-reply-title{font-weight:700; font-size:.98rem; margin-bottom:6px;}
+  .agent-block{margin-bottom:6px;}
+  .agent-block:last-child{margin-bottom:0;}
   .ai-avatar{
     width:30px; height:30px; border-radius:50%; flex-shrink:0;
     object-fit:cover; align-self:flex-start; margin-top:2px;
@@ -6651,15 +6653,17 @@ function escapeAttr(str) { return escapeHTML(str); }
 // Escapes first so this can't be used to inject HTML via a crafted reply.
 function renderAgentText(str) {
   let html = escapeHTML(str).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  // If the reply opens with an emoji + title line (e.g. "💰 Payment History —
-  // Michael Fontanilla"), style that first line as a small header so it
-  // stands apart from the line-item rows below it.
-  const lines = html.split('\n');
-  if (lines[0] && /^\p{Emoji_Presentation}/u.test(lines[0].trim())) {
-    lines[0] = `<div class="agent-reply-title">${lines[0]}</div>`;
-    html = lines.join('\n');
-  }
-  return html;
+  // Break the reply into paragraphs on blank lines, then rebuild with
+  // explicit <br> line breaks inside each paragraph and a small controlled
+  // margin between paragraphs — this replaces relying on the pre-wrap blank
+  // line itself for spacing, which renders as an oversized gap.
+  const paragraphs = html.split(/\n{2,}/);
+  const isTitle = paragraphs[0] && /^\p{Emoji_Presentation}/u.test(paragraphs[0].trim());
+  return paragraphs.map((p, i) => {
+    const inner = p.replace(/\n/g, '<br>');
+    if (i === 0 && isTitle) return `<div class="agent-reply-title">${inner}</div>`;
+    return `<div class="agent-block">${inner}</div>`;
+  }).join('');
 }
 function emptyHTML(icon, title, sub) {
   return `<div class="empty"><div class="e-icon">${icon}</div><p><strong>${title}</strong></p><p>${sub}</p></div>`;
