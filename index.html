@@ -293,6 +293,16 @@
     background:var(--paper-2); border:1px solid var(--line); color:var(--ink);
     font-size:19px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;
   }
+  /* Maximize/minimize toggle for sheets that opt in (e.g. the AI Assistant
+     chat) — desktop-only (see the >=860px block below), since on a phone
+     the sheet is already close to full-width and there's no bigger state
+     worth expanding into. Hidden by default here; the desktop media query
+     switches it to flex. */
+  .sheet-max-btn{
+    display:none; position:absolute; top:14px; right:64px; width:40px; height:40px; border-radius:50%;
+    background:var(--paper-2); border:1px solid var(--line); color:var(--ink);
+    font-size:16px; line-height:1; cursor:pointer; align-items:center; justify-content:center;
+  }
   .sheet h2{font-size:1.05rem; margin:0 0 18px; padding-right:48px;}
   .field{margin-bottom:16px;}
   .field label{display:block; font-size:.75rem; font-weight:600; color:var(--slate); margin-bottom:6px; text-transform:uppercase; letter-spacing:.03em;}
@@ -631,6 +641,15 @@
       border-radius:0 0 14px 14px;
       box-shadow:0 12px 32px rgba(28,43,51,.14);
     }
+
+    /* ---- sheet maximize/minimize toggle (AI Assistant chat) ---- */
+    .sheet-max-btn{ display:flex; }
+    .sheet-backdrop:has(.sheet-maximized){ align-items:center; padding:30px 0; }
+    .sheet-backdrop:has(.sheet-maximized) .sheet-maximized{
+      width:92vw; max-width:900px; max-height:88vh; height:82vh;
+      border-radius:20px; display:flex; flex-direction:column;
+    }
+    .sheet-maximized #aiChatLog{ flex:1; max-height:none !important; }
   }
 
   @media print{
@@ -4754,7 +4773,8 @@ const AI_CHAT_HISTORY_LIMIT = 20;
 function openAiAssistantSheet() {
   aiChatHistory = [];
   openSheet(`
-    <h2>AI Assistant</h2>
+    <button class="sheet-max-btn" id="aiMaxBtn" aria-label="Maximize chat" title="Maximize">⤢</button>
+    <h2 style="padding-right:96px;">AI Assistant</h2>
     <div class="card-list" id="aiChatLog" style="min-height:200px; max-height:50vh; overflow-y:auto;"></div>
     <div class="msg-input-row" style="margin-top:10px;">
       <textarea id="aiChatInput" rows="1" placeholder="Ask about a tenant, payment, or maintenance ticket..."></textarea>
@@ -4771,6 +4791,17 @@ function openAiAssistantSheet() {
     input.addEventListener('input', (e) => autoGrowMsgInput(e.target));
     input.focus();
     loadAiChatHistory();
+    // Desktop-only maximize/minimize toggle (the button itself is hidden
+    // on phones via CSS) — lets an admin expand the chat into a larger,
+    // centered dialog for reading longer replies, then shrink it back.
+    const sheetBody = document.getElementById('sheetBody');
+    const maxBtn = document.getElementById('aiMaxBtn');
+    maxBtn.addEventListener('click', () => {
+      const maximized = sheetBody.classList.toggle('sheet-maximized');
+      maxBtn.textContent = maximized ? '⤡' : '⤢';
+      maxBtn.title = maximized ? 'Minimize' : 'Maximize';
+      maxBtn.setAttribute('aria-label', maximized ? 'Minimize chat' : 'Maximize chat');
+    });
   });
 }
 
