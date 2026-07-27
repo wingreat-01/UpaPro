@@ -4674,7 +4674,7 @@ function renderAiChatLog() {
     <div class="row-card" style="cursor:default; ${m.role === 'user' ? 'background:var(--accent-light,#eef2ff);' : ''}">
       <div class="rc-main">
         <div class="rc-sub" style="font-weight:600;">${m.role === 'user' ? 'You' : 'Assistant'}</div>
-        <div>${escapeHTML(m.content)}</div>
+        <div style="white-space:pre-wrap;">${m.role === 'user' ? escapeHTML(m.content) : renderAgentText(m.content)}</div>
       </div>
     </div>`).join('') : emptyHTML('🤖', 'Ask me anything', 'e.g. "Is tenant John paid up this month?"');
   log.scrollTop = log.scrollHeight;
@@ -6495,6 +6495,12 @@ function escapeHTML(str) {
   return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function escapeAttr(str) { return escapeHTML(str); }
+// Minimal markdown for the AI assistant's replies only — just **bold**,
+// which is the one marker the agent's system prompt is told to use.
+// Escapes first so this can't be used to inject HTML via a crafted reply.
+function renderAgentText(str) {
+  return escapeHTML(str).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
 function emptyHTML(icon, title, sub) {
   return `<div class="empty"><div class="e-icon">${icon}</div><p><strong>${title}</strong></p><p>${sub}</p></div>`;
 }
