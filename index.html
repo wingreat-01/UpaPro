@@ -1642,6 +1642,19 @@ function unitsForLocation(locId) {
 function activeTenantForUnit(unitId) {
   return state.cache.tenants.find(t => t.unitId === unitId && t.active);
 }
+/** The stored unit.status field is hand-editable from the "Edit unit" form,
+ *  independent of whether a tenant is actually assigned — which lets it
+ *  drift out of sync (e.g. a unit left marked "occupied" after its tenant
+ *  moved out some other way than the Move out flow). Anywhere status is
+ *  shown or counted, trust actual tenant assignment over the raw field:
+ *  no active tenant always reads as vacant, even if the field still says
+ *  otherwise. "Maintenance" is a deliberate admin flag with no tenant-based
+ *  signal to check it against, so it passes through as-is. This never
+ *  writes back to unit.status — the dropdown and stored field stay untouched. */
+function effectiveUnitStatus(unit) {
+  if (unit.status === 'maintenance') return 'maintenance';
+  return activeTenantForUnit(unit.id) ? 'occupied' : 'vacant';
+}
 function paymentsForTenant(tenantId) {
   return state.cache.payments.filter(p => p.tenantId === tenantId)
     // datePaid first (what the tenant/admin actually typed as the payment
@@ -2645,8 +2658,8 @@ function render() {
 /* -------------------------------- DASHBOARD --------------------------------- */
 function renderDashboard() {
   const { locations, units } = state.cache;
-  const occupied = units.filter(u => u.status === 'occupied').length;
-  const vacant = units.filter(u => u.status === 'vacant').length;
+  const occupied = units.filter(u => effectiveUnitStatus(u) === 'occupied').length;
+  const vacant = units.filter(u => effectiveUnitStatus(u) === 'vacant').length;
   const rows = computeRentStatus();
   const collected = collectedThisMonth();
   const expected = rows.reduce((s, r) => s + r.expected, 0);
@@ -2715,7 +2728,7 @@ function renderLocations() {
   document.getElementById('locList').innerHTML = locations.length
     ? locations.map(loc => {
         const us = unitsForLocation(loc.id);
-        const occ = us.filter(u => u.status === 'occupied').length;
+        const occ = us.filter(u => effectiveUnitStatus(u) === 'occupied').length;
         return `<div class="row-card" data-loc-id="${loc.id}">
           <div class="stamp small">${us.length ? Math.round(occ / us.length * 100) + '%' : '—'}</div>
           <div class="rc-main">
@@ -2778,7 +2791,7 @@ function renderLocationDetail(locationId) {
   const loc = state.cache.locations.find(l => l.id === locationId);
   if (!loc) return goBack();
   const units = unitsForLocation(locationId);
-  const occ = units.filter(u => u.status === 'occupied').length;
+  const occ = units.filter(u => effectiveUnitStatus(u) === 'occupied').length;
   // Rent status (incl. this period's utility bill) for every occupied unit
   // everywhere — index by unitId so the units list can flag at a glance
   // which tenants still owe something this month, same overdue/due-soon
@@ -2801,8 +2814,9 @@ function renderLocationDetail(locationId) {
     ? units.map(u => {
         const tenant = activeTenantForUnit(u.id);
         const row = statusByUnit[u.id];
+        const effStatus = effectiveUnitStatus(u);
         let stamp, amountHTML, tier = null;
-        if (u.status === 'occupied' && row) {
+        if (effStatus === 'occupied' && row) {
           if (row.status === 'overdue') tier = tenant ? overdueTier(computeOverdueHistory(tenant.id).months) : null;
           stamp = row.status === 'overdue'
             ? { cls: tier ? `filled ${tier.cls}` : 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
@@ -2813,7 +2827,7 @@ function renderLocationDetail(locationId) {
             ? `<div class="rc-amt" style="color:var(--rust); font-weight:700;">${peso(row.balance)}</div>`
             : `<div class="rc-amt" style="color:var(--peso);">Paid</div>`;
         } else {
-          stamp = u.status === 'maintenance'
+          stamp = effStatus === 'maintenance'
             ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
             : { cls: '', color: 'var(--slate)', text: 'OPEN' };
           amountHTML = `<div class="rc-amt muted">${peso(u.monthlyRent)}</div>`;
@@ -2941,7 +2955,7 @@ function renderUnitDetail(unitId) {
       <div class="kv"><div class="k">Rent</div><div class="v">${peso(unit.monthlyRent)}/mo</div></div>
       <div class="kv"><div class="k">Due day</div><div class="v">${unit.dueDay || 1}${nth(unit.dueDay || 1)}</div></div>
       <div style="display:flex; align-items:flex-end;"><button class="btn btn-primary btn-sm" id="editUnitBtn" style="width:100%;">✏️ Edit unit</button></div>
-      <div class="kv"><div class="k">Status</div><div class="v"><span class="chip ${unit.status}">${unit.status}</span></div></div>
+      <div class="kv"><div class="k">Status</div><div class="v"><span class="chip ${effectiveUnitStatus(unit)}">${effectiveUnitStatus(unit)}</span></div></div>
     </div>
   `;
   document.getElementById('editUnitBtn').addEventListener('click', () => openUnitForm(unit, unit.locationId));
