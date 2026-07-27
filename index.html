@@ -1505,6 +1505,34 @@ async function refreshBalanceDataOnOpen() {
   }
 }
 
+// Background refresh for the Settings tab — mirrors refreshBalanceDataOnOpen's
+// shape (same guard/throttle/fail-silent approach) but for the two
+// collections that drive Settings' badge counts: pendingPayments (Pending
+// reviews) and maintenanceRequests. Without this, those counts only reflect
+// whatever was in the local cache as of the last full sync — so a tenant's
+// just-submitted payment proof or maintenance ticket wouldn't show up here
+// until the next runFullCloudSync(), even though it already exists in
+// Firestore.
+let lastSettingsRefresh = 0;
+const SETTINGS_REFRESH_MIN_INTERVAL_MS = 15000;
+async function refreshSettingsDataOnOpen() {
+  if (!fbUser || !fbStore || cloudSyncBusy) return;
+  const now = Date.now();
+  if (now - lastSettingsRefresh < SETTINGS_REFRESH_MIN_INTERVAL_MS) return;
+  lastSettingsRefresh = now;
+  try {
+    await pullAndMergeCollection('pendingPayments');
+    await pullAndMergeCollection('maintenanceRequests');
+    await refreshCache();
+    render();
+  } catch (err) {
+    // Best-effort background refresh — the badges already on screen are
+    // still correct as of the last real sync, so fail silently rather than
+    // surfacing a toast for something the user didn't ask for.
+    console.warn('Settings refresh failed', err);
+  }
+}
+
 // Background refresh for the admin message thread — mirrors
 // refreshBalanceDataOnOpen's shape but for the 'messages' collection only.
 // Called both when the thread sheet opens (so a reply that arrived while
@@ -2633,6 +2661,7 @@ document.querySelectorAll('.bottomnav button').forEach(btn => {
     state.navStack = [{ view: btn.dataset.nav }];
     render();
     if (btn.dataset.nav === 'dashboard') refreshBalanceDataOnOpen();
+    else if (btn.dataset.nav === 'settings') refreshSettingsDataOnOpen();
   });
 });
 
