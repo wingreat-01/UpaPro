@@ -456,7 +456,7 @@
   .msg-bubble.me{background:var(--peso); color:#fff; border-bottom-right-radius:4px;}
   .msg-bubble.them{background:var(--paper-2); color:var(--ink); border-bottom-left-radius:4px;}
   .msg-input-row{display:flex; gap:10px; align-items:flex-end;}
-  .msg-input-row textarea{
+  .msg-input-row textarea, .msg-input-row input[type="text"]{
     flex:1; resize:none; min-height:38px; max-height:110px; height:38px; overflow-y:hidden;
     border:1.5px solid var(--line); line-height:1.3;
     border-radius:12px; padding:10px 15px; font-size:.9rem; font-family:inherit;
@@ -466,6 +466,7 @@
     flex-shrink:0; width:42px; height:42px; border-radius:50%; border:none;
     background:var(--peso); color:#fff; font-size:1.05rem; cursor:pointer;
   }
+  .msg-input-row button:disabled{ opacity:.5; cursor:default; }
   .msg-unread-badge{
     display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px;
     padding:0 6px; border-radius:99px; background:var(--rust); color:#fff;
@@ -4653,9 +4654,9 @@ function openAiAssistantSheet() {
   openSheet(`
     <h2>AI Assistant</h2>
     <div class="card-list" id="aiChatLog" style="min-height:200px; max-height:50vh; overflow-y:auto;"></div>
-    <div class="field-row" style="margin-top:10px;">
-      <input type="text" id="aiChatInput" placeholder="Ask about a tenant, payment, or maintenance ticket..." style="flex:1;">
-      <button class="btn btn-primary" id="aiChatSend">Send</button>
+    <div class="msg-input-row" style="margin-top:10px;">
+      <input type="text" id="aiChatInput" placeholder="Ask about a tenant, payment, or maintenance ticket...">
+      <button id="aiChatSend" aria-label="Send">➤</button>
     </div>
   `, () => {
     renderAiChatLog();
@@ -4691,7 +4692,7 @@ async function sendAiChatMessage() {
 
   aiChatBusy = true;
   const sendBtn = document.getElementById('aiChatSend');
-  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '...'; }
+  if (sendBtn) sendBtn.disabled = true;
 
   try {
     const askAgent = firebase.functions().httpsCallable('askAgent');
@@ -4702,7 +4703,7 @@ async function sendAiChatMessage() {
     aiChatHistory.push({ role: 'assistant', content: "Agent's a bit busy — try again in a moment." });
   } finally {
     aiChatBusy = false;
-    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send'; }
+    if (sendBtn) sendBtn.disabled = false;
     renderAiChatLog();
   }
 }
