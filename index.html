@@ -501,6 +501,11 @@
     border-radius:12px; padding:12px 15px; font-size:.8375rem; font-family:inherit;
     background:var(--card); color:var(--ink);
   }
+  /* AI Assistant's input specifically starts taller than the compact
+     one-line message inputs elsewhere — makes the "click here to type"
+     target obvious at a glance, while still auto-growing further (up to
+     its own higher cap) as the admin types a longer question. */
+  .msg-input-row textarea.ai-chat-textarea{ min-height:72px; height:72px; max-height:160px; }
   .msg-input-row button{
     flex-shrink:0; width:42px; height:42px; border-radius:50%; border:none;
     background:var(--peso); color:#fff; font-size:1.05rem; cursor:pointer;
@@ -3631,10 +3636,14 @@ function msgThreadHTML(messages, meSender, theirAvatar, meAvatar) {
 // Keeps a message textarea at a compact one-line height by default, growing
 // only as far as the typed content actually needs (capped by the CSS
 // max-height, which then takes over with its own scrollbar). Shared by both
-// the admin thread sheet and the tenant portal's message view.
-function autoGrowMsgInput(el) {
-  el.style.height = '47px';
-  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+// the admin thread sheet and the tenant portal's message view. baseHeight/
+// maxHeight let a taller input (e.g. the AI Assistant's) opt into a bigger
+// starting size and grow range without affecting the compact default.
+function autoGrowMsgInput(el, baseHeight, maxHeight) {
+  const base = baseHeight || 47;
+  const max = maxHeight || 110;
+  el.style.height = base + 'px';
+  el.style.height = Math.min(el.scrollHeight, max) + 'px';
 }
 
 function openMessageThreadSheet(tenant) {
@@ -4777,7 +4786,7 @@ function openAiAssistantSheet() {
     <h2 style="padding-right:96px;">AI Assistant</h2>
     <div class="card-list" id="aiChatLog" style="min-height:200px; max-height:50vh; overflow-y:auto;"></div>
     <div class="msg-input-row" style="margin-top:10px;">
-      <textarea id="aiChatInput" rows="1" placeholder="Ask about a tenant, payment, or maintenance ticket..."></textarea>
+      <textarea id="aiChatInput" class="ai-chat-textarea" rows="1" placeholder="Ask about a tenant, payment, or maintenance ticket..."></textarea>
       <button id="aiChatSend" aria-label="Send">➤</button>
     </div>
   `, () => {
@@ -4788,7 +4797,7 @@ function openAiAssistantSheet() {
     // Shift+Enter inserts a newline (matches the tenant message thread) —
     // plain Enter sends, and is prevented from also adding a newline first.
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-    input.addEventListener('input', (e) => autoGrowMsgInput(e.target));
+    input.addEventListener('input', (e) => autoGrowMsgInput(e.target, 72, 160));
     input.focus();
     loadAiChatHistory();
     // Desktop-only maximize/minimize toggle (the button itself is hidden
@@ -4864,7 +4873,7 @@ async function sendAiChatMessage() {
   const message = (input.value || '').trim();
   if (!message) return;
   input.value = '';
-  autoGrowMsgInput(input);
+  autoGrowMsgInput(input, 72, 160);
   aiChatHistory.push({ role: 'user', content: message });
   renderAiChatLog();
   showAiThinkingIndicator();
