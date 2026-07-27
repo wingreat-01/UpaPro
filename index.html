@@ -1302,6 +1302,14 @@ document.getElementById('ag-signin-btn').addEventListener('click', async () => {
     errEl.textContent = cloudAuthErrorMessage(err);
   }
 });
+// Pressing Enter while focused in the password field submits the form,
+// same as clicking Sign in.
+document.getElementById('ag-password').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    document.getElementById('ag-signin-btn').click();
+  }
+});
 document.getElementById('ag-goto-signup').addEventListener('click', () => {
   document.getElementById('ag-login-view').style.display = 'none';
   document.getElementById('ag-signup-view').style.display = 'block';
