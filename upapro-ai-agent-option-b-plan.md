@@ -22,34 +22,41 @@ behind that function.
 
 ## 📍 Where we are right now
 
-- **Multi-admin scoping fix: deployed** (revision `askagent-00016-wob`, 2026-07-26 ~00:09 UTC) —
-  no longer just written, it's live. Re-tested against Gemini afterward: the "Rachell Bitualla"
-  lookup still correctly returns "no tenant found" (expected — she's not a UpaPro tenant, so
-  this confirms the scoped query path works, not a regression).
-- **New bug found in that same post-deploy test session — Issue #9: tool-call loop only ran
-  once.** A compound ask ("list open maintenance requests" → model then chained into checking
-  payment status for unit "301") needs two sequential tool round-trips. The old code only did
-  one call → tool → follow-up call and returned whatever came back — even if that follow-up
-  response was itself another `functionCall`. The last log line ends exactly there: a second
-  `getTenantPaymentStatus` functionCall for `"301"` came back as the "final" result, which has
-  no `.text`, so the client would have silently received `{ reply: undefined }`. **Fixed in
-  code** — `askAgent()` now loops (`while`, capped at `MAX_TOOL_ROUNDS = 5`) instead of doing a
-  single round-trip. **Not yet deployed or tested.**
-- **Gemini: working end-to-end** for single-tool-call requests, including name-based tenant
-  lookup with typo tolerance. Multi-tool-call chains were broken until the Issue #9 fix above —
-  need to re-test those specifically once deployed.
-- **Groq, Cerebras: still untested** — every real test so far has been answered by Gemini
-  before the chain reached them.
-- One open question flagged in gotchas: whether `users/{adminUid}/tenants/{tenantId}` docs
-  actually have a `name` field — worth a quick console check.
-- **New addition — Issue #11: added a "suggestion" middle tier to `resolveTenant()`.** Failed
-  lookups used to be a flat "no tenant found" with zero information even when a genuinely close
-  candidate existed just outside the auto-use fuzzy threshold. Now the nearest candidate gets
-  checked against a looser threshold and surfaced as `suggestedTenant` so the admin gets "did you
-  mean X?" instead. **Code written, not yet deployed or tested** — and won't be meaningful until
-  Issue #10's real-name fix is deployed, since suggestions need real labels, not raw doc IDs.
-- Still outstanding from before: **test with both admin accounts** specifically to confirm
-  cross-tenant isolation — the logs so far only show one admin's session.
+Everything below (Issue #9 through #15, plus the new units/locations tool set) has now been
+**deployed**. Testing since deploy has confirmed some pieces; the rest is deployed but not yet
+specifically re-tested — see the breakdown below rather than assuming "deployed" means
+"confirmed."
+
+**Confirmed working in testing, post-deploy:**
+- **Issue #10 — real tenant names.** `getTenantCandidates()` now resolves actual names
+  (`name`/`fullName`/`tenantName`/`displayName`/`firstName`+`lastName`) instead of falling back
+  to raw Firestore doc IDs. Confirmed against real data.
+- **Issue #11 / #13 — "did you mean X?" suggestions.** The suggestion middle tier (plus the
+  token-level first-name matching from #13) is confirmed firing correctly — a near-miss name now
+  surfaces a `suggestedTenant` prompt instead of a flat "no tenant found."
+- **Broad-request tools** — `getAllTenants`, `getOverdueTenants`, `getPayments`, and
+  `getMonthlyIncome` are confirmed working.
+
+**Deployed, not yet specifically re-confirmed:**
+- **Issue #9 — tool-call loop fix.** `askAgent()`'s `while` loop (capped at `MAX_TOOL_ROUNDS = 5`)
+  is live, but a compound/chained request (e.g. "list maintenance requests, then check unit 301's
+  payment status") hasn't been specifically re-tested since deploy.
+- **Issue #12 — matchedTenant on zero-payment-history.** Deployed; not yet specifically
+  re-confirmed against a tenant with a real name match but no payment records.
+- **New: units/locations tool set.** The Firestore console check confirmed `units` and
+  `locations` are real collections (`unitLabel`, `locationId`, `status`, `monthlyRent`, `dueDay`,
+  electricity/water billing rate fields; locations have `name`, `address`). Four new tools were
+  added on top of the original plan: `getTenantByUnit`, `getVacantUnits`, `getOccupiedUnits`, and
+  `getExpectedIncome` (projected income from occupied units' rent — distinct from
+  `getMonthlyIncome`'s actual-collected figure). Deployed, not yet tested.
+- **Two-admin isolation test** — still not done. Logs so far only show one admin's session; still
+  need to sign in as the second landlord and confirm isolation, plus confirm a non-admin caller
+  gets a clean `permission-denied`.
+- **Groq, Cerebras** — still untested. Every real test so far has been answered by Gemini before
+  the chain reached them.
+
+**Deliberately still deferred:** `getUnitByNumber` (covered by `getTenantByUnit` for the "who's in
+unit X" case), `getDashboardStats`, `getAllUnits` — no concrete need yet for their specific shape.
 
 ---
 
@@ -104,7 +111,7 @@ behind that function.
       `users/{adminUid}/...` per the real `firestore.rules` schema, instead of querying flat
       unscoped collections. `getTenantCandidates()` also now reads from the real
       `users/{adminUid}/tenants` subcollection first (confirmed to exist by the rules file)
-      rather than guessing at a top-level collection. **Not yet deployed/tested.**
+      rather than guessing at a top-level collection. **Deployed** 2026-07-26 (see Issue #8 scoping fix).
 
 ### 4. Swap the Cloud Function over
 - [x] `functions/index.js` imports from `./agent-manual-fallback`
@@ -114,7 +121,7 @@ behind that function.
       `request.auth` is missing, and independently checks `admins/{adminUid}` exists before
       proceeding — mirrors the rules file's own admin-gating logic, since the Admin SDK doesn't
       enforce `firestore.rules` for server-side code. Passes the verified `adminUid` into
-      `askAgent(message, [], adminUid)`. **Not yet deployed.**
+      `askAgent(message, [], adminUid)`. **Deployed** 2026-07-26.
 
 ### 5. (Optional) Add graceful exhaustion handling
 - [ ] Not yet wired in — holding off until the base 3-provider chain is confirmed working first
@@ -126,11 +133,16 @@ behind that function.
 - [ ] **Test with both admin accounts** — logs so far only show one admin's session; still need
       to sign in as the second landlord and confirm isolation, plus confirm a non-admin caller
       gets a clean `permission-denied`.
-- [ ] **Deploy the Issue #9 tool-loop fix** (`agent-manual-fallback.js` — `askAgent()` now loops
-      over tool rounds instead of doing one round-trip) — written, not yet pushed.
-- [ ] **Re-test a compound request** after that deploy (e.g. "list open maintenance requests,
-      then check payment status for unit 301") to confirm it now returns real text instead of a
-      raw toolCalls array.
+- [x] **Deploy the Issue #9 tool-loop fix** — deployed. Not yet specifically re-tested with a
+      compound request.
+- [ ] **Re-test a compound request** (e.g. "list open maintenance requests, then check payment
+      status for unit 301") to confirm the loop returns real text instead of a raw toolCalls array.
+- [x] **Deploy Issues #10–#15** (real tenant names, matchedTenant fix, token-level suggestion tier,
+      `getAllTenants`, expanded getter set) and the new units/locations tool set (`getTenantByUnit`,
+      `getVacantUnits`, `getOccupiedUnits`, `getExpectedIncome`) — all deployed. #10, #11/#13, and
+      the broad-request getters (`getAllTenants`/`getOverdueTenants`/`getPayments`/
+      `getMonthlyIncome`) are confirmed working in testing; #9's loop, #12's matchedTenant fix, and
+      the units/locations tools are deployed but not yet specifically re-tested.
 
 ### 7. Test each provider individually
 - [x] Gemini — **confirmed working end-to-end** for the original flat-collection queries.
@@ -209,7 +221,7 @@ behind that function.
    just shows a second `functionCall` sitting there as the "FINAL RESULT"). **Fixed**: the
    single `if` block is now a `while` loop capped at `MAX_TOOL_ROUNDS = 5`, so it keeps feeding
    tool results back until the model returns real text (or the cap is hit, in which case it
-   returns a plain apology string instead of silence). **Not yet deployed.**
+   returns a plain apology string instead of silence). **Deployed, not yet specifically re-tested** with a compound/chained request.
 10. **Tenant docs don't have a `name` field — confirmed, not just suspected.** Admin A's real
     debug logs show `getTenantCandidates()` returning labels like `"id_mruew5ln90g2ie"` for a
     query of `"Rachell Bitualla"` even though that admin genuinely has tenants named "Rachelle
@@ -237,7 +249,7 @@ behind that function.
     field alongside the existing `error` string (kept separate from `wasExactMatch: false`, which
     already ran the lookup — a suggestion has NOT been looked up). `SYSTEM_PROMPT` now tells the
     model to ask "did you mean X?" and explicitly not to look up or state payment details for the
-    suggestion until the admin confirms. **Not yet deployed or tested** — depends on Issue #10's
+    suggestion until the admin confirms. **Deployed and confirmed working** — depended on Issue #10's
     real-name fix being deployed first, since `getTenantCandidates()` needs actual name labels
     (not raw doc IDs) for this suggestion to be meaningful.
 12. **A resolved fuzzy match with zero payment history was indistinguishable from "tenant not
@@ -253,7 +265,7 @@ behind that function.
     (even alongside an error) and the model should not retry with a different spelling once it has
     one. Also added a debug log line logging whether the payments query was empty and for which
     resolved tenant, to directly confirm this against real data next test instead of inferring it
-    from behavior. **Not yet deployed or tested.**
+    from behavior. **Deployed, not yet specifically re-tested** against a zero-payment-history match.
 13. **Suggestion tier never fired for a bare first-name query, even a near-perfect one.** Real
     test: querying "Rachelle" (or "Rachell") against real tenant "Rachell Bitualla" returned a
     flat "couldn't find a tenant" with no suggestion, despite "Rachell" being a distance-0/1 match
@@ -268,7 +280,7 @@ behind that function.
     before the final full-label suggestion fallback. Verified against real data from this test:
     "Rachelle" and "Rachell" against "Rachell Bitualla" both now resolve to `type: "suggestion"`
     (tokenDistance 1 and 0 respectively) instead of "none," while the existing full-name-typo case
-    ("Rachelle Bitualla") still resolves as `fuzzy` as before. **Not yet deployed or tested.**
+    ("Rachelle Bitualla") still resolves as `fuzzy` as before. **Deployed and confirmed working.**
 14. **No tool existed to list all tenants** — asking "give me the list of all tenants I have" got
     a polite "I don't have a tool for that" from the model, which was correct: there wasn't one.
     **Fixed**: added a new `listTenants` tool (no params) alongside the existing two. It reuses
@@ -278,8 +290,8 @@ behind that function.
     legacy docs) so the admin-facing list never shows a bare Firestore ID as if it were a tenant
     name — instead returns a `note` field naming how many such records were left out.
     `SYSTEM_PROMPT` and the tool's own description were both updated so the model knows to reach
-    for it on broad "show me everyone" asks, not just specific-name lookups. **Not yet deployed or
-    tested.**
+    for it on broad "show me everyone" asks, not just specific-name lookups. **Deployed and confirmed
+    working.**
 15. **Expanded the tool set from a proposed getter list, deduped, and renamed to match.** The
     proposed list (`getAllTenants`, `getTenantByName`, `getOverdueTenants`, `getPayments`,
     `getMonthlyIncome`, `getMaintenanceRequests`, plus several unit/location/dashboard getters)
@@ -302,7 +314,21 @@ behind that function.
     Philippine date-format conventions (pulled from the admin's proposed prompt), and explicitly
     tell the model to say "I don't have enough information to answer that yet" for any
     unit/location/occupancy/expected-income question rather than inferring or estimating from
-    tenant/payment data. **Not yet deployed or tested.**
+    tenant/payment data. **Deployed.** `getAllTenants`, `getOverdueTenants`, `getPayments`, and
+    `getMonthlyIncome` are confirmed working in testing; the renamed `getTenantByName` and
+    `getMaintenanceRequests` haven't been specifically re-tested under their new names.
+
+16. **New scope, not in the original plan: units/locations.** A Firestore console check confirmed
+    `units` and `locations` are real collections under `users/{adminUid}/` (`units`: `unitLabel`,
+    `locationId`, `status`, `monthlyRent`, `dueDay`, electricity/water billing rate fields;
+    `locations`: `name`, `address`). Four new tools were added on top of the original getter list:
+    `getTenantByUnit` (who's linked to a unit, optionally scoped to a property name, with
+    candidate-listing when a unit label or property name is ambiguous), `getVacantUnits` /
+    `getOccupiedUnits` (plain occupancy lists), and `getExpectedIncome` (sum of `monthlyRent`
+    across occupied units — a projection, explicitly distinct from `getMonthlyIncome`'s actual-
+    collected figure). `SYSTEM_PROMPT` updated accordingly. Deliberately still not added:
+    `getUnitByNumber` (covered by `getTenantByUnit`), `getDashboardStats`, `getAllUnits` — no
+    concrete need yet. **Deployed, not yet tested.**
 
 ## Known gotchas to watch for
 

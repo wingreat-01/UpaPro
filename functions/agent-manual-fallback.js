@@ -58,6 +58,7 @@ You can list all tenants on file with getAllTenants — use it whenever the admi
 
 Tenant lookups (getTenantPaymentStatus, getTenantByName) are matched by name, not by an exact system ID, and small typos are tolerated automatically. Pass through whatever name the admin gives, even if the spelling looks slightly off — don't correct it yourself first. React to what the tool returns:
 - If the result includes "wasExactMatch: false", a close-but-imperfect match was used — briefly confirm which tenant you're showing before answering (e.g. "Showing results for Rachel Bituala — let me know if that's not who you meant.").
+- If the result includes "unitLabel" and "location" fields, use those directly to answer any part of the question asking which unit or property the tenant is in — don't say you don't have that info, and don't call getTenantByUnit to get it (that lookup goes the other direction and needs the unit already known). If both are null, the tenant has no unit assigned — say so plainly.
 - If the result includes a "matchedTenant" field, the name search succeeded — even if the same result also carries an "error" about missing payment records. Treat this as "found the tenant, no payment history on file," never as "couldn't find the tenant." Once you have a matchedTenant, do not call the tool again with a shortened or different spelling of the same name — you already have your answer.
 - If the result is an error naming multiple close matches ("candidates"), list those names back to the admin and ask which one they meant. Don't pick one yourself.
 - If the result includes a "suggestedTenant" field, no match was confident enough to use automatically — this is different from "wasExactMatch: false" above, where the tool already ran with a close match. Here, ask the admin directly, e.g. "I didn't find an exact match for [query] — did you mean [suggestedTenant]?" Do not treat the suggestion as if it were the answer, and do not look up or state any payment details for it until the admin confirms.
@@ -790,10 +791,22 @@ async function executeTool(name, args, adminUid) {
     const unitDoc = tenant && tenant.unitId ? await adminRef.collection('units').doc(tenant.unitId).get() : null;
     const unit = unitDoc && unitDoc.exists ? unitDoc.data() : null;
 
+    // Carry the unit's label + property/location name through on every
+    // return path below, so the model can answer "what unit/property is
+    // X in" without a separate getTenantByUnit round trip (it can't do
+    // that lookup in reverse without already knowing the unit anyway).
+    let locationName = null;
+    if (unit && unit.locationId) {
+      const locDoc = await adminRef.collection('locations').doc(unit.locationId).get();
+      locationName = locDoc.exists ? locDoc.data().name : null;
+    }
+
     if (!tenant || !unit) {
       return {
         matchedTenant: resolved.label,
         wasExactMatch: resolution.type === "exact",
+        unitLabel: null,
+        location: null,
         error: "This tenant has no unit assigned, so rent status can't be calculated.",
       };
     }
@@ -819,6 +832,8 @@ async function executeTool(name, args, adminUid) {
       return {
         matchedTenant: resolved.label,
         wasExactMatch: resolution.type === "exact",
+        unitLabel: unit.unitLabel ?? null,
+        location: locationName,
         error: "No payment records found for this tenant.",
       };
     }
@@ -833,6 +848,8 @@ async function executeTool(name, args, adminUid) {
     return {
       matchedTenant: resolved.label,
       wasExactMatch: resolution.type === "exact",
+      unitLabel: unit.unitLabel ?? null,
+      location: locationName,
       status: monthsOverdue > 0 ? "overdue" : "current",
       monthsOverdue,
       balanceOwed,
@@ -889,9 +906,23 @@ async function executeTool(name, args, adminUid) {
     }
 
     const resolved = resolution.matches[0];
+
+    const tenantDoc = await adminRef.collection('tenants').doc(resolved.tenantId).get();
+    const tenant = tenantDoc.exists ? tenantDoc.data() : null;
+    const unitDoc = tenant && tenant.unitId ? await adminRef.collection('units').doc(tenant.unitId).get() : null;
+    const unit = unitDoc && unitDoc.exists ? unitDoc.data() : null;
+
+    let locationName = null;
+    if (unit && unit.locationId) {
+      const locDoc = await adminRef.collection('locations').doc(unit.locationId).get();
+      locationName = locDoc.exists ? locDoc.data().name : null;
+    }
+
     return {
       matchedTenant: resolved.label,
       wasExactMatch: resolution.type === "exact",
+      unitLabel: unit ? (unit.unitLabel ?? null) : null,
+      location: locationName,
     };
   }
 
