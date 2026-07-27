@@ -1734,6 +1734,22 @@ function amountPaidThisPeriod(tenantId, period) {
     .filter(p => p.tenantId === tenantId && p.coveredPeriod === period && p.tag !== 'deposit' && !isUnclearedCheck(p))
     .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
 }
+/** Cash actually received THIS calendar month, regardless of which period
+ *  (past, current, or future) each payment is credited toward — e.g. a
+ *  tenant catching up on a missed April rent in July still counts as July
+ *  cash collected here, even though it settles April's balance, not
+ *  July's. This is deliberately different from summing computeRentStatus()
+ *  rows' `paid` field, which is period-based (how much of THIS period's
+ *  rent/utilities has been paid) and is what drives each tenant's
+ *  due/overdue status — that's the right lens for "is this tenant caught
+ *  up," but the wrong lens for "how much money came in this month," which
+ *  is what the dashboard's "Collected" card is meant to answer. */
+function collectedThisMonth() {
+  const period = monthKey();
+  return state.cache.payments
+    .filter(p => p.tag !== 'deposit' && !isUnclearedCheck(p) && (p.datePaid || '').slice(0, 7) === period)
+    .reduce((sum, p) => sum + (Number(p.amountPaid) || 0), 0);
+}
 /** Tag-aware balance allocation. A payment tagged 'rent'/'electricity'/'water'
  *  counts only toward that charge's balance — this is what lets a tenant pay
  *  rent while an overdue electricity bill correctly stays overdue.
@@ -2632,7 +2648,7 @@ function renderDashboard() {
   const occupied = units.filter(u => u.status === 'occupied').length;
   const vacant = units.filter(u => u.status === 'vacant').length;
   const rows = computeRentStatus();
-  const collected = rows.reduce((s, r) => s + r.paid, 0);
+  const collected = collectedThisMonth();
   const expected = rows.reduce((s, r) => s + r.expected, 0);
   const overdueCount = rows.filter(r => r.status === 'overdue').length;
   const readyChecks = checksReadyToDeposit();
