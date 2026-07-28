@@ -5611,21 +5611,22 @@ function enterTenantPortalMode(viaShareLink) {
   portalAuthUnsub = portal.auth.onAuthStateChanged(onPortalAuthChanged);
 }
 function exitTenantPortalMode() {
+  // Entered via the raw share link — there's nowhere outside their own
+  // portal for a real tenant to go "back" to. Route this like the explicit
+  // sign-out button (portalLogoutBtn) instead of leaving the tenant portal
+  // UI entirely: that used to land them on the site's ADMIN sign-in gate,
+  // which a tenant has no business ever seeing. Stay in tenant portal mode;
+  // onPortalAuthChanged reacts to the sign-out and renders the tenant's own
+  // login screen.
+  if (portalEnteredViaShareLink) {
+    portal.auth.signOut();
+    return;
+  }
+  // Entered via the admin's own "Preview it myself" button — back returns
+  // to the admin's own dashboard, as before.
   inTenantPortalMode = false;
   document.getElementById('tenantPortal').style.display = 'none';
-  // Route "back" by how the portal was entered, not by whether fbUser is
-  // currently set. fbUser only reflects whatever admin session happens to
-  // still be sitting in this browser — on a shared or previously-used
-  // device that session can be present even for a tenant who opened the
-  // raw ?portal=1 link, which used to leak straight into the admin
-  // dashboard here. Entered via the share link → always back to the gate,
-  // regardless of any lingering admin session. Entered via the admin's own
-  // "Preview it myself" button → back to #app, as before.
-  if (portalEnteredViaShareLink) {
-    showAdminGateForms();
-  } else {
-    document.getElementById('app').style.display = 'flex';
-  }
+  document.getElementById('app').style.display = 'flex';
 }
 document.getElementById('portalBackBtn').addEventListener('click', () => {
   if (portal.view === 'dashboard') { exitTenantPortalMode(); return; }
