@@ -5654,7 +5654,13 @@ function enterTenantPortalMode(viaShareLink) {
   portalEnteredViaShareLink = !!viaShareLink;
   hideAdminGate();
   document.getElementById('app').style.display = 'none';
-  document.getElementById('tenantPortal').style.display = 'block';
+  // Clear any inline display (rather than forcing 'block') so CSS decides
+  // the layout: #tenantPortal is flex on mobile, grid (with the desktop
+  // sidebar) at >=860px — see .portal-sidenav in <style>. Forcing 'block'
+  // here used to always win over the desktop media query's display:grid,
+  // which collapsed the sidebar into normal block flow underneath the
+  // content instead of beside it.
+  document.getElementById('tenantPortal').style.display = '';
   initTenantFirebase();
   portalAuthUnsub = portal.auth.onAuthStateChanged(onPortalAuthChanged);
 }
