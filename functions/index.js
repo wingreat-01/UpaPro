@@ -7,6 +7,7 @@ admin.initializeApp();
 const db = admin.firestore();
 
 const {askAgent} = require("./agent-manual-fallback");
+const {rentDueReminders} = require("./rentReminders");
 
 // For cost control, you can set the maximum number of containers that can be
 // running at the same time.
@@ -77,3 +78,5 @@ exports.askAgent = onCall(
     return { reply };
   }
 );
+
+exports.rentDueReminders = rentDueReminders;

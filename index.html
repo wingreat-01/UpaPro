@@ -848,6 +848,7 @@
 
       <div class="section-label">Cloud sync</div>
       <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not signed in</div></div><span class="badge-dot" id="firebaseDot"></span></div>
+      <div class="settings-item" id="btnRemindersToggle"><div><div class="si-title">Rent due reminders</div><div class="si-sub" id="remindersSub">Sign in to Cloud sync first</div></div><span class="badge-dot" id="remindersDot"></span></div>
 
       <div class="section-label">Tenant portal</div>
       <div class="settings-item" id="btnPendingReviews"><div><div class="si-title">Pending payment reviews</div><div class="si-sub" id="pendingReviewsSub">Nothing waiting</div></div><span class="badge-dot" id="pendingReviewsDot"></span></div>
@@ -1201,6 +1202,7 @@ async function clearLocalDataForAccountSwitch() {
   await dbClearStore('_syncOutbox');
 }
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
+let remindersEnabled = false; // rent-due email reminders (Settings -> Rent due reminders) — mirrors users/{uid}/settings/reminders.enabled in Firestore, since the sending itself happens server-side in a scheduled Cloud Function, not on this device.
 // Unsubscribe handle for the admin auth-state listener — detached during
 // signup so onCloudAuthStateChanged can't fire (and start pulling cloud
 // data) before the admins/{uid} link doc has actually been created. Same
@@ -1353,8 +1355,11 @@ async function onCloudAuthStateChanged(user) {
     }
     await refreshCache();
     render();
+    loadRemindersSetting();
     cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
   } else if (firebaseEnabled) {
+    remindersEnabled = false;
+    updateRemindersUI();
     // A failed/rolled-back signup attempt also lands here (Firebase fires
     // this listener with the signed-out state the instant it's reattached
     // right after ag-signup-btn's newUser.delete() rollback). Don't stomp
@@ -1507,6 +1512,53 @@ function updateCloudSyncUI() {
   const signOutEmail = document.getElementById('adminSignOutEmail');
   if (signOutRow) signOutRow.style.display = fbUser ? 'flex' : 'none';
   if (signOutEmail && fbUser) signOutEmail.textContent = fbUser.email;
+}
+
+/* ---------------------------- RENT DUE REMINDERS ----------------------------
+   The actual email-sending runs server-side in a scheduled Cloud Function
+   (see functions/rentReminders.js) — this device only owns the on/off
+   switch and the account-level "which email are reminders coming from"
+   info shown in the sheet. The Cloud Function reads users/{uid}/settings/
+   reminders.enabled directly from Firestore once a day, so flipping this
+   toggle takes effect on the NEXT scheduled run, not instantly. */
+async function loadRemindersSetting() {
+  if (!fbUser || !fbStore) { remindersEnabled = false; updateRemindersUI(); return; }
+  try {
+    const doc = await fbStore.collection('users').doc(fbUser.uid)
+      .collection('settings').doc('reminders').get();
+    remindersEnabled = !!(doc.exists && doc.data().enabled);
+  } catch (err) {
+    console.warn('loadRemindersSetting failed', err);
+  }
+  updateRemindersUI();
+}
+
+function updateRemindersUI() {
+  const subEl = document.getElementById('remindersSub');
+  const dotEl = document.getElementById('remindersDot');
+  if (subEl) {
+    subEl.textContent = !fbUser
+      ? 'Sign in to Cloud sync first'
+      : (remindersEnabled ? 'On — sent 7 days before rent is due, to tenants with portal access' : 'Off — tap to enable');
+  }
+  if (dotEl) dotEl.classList.toggle('on', remindersEnabled);
+}
+
+async function toggleRemindersSetting() {
+  if (!fbUser || !fbStore) { showToast('Sign in to Cloud sync first'); return; }
+  const next = !remindersEnabled;
+  try {
+    await fbStore.collection('users').doc(fbUser.uid).collection('settings').doc('reminders')
+      .set({ enabled: next, updatedAt: Date.now() }, { merge: true });
+    remindersEnabled = next;
+    updateRemindersUI();
+    showToast(next
+      ? 'Rent due reminders turned on — only reaches tenants with portal access set up'
+      : 'Rent due reminders turned off');
+  } catch (err) {
+    console.warn('toggleRemindersSetting failed', err);
+    showToast('Could not save that — check your connection');
+  }
 }
 
 /* Push of a single record right after a local write. Unlike the old
@@ -5409,6 +5461,7 @@ function openAdminNameForm() {
 }
 document.getElementById('btnEditAdmin').addEventListener('click', openAdminNameForm);
 document.getElementById('btnCloudSync').addEventListener('click', openCloudSyncSheet);
+document.getElementById('btnRemindersToggle').addEventListener('click', toggleRemindersSetting);
 document.getElementById('btnAdminSignOut').addEventListener('click', async () => {
   if (!fbUser) return;
   if (!confirm('Sign out of UpaPro? You\'ll need to sign in again to reach your data.')) return;
