@@ -1049,12 +1049,15 @@ function openDB() {
       // v7 — tenant-submitted maintenance/repair requests. One doc per
       // ticket: {tenantId, unitId, portalUid, title, category, urgency,
       // description, photos:[{storagePath,name}], status: 'open' |
-      // 'in_progress' | 'resolved' | 'cancelled', adminNotes, createdAt,
-      // updatedAt, resolvedAt}. Synced the same generic way as every other
-      // store (see SYNCED_STORES) — tenant creates land straight in
-      // Firestore under the admin's uid (same shape as pendingPayments/
-      // messages), the admin then updates `status`/`adminNotes` from the
-      // dashboard, which flows back to the outbox like any other admin write.
+      // 'in_progress' | 'resolved' | 'cancelled', notes:[{from:'admin'|
+      // 'tenant', text, at}], createdAt, updatedAt, resolvedAt}. Synced the
+      // same generic way as every other store (see SYNCED_STORES) — tenant
+      // creates land straight in Firestore under the admin's uid (same
+      // shape as pendingPayments/messages); both sides can then append to
+      // `notes` and the admin updates `status`, which flows back to the
+      // outbox like any other admin write. Older tickets may still carry a
+      // single `adminNotes` string instead of `notes` — see
+      // maintenanceNotesThread() for the read-side fallback.
       if (!d.objectStoreNames.contains('maintenanceRequests')) {
         const s = d.createObjectStore('maintenanceRequests', { keyPath: 'id' });
         s.createIndex('tenantId', 'tenantId');
@@ -5218,6 +5221,19 @@ async function sendAiChatMessage() {
   }
 }
 
+/** Normalizes a maintenance request's notes into a single thread array,
+ *  `{ from: 'admin'|'tenant', text, at }[]`, oldest first. Requests created
+ *  before this thread existed only have the old single `adminNotes` string —
+ *  those are shown here as a synthesized one-entry thread so old and new
+ *  requests render the same way; nothing is written back until someone
+ *  actually replies (appendMaintenanceNote always builds from this, so the
+ *  next real reply naturally upgrades the record to the array form). */
+function maintenanceNotesThread(m) {
+  if (m.notes && m.notes.length) return m.notes;
+  if (m.adminNotes) return [{ from: 'admin', text: m.adminNotes, at: m.updatedAt || m.createdAt }];
+  return [];
+}
+
 /* ------------------------- MAINTENANCE REQUESTS (admin) -------------------------
    Tenants submit repair/issue tickets from the portal; they land here as
    `maintenanceRequests` (status: 'open' initially). Admin moves each through
@@ -5269,12 +5285,14 @@ function renderMaintenanceRequestsList() {
         </div>
         ${m.description ? `<p class="muted" style="width:100%; margin:6px 0 0;">${escapeHTML(m.description)}</p>` : ''}
         ${photos ? `<div class="proof-thumb-row" style="width:100%;">${photos}</div>` : ''}
-        ${m.adminNotes ? `<p class="muted" style="width:100%; margin:6px 0 0;"><strong>Note:</strong> ${escapeHTML(m.adminNotes)}</p>` : ''}
+        ${maintenanceNotesThread(m).length ? `<div style="width:100%; margin:6px 0 0; display:flex; flex-direction:column; gap:3px;">
+          ${maintenanceNotesThread(m).map(n => `<p class="muted" style="margin:0;"><strong>${n.from === 'admin' ? 'You' : 'Tenant'}:</strong> ${escapeHTML(n.text)}</p>`).join('')}
+        </div>` : ''}
         <div style="width:100%; display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
           ${m.status === 'open' ? `<button class="btn btn-primary btn-sm" style="flex:1;" data-mstatus="in_progress" data-mid="${m.id}">Start work</button>` : ''}
           ${m.status === 'in_progress' ? `<button class="btn btn-accent btn-sm" style="flex:1;" data-mstatus="resolved" data-mid="${m.id}">Mark resolved</button>` : ''}
           ${(m.status === 'open' || m.status === 'in_progress') ? `<button class="btn btn-danger btn-sm" style="flex:1;" data-mstatus="cancelled" data-mid="${m.id}">Cancel</button>` : ''}
-          ${(m.status === 'open' || m.status === 'in_progress') ? `<button class="btn btn-outline btn-sm" style="flex:1;" data-mnote="${m.id}">Add note</button>` : ''}
+          <button class="btn btn-outline btn-sm" style="flex:1;" data-mnote="${m.id}">Reply</button>
         </div>
       </div>`;
   }).join('') : emptyHTML('🔧', 'Nothing here', 'No maintenance requests in this view.');
@@ -5283,30 +5301,41 @@ function renderMaintenanceRequestsList() {
   });
   list.querySelectorAll('[data-mnote]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const m = state.cache.maintenanceRequests.find(x => x.id === btn.dataset.mnote);
-      const note = prompt('Note for the tenant (optional, e.g. "Plumber coming Thursday"):', (m && m.adminNotes) || '');
-      if (note === null) return;
-      updateMaintenanceRequestStatus(btn.dataset.mnote, null, note);
+      const note = prompt('Reply to the tenant (e.g. "Plumber coming Thursday"):', '');
+      if (note === null || !note.trim()) return;
+      appendMaintenanceNote(btn.dataset.mnote, note.trim(), 'admin');
     });
   });
   list.querySelectorAll('.proof-thumb').forEach(img => img.addEventListener('click', () => openImageLightbox(img.dataset.lightbox || img.dataset.fallbackUrl)));
   hydrateDocRefs(list);
 }
-async function updateMaintenanceRequestStatus(id, status, adminNotes) {
+async function updateMaintenanceRequestStatus(id, status) {
   const m = state.cache.maintenanceRequests.find(x => x.id === id);
   if (!m) return;
-  const updated = { ...m, updatedAt: Date.now() };
-  if (status) {
-    updated.status = status;
-    if (status === 'resolved' || status === 'cancelled') updated.resolvedAt = Date.now();
-  }
-  if (adminNotes !== undefined && adminNotes !== null) updated.adminNotes = adminNotes;
+  const updated = { ...m, status, updatedAt: Date.now() };
+  if (status === 'resolved' || status === 'cancelled') updated.resolvedAt = Date.now();
   await dbPut('maintenanceRequests', updated);
   queueRecordSync('maintenanceRequests', updated);
   await refreshCache();
   renderMaintenanceRequestsList();
   renderSettings();
-  showToast(status ? `Marked ${(status || '').replace('_', ' ')}` : 'Note saved');
+  showToast(`Marked ${status.replace('_', ' ')}`);
+}
+/** Appends one reply to a request's notes thread — used by both the admin
+ *  Reply button here and the tenant portal's Reply button. Also drops the
+ *  legacy single `adminNotes` field once a request has a real thread, so
+ *  nothing renders the old note twice alongside the new array. */
+async function appendMaintenanceNote(id, text, from) {
+  const m = state.cache.maintenanceRequests.find(x => x.id === id);
+  if (!m) return;
+  const notes = maintenanceNotesThread(m).concat([{ from, text, at: Date.now() }]);
+  const updated = { ...m, notes, updatedAt: Date.now() };
+  delete updated.adminNotes;
+  await dbPut('maintenanceRequests', updated);
+  queueRecordSync('maintenanceRequests', updated);
+  await refreshCache();
+  renderMaintenanceRequestsList();
+  showToast('Reply sent');
 }
 
 /* ------------------------------- TENANT PORTAL LINK (admin) ------------------------------- */
@@ -6172,9 +6201,11 @@ async function portalMarkAdminMessagesRead() {
 }
 
 /* -------------------------- MAINTENANCE REQUESTS (tenant) --------------------------
-   Tenant-submitted repair/issue tickets. Read-only list here (status/notes are
-   admin-only, set from the dashboard — see updateMaintenanceRequestStatus);
-   the tenant's only write is creating a new one. */
+   Tenant-submitted repair/issue tickets. Status is admin-only, set from the
+   dashboard (see updateMaintenanceRequestStatus). The tenant can create a
+   request, edit or delete it while it's still 'open' (once the landlord has
+   started work there's something real to coordinate around, so it locks),
+   and can always reply into the notes thread regardless of status. */
 const MAINTENANCE_CATEGORIES = [
   ['plumbing', '🚰 Plumbing'],
   ['electrical', '💡 Electrical'],
@@ -6202,71 +6233,153 @@ function portalRenderMaintenance() {
           </div>
           <div class="rc-amt" style="color:${statusColor[m.status] || 'var(--slate)'}; font-size:.8rem; font-weight:700;">${statusLabel[m.status] || 'Open'}</div>
           ${m.description ? `<p class="muted" style="width:100%; margin:6px 0 0;">${escapeHTML(m.description)}</p>` : ''}
-          ${m.adminNotes ? `<p class="muted" style="width:100%; margin:6px 0 0;"><strong>From your landlord:</strong> ${escapeHTML(m.adminNotes)}</p>` : ''}
+          ${maintenanceNotesThread(m).length ? `<div style="width:100%; margin:6px 0 0; display:flex; flex-direction:column; gap:3px;">
+            ${maintenanceNotesThread(m).map(n => `<p class="muted" style="margin:0;"><strong>${n.from === 'admin' ? 'From your landlord' : 'You'}:</strong> ${escapeHTML(n.text)}</p>`).join('')}
+          </div>` : ''}
+          <div style="width:100%; display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+            <button class="btn btn-outline btn-sm" style="flex:1;" data-mreply="${m.id}">Reply</button>
+            ${m.status === 'open' ? `<button class="btn btn-outline btn-sm" style="flex:1;" data-medit="${m.id}">Edit</button>` : ''}
+            ${m.status === 'open' ? `<button class="btn btn-danger btn-sm" style="flex:1;" data-mdelete="${m.id}">Delete</button>` : ''}
+          </div>
         </div>`).join('') : emptyHTML('🔧', 'No requests yet', 'Report a repair or issue and your landlord will see it right away.')}
     </div>
   `;
-  document.getElementById('p-new-maintenance-btn').addEventListener('click', portalOpenNewMaintenanceRequestSheet);
+  document.getElementById('p-new-maintenance-btn').addEventListener('click', () => portalOpenMaintenanceRequestSheet());
+  document.querySelectorAll('#portalMain [data-mreply]').forEach(btn =>
+    btn.addEventListener('click', () => portalOpenMaintenanceReplySheet(portal.maintenanceRequests.find(x => x.id === btn.dataset.mreply))));
+  document.querySelectorAll('#portalMain [data-medit]').forEach(btn =>
+    btn.addEventListener('click', () => portalOpenMaintenanceRequestSheet(portal.maintenanceRequests.find(x => x.id === btn.dataset.medit))));
+  document.querySelectorAll('#portalMain [data-mdelete]').forEach(btn =>
+    btn.addEventListener('click', () => portalDeleteMaintenanceRequest(portal.maintenanceRequests.find(x => x.id === btn.dataset.mdelete))));
 }
-function portalOpenNewMaintenanceRequestSheet() {
+/** Shared create/edit sheet — pass an existing request to prefill and switch
+ *  to update mode. Editing is only reachable while status is 'open' (the
+ *  Edit button itself is hidden otherwise), but this also re-checks before
+ *  saving in case the landlord started work while the sheet was open. */
+function portalOpenMaintenanceRequestSheet(existing) {
+  const isEdit = !!existing;
   portalOpenSheet(`
-    <h2>Report an issue</h2>
-    <p class="muted" style="margin-top:-6px;">Your landlord will see this right away.</p>
-    <div class="field"><label>What's wrong?</label><input id="mr-title" placeholder="e.g. Kitchen faucet leaking"></div>
+    <h2>${isEdit ? 'Edit request' : 'Report an issue'}</h2>
+    <p class="muted" style="margin-top:-6px;">${isEdit ? 'Update the details below.' : 'Your landlord will see this right away.'}</p>
+    <div class="field"><label>What's wrong?</label><input id="mr-title" placeholder="e.g. Kitchen faucet leaking" value="${isEdit ? escapeAttr(existing.title || '') : ''}"></div>
     <div class="field-row">
       <div class="field"><label>Category</label>
-        <select id="mr-category">${MAINTENANCE_CATEGORIES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+        <select id="mr-category">${MAINTENANCE_CATEGORIES.map(([v, l]) => `<option value="${v}"${isEdit && existing.category === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Urgency</label>
         <select id="mr-urgency">
-          <option value="low">🟢 Low</option>
-          <option value="medium" selected>🟠 Medium</option>
-          <option value="high">🔴 High — needs attention soon</option>
+          <option value="low"${isEdit && existing.urgency === 'low' ? ' selected' : ''}>🟢 Low</option>
+          <option value="medium"${!isEdit || existing.urgency === 'medium' ? ' selected' : ''}>🟠 Medium</option>
+          <option value="high"${isEdit && existing.urgency === 'high' ? ' selected' : ''}>🔴 High — needs attention soon</option>
         </select>
       </div>
     </div>
-    <div class="field"><label>Details</label><textarea id="mr-desc" placeholder="Anything that helps — when it started, how bad it is, etc."></textarea></div>
-    <div class="field"><label>Photo (optional)</label><input id="mr-photo" type="file" accept="image/*"></div>
-    <div class="sheet-actions"><button class="btn btn-accent" id="mr-save-btn">Submit request</button></div>
+    <div class="field"><label>Details</label><textarea id="mr-desc" placeholder="Anything that helps — when it started, how bad it is, etc.">${isEdit ? escapeHTML(existing.description || '') : ''}</textarea></div>
+    <div class="field"><label>Photo ${isEdit && existing.photos && existing.photos.length ? '(leave blank to keep the current one)' : '(optional)'}</label><input id="mr-photo" type="file" accept="image/*"></div>
+    <div class="sheet-actions"><button class="btn btn-accent" id="mr-save-btn">${isEdit ? 'Save changes' : 'Submit request'}</button></div>
   `, () => {
-    document.getElementById('mr-save-btn').addEventListener('click', portalSubmitMaintenanceRequest);
+    document.getElementById('mr-save-btn').addEventListener('click', () => portalSubmitMaintenanceRequest(existing));
   });
 }
-async function portalSubmitMaintenanceRequest() {
+async function portalSubmitMaintenanceRequest(existing) {
+  const isEdit = !!existing;
+  if (isEdit && existing.status !== 'open') { portalCloseSheet(); portalShowToast('This request is already being worked on — ask your landlord to change it'); portalRenderMaintenance(); return; }
   const title = document.getElementById('mr-title').value.trim();
   if (!title) return portalShowToast('Describe what\'s wrong first');
   const file = document.getElementById('mr-photo').files[0];
   if (file && file.size > MAX_DOC_BYTES) return portalShowToast('Photo is too large — max 15MB');
   const saveBtn = document.getElementById('mr-save-btn');
-  saveBtn.disabled = true; saveBtn.textContent = 'Submitting…';
+  saveBtn.disabled = true; saveBtn.textContent = isEdit ? 'Saving…' : 'Submitting…';
   try {
-    const photos = [];
+    let photos = isEdit ? (existing.photos || []) : [];
     if (file) {
       if (!storageProxyEnabled) throw new Error('SUPABASE_NOT_CONFIGURED');
       const ext = (file.name.split('.').pop() || 'dat').toLowerCase();
       const path = `portalUploads/${portal.user.uid}/maintenance-${Date.now()}.${ext}`;
       await storageProxyUpload(path, file);
-      photos.push({ storagePath: path, name: file.name });
+      // Best-effort cleanup of the photo being replaced — a failure here
+      // shouldn't block the save, the new photo is already uploaded.
+      if (isEdit && photos.length && photos[0].storagePath && storageProxyEnabled) storageProxyDelete(photos[0].storagePath);
+      photos = [{ storagePath: path, name: file.name }];
     }
-    const request = {
-      id: uid(), tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
-      title, category: document.getElementById('mr-category').value,
-      urgency: document.getElementById('mr-urgency').value,
-      description: document.getElementById('mr-desc').value.trim(),
-      photos, status: 'open', createdAt: Date.now(), updatedAt: Date.now(),
-    };
+    const request = isEdit
+      ? { ...existing, title, category: document.getElementById('mr-category').value, urgency: document.getElementById('mr-urgency').value, description: document.getElementById('mr-desc').value.trim(), photos, updatedAt: Date.now() }
+      : {
+          id: uid(), tenantId: portal.tenantId, unitId: portal.unitId, portalUid: portal.user.uid,
+          title, category: document.getElementById('mr-category').value,
+          urgency: document.getElementById('mr-urgency').value,
+          description: document.getElementById('mr-desc').value.trim(),
+          photos, status: 'open', createdAt: Date.now(), updatedAt: Date.now(),
+        };
     await portal.store.collection('users').doc(portal.adminUid).collection('maintenanceRequests').doc(request.id).set(request);
-    portal.maintenanceRequests.unshift(request);
+    if (isEdit) {
+      const idx = portal.maintenanceRequests.findIndex(x => x.id === request.id);
+      if (idx !== -1) portal.maintenanceRequests[idx] = request;
+    } else {
+      portal.maintenanceRequests.unshift(request);
+    }
     portalCloseSheet();
-    portalShowToast('Reported — your landlord will follow up');
+    portalShowToast(isEdit ? 'Changes saved' : 'Reported — your landlord will follow up');
     portalRenderMaintenance();
   } catch (err) {
-    console.warn('Maintenance request submission failed', err);
+    console.warn('Maintenance request save failed', err);
     portalShowToast(err && err.message === 'SUPABASE_NOT_CONFIGURED'
-      ? 'Photo uploads aren\'t set up yet — you can still submit without one'
-      : 'Could not submit — check your connection');
+      ? 'Photo uploads aren\'t set up yet — you can still save without one'
+      : 'Could not save — check your connection');
   } finally {
-    saveBtn.disabled = false; saveBtn.textContent = 'Submit request';
+    saveBtn.disabled = false; saveBtn.textContent = isEdit ? 'Save changes' : 'Submit request';
+  }
+}
+/** Lets a tenant withdraw their own request while it's still open, same
+ *  tombstone convention as portalDeletePaymentClaim — writing `deleted:true`
+ *  instead of a hard delete so the admin's own sync doesn't just resurrect
+ *  it on the next pull. */
+async function portalDeleteMaintenanceRequest(m) {
+  if (!m || m.status !== 'open') return;
+  if (!confirm('Delete this request? This can\'t be undone.')) return;
+  try {
+    const tombstone = { ...m, deleted: true, deletedAt: Date.now(), updatedAt: Date.now() };
+    await portal.store.collection('users').doc(portal.adminUid).collection('maintenanceRequests').doc(m.id).set(tombstone);
+    if (m.photos && m.photos.length && m.photos[0].storagePath && storageProxyEnabled) storageProxyDelete(m.photos[0].storagePath);
+    portal.maintenanceRequests = portal.maintenanceRequests.filter(x => x.id !== m.id);
+    portalShowToast('Request deleted');
+    portalRenderMaintenance();
+  } catch (err) {
+    console.warn('Delete maintenance request failed', err);
+    portalShowToast('Could not delete — check your connection');
+  }
+}
+function portalOpenMaintenanceReplySheet(m) {
+  if (!m) return;
+  portalOpenSheet(`
+    <h2>Reply</h2>
+    <p class="muted" style="margin-top:-6px;">${escapeHTML(m.title || 'Maintenance request')}</p>
+    <div class="field"><label>Your reply</label><textarea id="mr-reply-text" placeholder="e.g. Available anytime after 2pm"></textarea></div>
+    <div class="sheet-actions"><button class="btn btn-accent" id="mr-reply-send-btn">Send</button></div>
+  `, () => {
+    document.getElementById('mr-reply-send-btn').addEventListener('click', () => portalAppendMaintenanceNote(m));
+  });
+}
+async function portalAppendMaintenanceNote(m) {
+  const text = document.getElementById('mr-reply-text').value.trim();
+  if (!text) return portalShowToast('Write a reply first');
+  const btn = document.getElementById('mr-reply-send-btn');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const notes = maintenanceNotesThread(m).concat([{ from: 'tenant', text, at: Date.now() }]);
+    const updated = { ...m, notes, updatedAt: Date.now() };
+    delete updated.adminNotes;
+    await portal.store.collection('users').doc(portal.adminUid).collection('maintenanceRequests').doc(m.id).set(updated);
+    const idx = portal.maintenanceRequests.findIndex(x => x.id === m.id);
+    if (idx !== -1) portal.maintenanceRequests[idx] = updated;
+    portalCloseSheet();
+    portalShowToast('Reply sent');
+    portalRenderMaintenance();
+  } catch (err) {
+    console.warn('Maintenance reply failed', err);
+    portalShowToast('Could not send — check your connection');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send';
   }
 }
 
