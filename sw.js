@@ -20,7 +20,7 @@
    simply queues and retries once back online.
    ========================================================= */
 
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const CACHE_NAME = `upapro-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -29,6 +29,8 @@ const APP_SHELL = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
+  './icon-192-maskable.png',
+  './icon-512-maskable.png',
 ];
 
 self.addEventListener('install', (event) => {

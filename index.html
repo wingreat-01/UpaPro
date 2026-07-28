@@ -374,16 +374,29 @@
   }
   .toast.show{opacity:1; bottom:calc(112px + var(--safe-b));}
 
-  .update-banner{
+  .update-banner, .install-banner{
     position:fixed; left:12px; right:12px; top:calc(12px + var(--safe-t));
     background:var(--ink); color:var(--paper); border-radius:12px;
     padding:15px 18px; display:none; align-items:center; justify-content:space-between;
     gap:15px; font-size:.82rem; z-index:70; box-shadow:0 6px 20px rgba(0,0,0,.2);
   }
-  .update-banner.show{display:flex;}
-  .update-banner button{
+  .update-banner.show, .install-banner.show{display:flex;}
+  .update-banner button, .install-banner button{
     background:var(--paper); color:var(--ink); border:none; border-radius:8px;
     padding:8px 15px; font-weight:600; font-size:.78rem; flex-shrink:0;
+  }
+  .install-banner .ib-text{display:flex; align-items:center; gap:10px; min-width:0;}
+  .install-banner .ib-icon{
+    width:36px; height:36px; border-radius:9px; flex-shrink:0;
+    background-size:cover; background-position:center;
+  }
+  .install-banner .ib-copy{min-width:0;}
+  .install-banner .ib-copy strong{display:block; font-size:.84rem;}
+  .install-banner .ib-copy span{display:block; font-size:.72rem; color:rgba(247,243,236,.7); margin-top:1px;}
+  .install-banner .ib-actions{display:flex; align-items:center; gap:6px; flex-shrink:0;}
+  .install-banner .ib-dismiss{
+    background:none; color:rgba(247,243,236,.6); border:none;
+    font-size:1.1rem; padding:4px 6px; cursor:pointer; line-height:1;
   }
 
   .divider{height:1px; background:var(--line); margin:20px 0;}
@@ -888,6 +901,20 @@
 <div class="update-banner" id="updateBanner">
   <span>A new version is ready.</span>
   <button id="updateBannerBtn">Refresh</button>
+</div>
+
+<div class="install-banner" id="installBanner">
+  <div class="ib-text">
+    <div class="ib-icon" style="background-image:url('icon-192.png');"></div>
+    <div class="ib-copy">
+      <strong id="installBannerTitle">Install UpaPro</strong>
+      <span id="installBannerSub">Quick access from your home screen, works offline too</span>
+    </div>
+  </div>
+  <div class="ib-actions">
+    <button id="installBannerBtn">Install</button>
+    <button class="ib-dismiss" id="installBannerDismissBtn" aria-label="Dismiss">✕</button>
+  </div>
 </div>
 
 <!-- SHEET BACKDROP (all forms render inside here) -->
@@ -7257,6 +7284,84 @@ if ('serviceWorker' in navigator) {
     }
   });
 }
+
+/* ---------------------------- PWA INSTALL PROMPT ----------------------------
+   Chrome/Edge no longer show their own install mini-infobar reliably — a
+   site has to catch `beforeinstallprompt` itself and trigger the native
+   prompt from a real UI element, or nothing ever appears. This is that UI:
+   a top banner (shares styling with the update banner above) that shows on
+   first visit, offers Install, and remembers a dismissal for a couple weeks
+   so it doesn't nag every single time. iOS Safari never fires
+   beforeinstallprompt at all, so it gets its own instructional version
+   pointing at Share → Add to Home Screen instead. Skipped entirely once the
+   app is already running installed (standalone display mode). */
+(function () {
+  const DISMISS_KEY = 'upapro_install_dismissed_at';
+  const DISMISS_DAYS = 14;
+
+  function isStandalone() {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  }
+  function recentlyDismissed() {
+    const at = Number(localStorage.getItem(DISMISS_KEY) || 0);
+    return at && (Date.now() - at) < DISMISS_DAYS * 24 * 60 * 60 * 1000;
+  }
+  function markDismissed() {
+    try { localStorage.setItem(DISMISS_KEY, String(Date.now())); } catch (e) { /* storage unavailable — banner just won't remember, not worth failing over */ }
+  }
+
+  if (isStandalone()) return; // already installed and running as the app — nothing to offer
+
+  const banner = document.getElementById('installBanner');
+  const titleEl = document.getElementById('installBannerTitle');
+  const subEl = document.getElementById('installBannerSub');
+  const installBtn = document.getElementById('installBannerBtn');
+  const dismissBtn = document.getElementById('installBannerDismissBtn');
+
+  dismissBtn.addEventListener('click', () => {
+    banner.classList.remove('show');
+    markDismissed();
+  });
+
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (recentlyDismissed()) return;
+    titleEl.textContent = 'Install UpaPro';
+    subEl.textContent = 'Quick access from your home screen, works offline too';
+    installBtn.textContent = 'Install';
+    banner.classList.add('show');
+  });
+
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) { banner.classList.remove('show'); markDismissed(); return; }
+    banner.classList.remove('show');
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice; // don't branch on accepted/dismissed — either way there's nothing left to prompt with
+    deferredPrompt = null;
+    markDismissed();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    banner.classList.remove('show');
+    deferredPrompt = null;
+  });
+
+  // iOS Safari (incl. iPadOS requesting the desktop site) never fires
+  // beforeinstallprompt — there's no programmatic install trigger there at
+  // all, so this just points the person at the manual Share-sheet flow.
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+  const isIOSChrome = /CriOS/.test(ua);
+  const isIOSSafari = isIOS && !isIOSChrome;
+  if (isIOSSafari && !recentlyDismissed()) {
+    titleEl.textContent = 'Add UpaPro to your Home Screen';
+    subEl.textContent = 'Tap Share, then "Add to Home Screen"';
+    installBtn.textContent = 'Got it';
+    banner.classList.add('show');
+  }
+})();
 
 /* ----------------------------- PULL TO REFRESH -----------------------------
    Chrome's native pull-to-refresh triggers on a very short, easy-to-do-by-
