@@ -581,6 +581,32 @@
   .sigpad-canvas{ width:100%; height:160px; display:block; touch-action:none; }
   .sigpad-hint{ position:absolute; left:14px; right:14px; bottom:30px; border-top:1px dashed var(--line); font-size:.7rem; color:var(--slate); text-align:center; padding-top:4px; pointer-events:none; }
 
+  /* ---------- Reports (monthly/annual) print view ---------- */
+  #reportView{
+    display:none;
+    max-width:900px; margin:0 auto; min-height:100vh;
+    background:var(--paper); flex-direction:column;
+  }
+  #reportDoc{ padding:26px 22px 60px; }
+  .report-doc h1{ font-size:1.15rem; margin:0 0 2px; }
+  .report-doc .rd-sub{ color:var(--slate); font-size:.82rem; margin:0 0 22px; }
+  .report-doc .rd-cards{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:10px; margin-bottom:24px;
+  }
+  .report-doc .rd-card{
+    border:1px solid var(--line); border-radius:12px; background:var(--card);
+    padding:12px 14px;
+  }
+  .report-doc .rd-card .rd-card-label{ font-size:.7rem; color:var(--slate); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }
+  .report-doc .rd-card .rd-card-value{ font-size:1.05rem; font-weight:700; font-family:'JetBrains Mono',monospace; }
+  .report-doc .rd-section-title{ font-size:.78rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--slate); margin:26px 0 10px; }
+  .report-doc table{ width:100%; border-collapse:collapse; font-size:.82rem; }
+  .report-doc th, .report-doc td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  .report-doc th{ color:var(--slate); font-weight:600; font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; }
+  .report-doc td.rd-num, .report-doc th.rd-num{ text-align:right; font-family:'JetBrains Mono',monospace; }
+  .report-doc tfoot td{ font-weight:700; border-top:2px solid var(--ink); border-bottom:none; }
+
   /* ==========================================================
      DESKTOP / WIDE LAYOUT (>=860px)
      Mobile markup is untouched below this breakpoint — same
@@ -680,6 +706,10 @@
     #contractDoc{ padding:0; max-width:none; margin:0; box-shadow:none; border-radius:0; background:#fff; }
     #contractDoc .cd-page + .cd-page{ margin-top:0; padding-top:0; border-top:none; page-break-before:always; }
     #contractDoc .cd-page-label{ display:none; }
+    #reportView{ display:block !important; max-width:none; padding:0; background:#fff; }
+    #reportDoc{ padding:0; }
+    .report-doc .rd-card{ break-inside:avoid; }
+    .report-doc tr{ break-inside:avoid; }
     body{ background:#fff; }
   }
 </style>
@@ -800,6 +830,9 @@
       <input type="file" id="importFile" accept="application/json" style="display:none;">
       <div class="settings-item" id="btnBackfillPortalUid"><div><div class="si-title">Fix old tenant-submitted payments</div><div class="si-sub" id="backfillPortalUidSub">One-time fix for payments approved before tenant self-edit/delete was added</div></div><span>🔧</span></div>
 
+      <div class="section-label">Reports</div>
+      <div class="settings-item" id="btnReports"><div><div class="si-title">Generate report</div><div class="si-sub">Monthly or annual income report, printable / exportable</div></div><span>📊</span></div>
+
       <div class="section-label">Cloud sync</div>
       <div class="settings-item" id="btnCloudSync"><div><div class="si-title">Cloud sync</div><div class="si-sub" id="firebaseStatus">Not signed in</div></div><span class="badge-dot" id="firebaseDot"></span></div>
 
@@ -881,6 +914,22 @@
     <button class="icon-btn" id="contractPrintBtn" aria-label="Print / Save as PDF">🖨️</button>
   </header>
   <div id="contractDoc" class="contract-doc"></div>
+</div>
+
+<!-- ============================================================
+     REPORTS — printable monthly/annual income report view.
+     Same pattern as #contractView: hidden behind #app, becomes
+     the only visible thing when opened so print/"Save as PDF"
+     picks up only the report (see @media print rules above).
+     ============================================================ -->
+<div id="reportView" style="display: none;">
+  <header class="topbar no-print">
+    <button class="back-btn show" id="reportBackBtn" aria-label="Close">←</button>
+    <h1 id="reportViewTitle">Report</h1>
+    <button class="icon-btn" id="reportCsvBtn" aria-label="Export CSV">⬇️</button>
+    <button class="icon-btn" id="reportPrintBtn" aria-label="Print / Save as PDF">🖨️</button>
+  </header>
+  <div id="reportDoc" class="report-doc"></div>
 </div>
 
 <script>
@@ -2733,6 +2782,11 @@ function render() {
   const contractViewEl = document.getElementById('contractView');
   if (contractViewEl.style.display !== 'none') {
     contractViewEl.style.display = 'none';
+    document.getElementById('app').style.display = '';
+  }
+  const reportViewEl = document.getElementById('reportView');
+  if (reportViewEl.style.display !== 'none') {
+    reportViewEl.style.display = 'none';
     document.getElementById('app').style.display = '';
   }
   const { view, params } = currentRoute();
@@ -4597,6 +4651,246 @@ async function backfillPortalUidOnPayments() {
   renderSettings();
 }
 document.getElementById('btnBackfillPortalUid').addEventListener('click', backfillPortalUidOnPayments);
+
+/* -------------------------------- REPORTS ----------------------------------
+   Monthly/annual income report — reads straight from state.cache.payments
+   (already tombstone-filtered by refreshCache()). "Collected" here means
+   money that's actually landed: a check that hasn't cleared yet (or has
+   bounced) is excluded the same way every other balance calc in the app
+   excludes it (isUnclearedCheck), so the report can't count money that
+   might still fall through. Deposits are broken out separately since
+   they're not rental income for any period, same treatment as everywhere
+   else in the app. */
+const REPORT_TAG_LABEL = { rent: 'Rent', electricity: '⚡ Electricity', water: '💧 Water', deposit: '🔒 Deposit' };
+
+function openReportsSheet() {
+  const locations = state.cache.locations.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const defaultMonth = monthKey();
+  const defaultYear = new Date().getFullYear();
+  openSheet(`
+    <h2>Generate report</h2>
+    <p class="muted" style="margin-top:-6px;">Summarizes payments actually collected — pending or bounced checks aren't counted until cleared.</p>
+    <div class="field"><label>Report type</label></div>
+    <div class="tagchip-row" id="reportTypeRow">
+      <div class="tagchip active" data-type="monthly">Monthly</div>
+      <div class="tagchip" data-type="annual">Annual</div>
+    </div>
+    <div class="field" id="reportMonthField"><label>Month</label><input type="month" id="r-month" value="${defaultMonth}"></div>
+    <div class="field" id="reportYearField" style="display:none;"><label>Year</label><input type="number" id="r-year" inputmode="numeric" value="${defaultYear}" min="2000" max="2100"></div>
+    <div class="field"><label>Property</label>
+      <select id="r-location">
+        <option value="">All properties</option>
+        ${locations.map(l => `<option value="${escapeAttr(l.id)}">${escapeHTML(l.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn btn-accent" id="r-generate-btn">Generate report</button>
+    </div>
+  `, () => {
+    const typeRow = document.getElementById('reportTypeRow');
+    typeRow.querySelectorAll('.tagchip').forEach(chip => chip.addEventListener('click', () => {
+      typeRow.querySelectorAll('.tagchip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      const isMonthly = chip.dataset.type === 'monthly';
+      document.getElementById('reportMonthField').style.display = isMonthly ? '' : 'none';
+      document.getElementById('reportYearField').style.display = isMonthly ? 'none' : '';
+    }));
+    document.getElementById('r-generate-btn').addEventListener('click', () => {
+      const type = typeRow.querySelector('.tagchip.active').dataset.type;
+      const period = type === 'monthly' ? document.getElementById('r-month').value : document.getElementById('r-year').value;
+      if (!period) { showToast(type === 'monthly' ? 'Pick a month' : 'Pick a year'); return; }
+      const locationId = document.getElementById('r-location').value || null;
+      closeSheet();
+      renderReportDoc(type, period, locationId);
+    });
+  });
+}
+document.getElementById('btnReports').addEventListener('click', openReportsSheet);
+
+/** Resolves the property a payment belongs to. Older payments may not have
+ *  locationId stamped on them directly, so this falls back to the unit's
+ *  own locationId — same fallback style used elsewhere in the file. */
+function paymentLocationId(p) {
+  if (p.locationId) return p.locationId;
+  const unit = state.cache.units.find(u => u.id === p.unitId);
+  return unit ? unit.locationId : null;
+}
+
+/** Core report data builder, shared by the print view and CSV export.
+ *  type: 'monthly' | 'annual'. period: 'YYYY-MM' for monthly, 'YYYY' for
+ *  annual. locationId: optional property filter, null = all properties. */
+function computeReport(type, period, locationId) {
+  const yearStr = type === 'monthly' ? period.slice(0, 4) : String(period);
+  let payments = state.cache.payments.filter(p => {
+    if (!p.datePaid) return false;
+    if (isUnclearedCheck(p)) return false;
+    if (type === 'monthly') { if (!p.datePaid.startsWith(period)) return false; }
+    else { if (!p.datePaid.startsWith(yearStr)) return false; }
+    if (locationId && paymentLocationId(p) !== locationId) return false;
+    return true;
+  });
+  payments = payments.slice().sort((a, b) => (a.datePaid || '').localeCompare(b.datePaid || ''));
+
+  const totalsByTag = { rent: 0, electricity: 0, water: 0, deposit: 0 };
+  const totalsByMethod = {};
+  const totalsByLocation = {};
+  const totalsByMonth = {}; // annual only
+  let grandTotal = 0;
+
+  payments.forEach(p => {
+    const amt = Number(p.amountPaid) || 0;
+    const tag = p.tag || 'rent';
+    totalsByTag[tag] = (totalsByTag[tag] || 0) + amt;
+    const method = p.method || 'other';
+    totalsByMethod[method] = (totalsByMethod[method] || 0) + amt;
+    const locId = paymentLocationId(p) || '_none';
+    totalsByLocation[locId] = (totalsByLocation[locId] || 0) + amt;
+    if (type === 'annual') {
+      const mKey = p.datePaid.slice(0, 7);
+      totalsByMonth[mKey] = (totalsByMonth[mKey] || 0) + amt;
+    }
+    grandTotal += amt;
+  });
+
+  // Occupancy snapshot as of right now (not historical for the period —
+  // there's no stored history of past occupancy to reconstruct it from),
+  // scoped to the same property filter as the rest of the report.
+  const units = state.cache.units.filter(u => !locationId || u.locationId === locationId);
+  const occupied = units.filter(u => effectiveUnitStatus(u) === 'occupied').length;
+  const vacant = units.filter(u => effectiveUnitStatus(u) === 'vacant').length;
+
+  return { type, period, locationId, payments, totalsByTag, totalsByMethod, totalsByLocation, totalsByMonth, grandTotal, unitCount: units.length, occupied, vacant };
+}
+
+function reportPeriodLabel(type, period) {
+  return type === 'monthly' ? monthLabel(period) : String(period);
+}
+
+function renderReportDoc(type, period, locationId) {
+  const report = computeReport(type, period, locationId);
+  const loc = locationId ? state.cache.locations.find(l => l.id === locationId) : null;
+  const periodLabel = reportPeriodLabel(type, period);
+  const scopeLabel = loc ? loc.name : 'All properties';
+
+  const cards = `
+    <div class="rd-cards">
+      <div class="rd-card"><div class="rd-card-label">Total collected</div><div class="rd-card-value">${peso(report.grandTotal)}</div></div>
+      <div class="rd-card"><div class="rd-card-label">Rent</div><div class="rd-card-value">${peso(report.totalsByTag.rent)}</div></div>
+      <div class="rd-card"><div class="rd-card-label">⚡ Electricity</div><div class="rd-card-value">${peso(report.totalsByTag.electricity)}</div></div>
+      <div class="rd-card"><div class="rd-card-label">💧 Water</div><div class="rd-card-value">${peso(report.totalsByTag.water)}</div></div>
+      <div class="rd-card"><div class="rd-card-label">🔒 Deposits</div><div class="rd-card-value">${peso(report.totalsByTag.deposit)}</div></div>
+      <div class="rd-card"><div class="rd-card-label">Payments logged</div><div class="rd-card-value">${report.payments.length}</div></div>
+      <div class="rd-card"><div class="rd-card-label">Occupancy (today)</div><div class="rd-card-value">${report.occupied}/${report.unitCount}</div></div>
+    </div>`;
+
+  const locationRows = Object.keys(report.totalsByLocation).map(locId => {
+    const l = state.cache.locations.find(x => x.id === locId);
+    return { label: l ? l.name : 'Unassigned', amount: report.totalsByLocation[locId] };
+  }).sort((a, b) => b.amount - a.amount);
+  const locationSection = !locationId && locationRows.length ? `
+    <div class="rd-section-title">By property</div>
+    <table><tbody>
+      ${locationRows.map(r => `<tr><td>${escapeHTML(r.label)}</td><td class="rd-num">${peso(r.amount)}</td></tr>`).join('')}
+    </tbody></table>` : '';
+
+  const methodLabel = { cash: 'Cash', gcash: 'GCash', bank: 'Bank transfer', check: 'Check / PDC', other: 'Other' };
+  const methodRows = Object.keys(report.totalsByMethod).map(m => ({ label: methodLabel[m] || m, amount: report.totalsByMethod[m] }))
+    .sort((a, b) => b.amount - a.amount);
+  const methodSection = methodRows.length ? `
+    <div class="rd-section-title">By payment method</div>
+    <table><tbody>
+      ${methodRows.map(r => `<tr><td>${escapeHTML(r.label)}</td><td class="rd-num">${peso(r.amount)}</td></tr>`).join('')}
+    </tbody></table>` : '';
+
+  let detailSection;
+  if (type === 'annual') {
+    const monthKeys = Object.keys(report.totalsByMonth).sort();
+    detailSection = `
+      <div class="rd-section-title">By month</div>
+      <table>
+        <thead><tr><th>Month</th><th class="rd-num">Collected</th></tr></thead>
+        <tbody>
+          ${monthKeys.map(mk => `<tr><td>${monthLabel(mk)}</td><td class="rd-num">${peso(report.totalsByMonth[mk])}</td></tr>`).join('')}
+        </tbody>
+        <tfoot><tr><td>Total</td><td class="rd-num">${peso(report.grandTotal)}</td></tr></tfoot>
+      </table>`;
+  } else {
+    detailSection = `
+      <div class="rd-section-title">Payments this month${report.payments.length ? ` (${report.payments.length})` : ''}</div>
+      ${report.payments.length ? `
+      <table>
+        <thead><tr><th>Date</th><th>Tenant</th><th>Property / unit</th><th>Charge</th><th>Method</th><th class="rd-num">Amount</th></tr></thead>
+        <tbody>
+          ${report.payments.map(p => {
+            const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+            const unit = state.cache.units.find(u => u.id === p.unitId);
+            const loc2 = unit ? state.cache.locations.find(l => l.id === unit.locationId) : null;
+            const place = [loc2 ? loc2.name : null, unit ? unit.unitLabel : null].filter(Boolean).join(' · ');
+            return `<tr>
+              <td>${escapeHTML(p.datePaid)}</td>
+              <td>${escapeHTML(tenant ? tenant.fullName : '—')}</td>
+              <td>${escapeHTML(place || '—')}</td>
+              <td>${REPORT_TAG_LABEL[p.tag] || 'Rent'}</td>
+              <td>${escapeHTML(methodLabel[p.method] || p.method || '—')}</td>
+              <td class="rd-num">${peso(p.amountPaid)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+        <tfoot><tr><td colspan="5">Total</td><td class="rd-num">${peso(report.grandTotal)}</td></tr></tfoot>
+      </table>` : emptyHTML('🧾', 'No payments this period', 'Nothing was collected for this month yet.')}`;
+  }
+
+  document.getElementById('reportDoc').innerHTML = `
+    <h1>${type === 'monthly' ? 'Monthly' : 'Annual'} Income Report</h1>
+    <p class="rd-sub">${escapeHTML(periodLabel)} · ${escapeHTML(scopeLabel)} · Generated ${escapeHTML(todayISO())}</p>
+    ${cards}
+    ${locationSection}
+    ${methodSection}
+    ${detailSection}
+  `;
+  document.getElementById('reportDoc').dataset.reportType = type;
+  document.getElementById('reportDoc').dataset.reportPeriod = period;
+  document.getElementById('reportDoc').dataset.reportLocation = locationId || '';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('reportView').dataset.returnTo = 'app';
+  document.getElementById('reportViewTitle').textContent = `${type === 'monthly' ? 'Monthly' : 'Annual'} Report`;
+  document.getElementById('reportView').style.display = 'flex';
+}
+
+function closeReportView() {
+  document.getElementById('reportView').style.display = 'none';
+  const returnTo = document.getElementById('reportView').dataset.returnTo || 'app';
+  document.getElementById(returnTo).style.display = '';
+}
+document.getElementById('reportBackBtn').addEventListener('click', closeReportView);
+document.getElementById('reportPrintBtn').addEventListener('click', () => window.print());
+document.getElementById('reportCsvBtn').addEventListener('click', () => {
+  const doc = document.getElementById('reportDoc');
+  const type = doc.dataset.reportType, period = doc.dataset.reportPeriod, locationId = doc.dataset.reportLocation || null;
+  const report = computeReport(type, period, locationId);
+  const rows = [['Date', 'Tenant', 'Property', 'Unit', 'Charge', 'Method', 'Amount']];
+  report.payments.forEach(p => {
+    const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+    const unit = state.cache.units.find(u => u.id === p.unitId);
+    const loc2 = unit ? state.cache.locations.find(l => l.id === unit.locationId) : null;
+    rows.push([
+      p.datePaid || '', tenant ? tenant.fullName : '', loc2 ? loc2.name : '', unit ? unit.unitLabel : '',
+      REPORT_TAG_LABEL[p.tag] || 'Rent', p.method || '', Number(p.amountPaid) || 0
+    ]);
+  });
+  rows.push([]);
+  rows.push(['Total', '', '', '', '', '', report.grandTotal]);
+  const csv = rows.map(r => r.map(cell => {
+    const s = String(cell ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `upapro-report-${type}-${period}${locationId ? '-' + locationId : ''}.csv`;
+  a.click();
+  showToast('CSV downloaded');
+});
 
 /* ------------------------- PENDING CHECKS / PDC (admin) -------------------------
    Every payment logged with method:'check' sits here as clearanceStatus:
