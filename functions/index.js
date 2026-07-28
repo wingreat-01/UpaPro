@@ -6,8 +6,8 @@ const admin = require("firebase-admin");
 admin.initializeApp();
 const db = admin.firestore();
 
-const {askAgent} = require("./agent-manual-fallback");
-const {rentDueReminders} = require("./rentReminders");
+const {askAgent, testAgentProvider} = require("./agent-manual-fallback");
+const {rentDueReminders, testRentDueReminders} = require("./rentReminders");
 
 // For cost control, you can set the maximum number of containers that can be
 // running at the same time.
@@ -18,7 +18,7 @@ setGlobalOptions({ maxInstances: 10 });
 const MAX_STORED_MESSAGES = 60;
 
 exports.askAgent = onCall(
-  { secrets: ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY"] },
+  { secrets: ["GEMINI_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY"] },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "Must be signed in.");
@@ -79,4 +79,44 @@ exports.askAgent = onCall(
   }
 );
 
+// Lets you confirm a specific AI provider (gemini/groq/mistral) actually
+// works — auth, model name, response shape — without reordering
+// PROVIDER_CHAIN and redeploying twice. Same admin-gated pattern as
+// testRentDueReminders. Call from the browser console while signed in:
+//   firebase.functions().httpsCallable('testAgentProvider')({ provider: 'groq' })
+//     .then(r => console.log('result:', r.data))
+//     .catch(e => console.error('failed:', e.message));
+//
+// Pass { provider: '...', mode: 'tool' } to also exercise a real,
+// read-only tool call (getOverdueTenants) through that provider — this
+// is the check that would have caught Groq's malformed getTenantByUnit
+// call before it ever reached a real admin.
+exports.testAgentProvider = onCall(
+  { secrets: ["GEMINI_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY"] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Must be signed in.");
+    }
+    const adminUid = request.auth.uid;
+    const adminDoc = await db.collection("admins").doc(adminUid).get();
+    if (!adminDoc.exists) {
+      throw new HttpsError("permission-denied", "Not a recognized admin account.");
+    }
+
+    const provider = request.data && request.data.provider;
+    if (!provider) {
+      throw new HttpsError("invalid-argument", 'Pass { provider: "gemini" | "groq" | "mistral" }.');
+    }
+    const mode = (request.data && request.data.mode) || "greeting";
+    const testPrompt = request.data && request.data.testPrompt;
+
+    try {
+      return await testAgentProvider(provider, adminUid, mode, testPrompt);
+    } catch (err) {
+      throw new HttpsError("internal", err.message);
+    }
+  }
+);
+
 exports.rentDueReminders = rentDueReminders;
+exports.testRentDueReminders = testRentDueReminders;

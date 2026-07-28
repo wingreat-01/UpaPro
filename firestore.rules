@@ -226,10 +226,7 @@ service cloud.firestore {
       // admin"), and create requires both portalUid and tenantId to match
       // the caller's own portal link — so a tenant can't submit a ticket,
       // or list tickets, attributed to a different tenantId under the
-      // same admin. Status/adminNotes updates are admin-only (covered by
-      // the owner rule at the top of this match block) — there is
-      // deliberately no tenant `update` rule here, so a submitted ticket
-      // is immutable from the portal side once created.
+      // same admin.
       allow list: if request.auth != null && store == 'maintenanceRequests'
         && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
         && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
@@ -243,6 +240,47 @@ service cloud.firestore {
         && request.resource.data.portalUid == request.auth.uid
         && request.resource.data.tenantId == get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.tenantId
         && request.resource.data.status == 'open';
+
+      // FIX (2026-07-28): the client (portalSubmitMaintenanceRequest /
+      // portalDeleteMaintenanceRequest in index.html) has always expected
+      // to Edit or withdraw a tenant's own OPEN ticket via a follow-up
+      // .set() on the same doc — but no tenant `update` rule existed here
+      // at all, so both actions failed outright with permission-denied
+      // (misreported client-side as "check your connection", since that
+      // catch block's fallback text doesn't distinguish a rules rejection
+      // from an actual network failure). Confirmed via a real Delete
+      // attempt in the tenant portal. Two narrow update rules restore the
+      // client's actual behavior without opening anything further:
+      // status/adminNotes remain admin-only (owner rule at the top of
+      // this match block still covers that) — a tenant can never touch
+      // those fields, and once status leaves 'open' (admin has started
+      // work), both rules below stop applying, exactly matching the
+      // client's own `if (m.status !== 'open') return;` guards.
+
+      // 1) Edit — title/category/urgency/description/photos, exactly what
+      //    portalSubmitMaintenanceRequest's isEdit branch writes.
+      allow update: if request.auth != null && store == 'maintenanceRequests'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.active != false
+        && resource.data.portalUid == request.auth.uid
+        && resource.data.status == 'open'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['title', 'category', 'urgency', 'description', 'photos', 'updatedAt']);
+
+      // 2) Withdraw — same tombstone convention as pendingPayments/payments
+      //    self-delete above (deleted:true instead of a hard delete, so the
+      //    admin's own sync sees an update to merge rather than a gap to
+      //    fill and resurrect it). Exactly what portalDeleteMaintenanceRequest
+      //    writes.
+      allow update: if request.auth != null && store == 'maintenanceRequests'
+        && exists(/databases/$(database)/documents/portalAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.adminUid == adminUid
+        && get(/databases/$(database)/documents/portalAccounts/$(request.auth.uid)).data.active != false
+        && resource.data.portalUid == request.auth.uid
+        && resource.data.status == 'open'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['deleted', 'deletedAt', 'updatedAt']);
     }
 
     /* ---------------------------------------------------------------

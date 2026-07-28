@@ -61,6 +61,7 @@
    ========================================================= */
 
 const { onSchedule } = require('firebase-functions/v2/scheduler');
+const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
 const { logger } = require('firebase-functions');
 const admin = require('firebase-admin');
@@ -208,4 +209,58 @@ const rentDueReminders = onSchedule(
   }
 );
 
-module.exports = { rentDueReminders };
+/* ----------------------------- MANUAL TEST -----------------------------
+   Lets you confirm the Resend key + FROM_EMAIL actually work, on demand,
+   without waiting for the daily schedule or needing a tenant whose due
+   date happens to land exactly 7 days out. Sends ONE real email with
+   placeholder tenant/amount data to whatever address you pass in.
+
+   HOW TO CALL IT
+   Same admin-gated pattern as askAgent in index.js — call it from the
+   browser console while signed into the app (Firebase is already
+   initialized there):
+
+     firebase.functions().httpsCallable('testRentDueReminders')({ to: 'you@gmail.com' })
+       .then(r => console.log('sent:', r.data))
+       .catch(e => console.error('failed:', e.message));
+
+   A success here means the API key, FROM_EMAIL, and Resend domain
+   verification are all correctly set up — any of those being wrong will
+   surface as a clear error message (e.g. "Resend API 401: ..." for a bad
+   key, or a domain-not-verified error) instead of a silent failure. */
+const testRentDueReminders = onCall(
+  { secrets: [RESEND_API_KEY] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Must be signed in.');
+    }
+    const adminUid = request.auth.uid;
+    const adminDoc = await db.collection('admins').doc(adminUid).get();
+    if (!adminDoc.exists) {
+      throw new HttpsError('permission-denied', 'Not a recognized admin account.');
+    }
+
+    const to = request.data && request.data.to;
+    if (!to) {
+      throw new HttpsError('invalid-argument', 'Pass { to: "you@example.com" }.');
+    }
+
+    try {
+      await sendReminderEmail(
+        RESEND_API_KEY.value(),
+        to,
+        'Test Tenant',
+        'Test Unit 1',
+        3500,
+        new Date(Date.now() + REMINDER_WINDOW_DAYS * 86400000)
+      );
+      return { ok: true };
+    } catch (err) {
+      // Surfaced straight back to the caller so a bad key or unverified
+      // domain shows up immediately, instead of only in Cloud Logging.
+      throw new HttpsError('internal', err.message);
+    }
+  }
+);
+
+module.exports = { rentDueReminders, testRentDueReminders };

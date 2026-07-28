@@ -1,10 +1,10 @@
 /**
  * UpaPro AI Agent — Manual multi-provider approach
  * --------------------------------------------------
- * Calls Gemini, Groq, and Cerebras directly. No middleman, no markup —
+ * Calls Gemini, Groq, and Mistral directly. No middleman, no markup —
  * all three are genuinely free tier, no credit card required.
  * Each provider needs its own request/response adapter because their
- * tool-calling formats differ (Groq and Cerebras are OpenAI-compatible,
+ * tool-calling formats differ (Groq and Mistral are OpenAI-compatible,
  * Gemini is not).
  *
  * MESSAGE HISTORY SHAPE (neutral, provider-agnostic):
@@ -37,7 +37,7 @@ const db = admin.firestore();
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GROQ_KEY = process.env.GROQ_API_KEY;
-const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY;
+const MISTRAL_KEY = process.env.MISTRAL_API_KEY;
 
 const SYSTEM_PROMPT = `You are the UpaPro admin assistant, used by property managers running boarding-house/rental operations. You help them check tenant payment status, overdue balances, income collected, and open maintenance requests — and, when asked, send rent-due reminders directly to tenants.
 
@@ -330,7 +330,7 @@ async function callGemini(messages) {
 
 // ---------- Groq adapter (Llama models) ----------
 // Groq's API is OpenAI-compatible, so this adapter is nearly identical
-// to Cerebras's — smallest adapter cost of the three.
+// to Mistral's — smallest adapter cost of the three.
 function buildOpenAIMessages(messages) {
   return messages.map((m) => {
     if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
@@ -385,18 +385,21 @@ async function callGroq(messages) {
   return normalizeOpenAIResponse(data); // Groq mirrors OpenAI's response shape
 }
 
-// ---------- Cerebras adapter (Llama models) ----------
-// Cerebras's API is also OpenAI-compatible, same shape as Groq — this
-// is the free-tier replacement for the old OpenAI adapter.
-async function callCerebras(messages) {
-  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
+// ---------- Mistral adapter ----------
+// Mistral's La Plateforme API is also OpenAI-compatible, same shape as
+// Groq — swapped in to replace Cerebras, whose free-tier model catalog
+// kept shifting under us (llama-3.3-70b removed, gpt-oss-120b gated
+// behind payment). mistral-small-latest has solid function-calling
+// support and is available on Mistral's no-card-required free tier.
+async function callMistral(messages) {
+  const res = await fetch("https://api.mistral.ai/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${CEREBRAS_KEY}`,
+      Authorization: `Bearer ${MISTRAL_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b",
+      model: "mistral-small-latest",
       messages: buildOpenAIMessages(messages),
       tools: toolDefs.map((t) => ({
         type: "function",
@@ -412,14 +415,14 @@ async function callCerebras(messages) {
   if (!res.ok) {
     // ---- TEMPORARY DEBUG — remove once verified ----
     const errorBody = await res.text();
-    console.log(`CEREBRAS ERROR (status ${res.status}):`, errorBody);
+    console.log(`MISTRAL ERROR (status ${res.status}):`, errorBody);
     // -------------------------------------------------
-    if (res.status === 429) throw { rateLimited: true, provider: "cerebras" };
-    throw new Error(`Cerebras request failed with status ${res.status}: ${errorBody}`);
+    if (res.status === 429) throw { rateLimited: true, provider: "mistral" };
+    throw new Error(`Mistral request failed with status ${res.status}: ${errorBody}`);
   }
 
   const data = await res.json();
-  return normalizeOpenAIResponse(data); // Cerebras mirrors OpenAI's response shape
+  return normalizeOpenAIResponse(data); // Mistral mirrors OpenAI's response shape
 }
 
 // ---------- Shared helpers ----------
@@ -1342,8 +1345,16 @@ async function executeTool(name, args, adminUid) {
 const PROVIDER_CHAIN = [
   { name: "gemini", call: callGemini },
   { name: "groq", call: callGroq },
-  { name: "cerebras", call: callCerebras },
+  { name: "mistral", call: callMistral },
 ];
+
+// Map for testAgentProvider() below — lets a single provider be called
+// directly, bypassing the fallback chain and its ordering entirely.
+const PROVIDERS_BY_NAME = {
+  gemini: callGemini,
+  groq: callGroq,
+  mistral: callMistral,
+};
 
 // Cap on how many tool-call round-trips a single askAgent() call will do
 // before giving up. Needed because some admin requests chain naturally
@@ -1362,6 +1373,7 @@ async function askAgent(userMessage, history = [], adminUid) {
     { role: "user", content: userMessage },
   ];
 
+  const failures = [];
   for (const provider of PROVIDER_CHAIN) {
     try {
       let messages = baseMessages;
@@ -1425,17 +1437,122 @@ async function askAgent(userMessage, history = [], adminUid) {
 
       return result;
     } catch (err) {
-      if (err.rateLimited) {
-        console.log(`${err.provider} rate-limited, trying next provider`);
-        continue;
-      }
-      throw err;
+      // Fall through to the next provider on ANY failure, not just rate
+      // limits. A provider can also fail with a plain error — e.g. Groq
+      // returning 400 tool_use_failed when its model mangles a function
+      // call — and there's no reason to kill the whole request over a
+      // single provider hiccup when the next one in the chain is healthy.
+      const reason = err.rateLimited ? "rate-limited" : (err.message || String(err));
+      failures.push({ provider: provider.name, reason });
+      console.log(`${provider.name} failed (${reason}), trying next provider`);
+      continue;
     }
   }
-  throw new Error("All providers exhausted or failed");
+
+  // Every provider in PROVIDER_CHAIN failed on this request — genuinely
+  // rare (all three would have to be down/rate-limited/erroring at once),
+  // but without this the caller previously got an uncaught throw that
+  // index.js doesn't catch, surfacing as a raw "internal" error in the
+  // app with nothing saved to chat history and no useful signal in the
+  // logs about which providers failed or why. Tagged distinctly from the
+  // ordinary per-provider failure logs above so an "all down" event is
+  // easy to grep for and doesn't blend into routine single-provider
+  // fallback noise.
+  console.error(`ALL PROVIDERS EXHAUSTED for adminUid ${adminUid}:`, JSON.stringify(failures));
+  return {
+    text: "Sorry, the assistant is temporarily unavailable — please try again in a moment.",
+    toolCalls: [],
+  };
 }
 
-module.exports = { askAgent };
+// ---------- Direct single-provider test (bypasses the fallback chain) ----------
+// Lets you confirm one specific provider actually works — auth, model name,
+// tool-calling — without reordering PROVIDER_CHAIN and redeploying twice.
+//
+// mode: "greeting" (default) — plain text only, no tools involved. Good for
+//   a fast auth/connectivity check but says nothing about tool-calling
+//   reliability (this is exactly the gap that let Groq's malformed
+//   getTenantByUnit call through undetected until a real admin hit it).
+// mode: "tool" — sends a prompt that requires calling getOverdueTenants
+//   (read-only, safe — no writes, no tenant-facing side effects like
+//   sendPaymentReminder) through the real executeTool() path, scoped to
+//   the calling admin's own data, then lets the provider produce a final
+//   answer from the result. This actually exercises the same tool-call/
+//   tool-result round-trip askAgent() uses in production.
+async function testAgentProvider(providerName, adminUid, mode = "greeting", testPrompt) {
+  const call = PROVIDERS_BY_NAME[providerName];
+  if (!call) {
+    throw new Error(`Unknown provider "${providerName}". Valid: ${Object.keys(PROVIDERS_BY_NAME).join(", ")}`);
+  }
+
+  if (mode !== "tool") {
+    const messages = [
+      { role: "system", content: "You are a test assistant. Reply with a short greeting only — no tool calls." },
+      { role: "user", content: "Say hello in one short sentence." },
+    ];
+    const result = await call(messages);
+    return { provider: providerName, mode: "greeting", result };
+  }
+
+  // Tool-calling test — mirrors askAgent()'s own round-trip logic, but
+  // capped at a single round since this only needs to prove the provider
+  // can (a) emit a valid tool call with correctly-shaped arguments and
+  // (b) use the result to answer. testPrompt lets you target a specific
+  // tool (e.g. "who is in unit 301 at Caloocan?" for getTenantByUnit)
+  // instead of only ever exercising getOverdueTenants.
+  let messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: testPrompt || "Which tenants are currently overdue on rent?" },
+  ];
+  let result = await call(messages);
+
+  if (!result.toolCalls || result.toolCalls.length === 0) {
+    // Not necessarily broken — the model may have answered directly — but
+    // worth surfacing plainly since the whole point of this mode is to
+    // confirm tool-calling specifically fired.
+    return { provider: providerName, mode: "tool", toolCallFired: false, result };
+  }
+
+  // Safety guard: sendPaymentReminder actually messages a real tenant the
+  // moment it's called — never let a test prompt trigger it for real.
+  // Every other tool here is read-only, so this is the only one that
+  // needs blocking.
+  const blocked = result.toolCalls.find((tc) => tc.name === "sendPaymentReminder");
+  if (blocked) {
+    return {
+      provider: providerName,
+      mode: "tool",
+      toolCallFired: true,
+      toolCallsRequested: result.toolCalls.map((tc) => ({ name: tc.name, arguments: tc.arguments })),
+      blocked: "sendPaymentReminder was requested but not executed — it has real side effects (messages an actual tenant) and this test path never runs it. Confirms the provider CAN request it correctly; nothing was sent.",
+    };
+  }
+
+  const toolResultMessages = await Promise.all(
+    result.toolCalls.map(async (tc) => {
+      const args = JSON.parse(tc.arguments || "{}");
+      const toolResult = await executeTool(tc.name, args, adminUid);
+      return { role: "tool", toolCallId: tc.id, name: tc.name, content: JSON.stringify(toolResult) };
+    })
+  );
+
+  messages = [
+    ...messages,
+    { role: "assistant", content: result.text ?? null, toolCalls: result.toolCalls },
+    ...toolResultMessages,
+  ];
+  const finalResult = await call(messages);
+
+  return {
+    provider: providerName,
+    mode: "tool",
+    toolCallFired: true,
+    toolCallsRequested: result.toolCalls.map((tc) => ({ name: tc.name, arguments: tc.arguments })),
+    finalResult,
+  };
+}
+
+module.exports = { askAgent, testAgentProvider };
 
 /**
  * WHAT YOU GET:
