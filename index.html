@@ -1212,6 +1212,14 @@ let cloudAuthUnsub = null;
 // portal — see enterTenantPortalMode/exitTenantPortalMode. Stops the admin
 // gate from popping up on top of a portal session (see showAdminGateForms).
 let inTenantPortalMode = false;
+// True only when the portal was entered via the raw shared (?portal=1) URL,
+// as opposed to an admin clicking "Preview it myself" from inside the app.
+// exitTenantPortalMode() uses this — not fbUser — to decide where "back"
+// goes, because fbUser reflects whatever Firebase Auth session happens to
+// still be sitting in this browser and says nothing about how *this*
+// visit to the portal actually started. See exitTenantPortalMode for why
+// that distinction matters.
+let portalEnteredViaShareLink = false;
 
 /* Storage proxy — Storage ONLY. Auth and the Firestore database stay on
    Firebase; file uploads (ID photos, signed contracts, payment proofs) and
@@ -5437,7 +5445,7 @@ function openPortalPreviewSheet() {
     });
     document.getElementById('previewPortalBtn').addEventListener('click', () => {
       closeSheet();
-      enterTenantPortalMode();
+      enterTenantPortalMode(false);
     });
     renderShareRow('portalLinkShareRow', (app) => shareViaApp(app, `Here's the tenant portal link: ${portalUrl}`, portalUrl));
   });
@@ -5589,12 +5597,13 @@ function initTenantFirebase() {
   // storage client is needed per Firebase app instance.
 }
 
-function enterTenantPortalMode() {
+function enterTenantPortalMode(viaShareLink) {
   if (!firebaseEnabled) { showToast('Cloud sync isn\'t set up yet — the tenant portal needs it'); return; }
   // Tenants opening the shared (?portal=1) link never have — and shouldn't
   // need — an admin account, so the admin gate (which sits on top of
   // everything at z-index 200) has to come down here too, not just #app.
   inTenantPortalMode = true;
+  portalEnteredViaShareLink = !!viaShareLink;
   hideAdminGate();
   document.getElementById('app').style.display = 'none';
   document.getElementById('tenantPortal').style.display = 'block';
@@ -5604,11 +5613,15 @@ function enterTenantPortalMode() {
 function exitTenantPortalMode() {
   inTenantPortalMode = false;
   document.getElementById('tenantPortal').style.display = 'none';
-  // A real tenant tapping "back" out of their portal has no admin session —
-  // land them on the gate, not the admin's own data. Only an already
-  // signed-in admin (previewing via Settings → "Open tenant portal") skips
-  // straight back to #app.
-  if (firebaseEnabled && !fbUser) {
+  // Route "back" by how the portal was entered, not by whether fbUser is
+  // currently set. fbUser only reflects whatever admin session happens to
+  // still be sitting in this browser — on a shared or previously-used
+  // device that session can be present even for a tenant who opened the
+  // raw ?portal=1 link, which used to leak straight into the admin
+  // dashboard here. Entered via the share link → always back to the gate,
+  // regardless of any lingering admin session. Entered via the admin's own
+  // "Preview it myself" button → back to #app, as before.
+  if (portalEnteredViaShareLink) {
     showAdminGateForms();
   } else {
     document.getElementById('app').style.display = 'flex';
@@ -7286,7 +7299,7 @@ async function cleanupPhantomSeed() {
   // instead of the admin dashboard. The admin app still boots quietly underneath
   // so nothing else in this file has to special-case "portal mode".
   if (new URLSearchParams(location.search).get('portal') === '1') {
-    enterTenantPortalMode();
+    enterTenantPortalMode(true);
   }
 })();
 
