@@ -480,6 +480,9 @@
     max-width:480px; margin:0 auto; min-height:100vh; background:var(--paper);
     display:flex; flex-direction:column;
   }
+  /* Desktop-only sidebar (see @media min-width:860px below for the actual
+     layout) — hidden on mobile, where navigation stays card-based. */
+  .portal-sidenav{ display:none; }
   .portal-balance-card{
     background:var(--ink); color:var(--paper); border-radius:var(--radius);
     padding:25px; margin-bottom:20px;
@@ -708,6 +711,38 @@
       border-radius:20px; display:flex; flex-direction:column;
     }
     .sheet-maximized #aiChatLog{ flex:1; max-height:none !important; }
+
+    /* ---- Tenant portal: same left-sidebar treatment as the admin app,
+       under its own selectors (#tenantPortal / .portal-sidenav) so it
+       can't collide with #app's grid or the admin nav's click handlers. ---- */
+    #tenantPortal{
+      max-width:none; min-height:100vh;
+      display:grid;
+      grid-template-columns:236px minmax(0,1fr);
+      grid-template-rows:auto 1fr;
+      grid-template-areas:"sidebar header" "sidebar main";
+    }
+    .portal-sidenav{
+      display:flex;
+      grid-area:sidebar; position:sticky; top:0; height:100vh;
+      flex-direction:column; align-items:stretch; justify-content:flex-start;
+      gap:2px; padding:28px 15px; border-top:none; border-right:1px solid var(--line);
+      overflow-y:auto; background:var(--ink);
+    }
+    .portal-sidenav::before{
+      content:"UpaPro"; font-family:'Space Grotesk',system-ui,sans-serif;
+      font-size:1.05rem; font-weight:700; color:var(--paper);
+      padding:0 12px 22px;
+    }
+    .portal-sidenav button{
+      flex:none; flex-direction:row; justify-content:flex-start; align-items:center;
+      gap:15px; padding:14px 15px; border-radius:10px; font-size:.85rem;
+      text-align:left; background:none; border:none; color:rgba(247,243,236,.55); cursor:pointer;
+    }
+    .portal-sidenav button:hover{ background:rgba(247,243,236,.06); }
+    .portal-sidenav button.active{ background:var(--amber); color:var(--ink); }
+    .portal-sidenav button.active .ic{ color:var(--ink); }
+    .portal-sidenav button .ic{ font-size:1.1rem; }
   }
 
   @media print{
@@ -889,6 +924,19 @@
     <button class="icon-btn" id="portalLogoutBtn" aria-label="Sign out" style="display:none;"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg></button>
   </header>
   <main id="portalMain" style="padding:16px 16px calc(28px + var(--safe-b));"></main>
+
+  <!-- Desktop-only left sidebar (hidden on mobile — mobile navigation stays
+       card-based via the dashboard, same as before). Uses its own class,
+       not "bottomnav", so it's never picked up by the admin's global
+       `.bottomnav button` handlers/selectors (see JS, and #app's own nav
+       above) — the two navs are otherwise identical in visual treatment. -->
+  <nav class="portal-sidenav" id="portalNav">
+    <button data-portal-nav="dashboard"><span class="ic">🏠</span>Dashboard</button>
+    <button data-portal-nav="messages"><span class="ic">💬</span>Messages</button>
+    <button data-portal-nav="maintenance"><span class="ic">🔧</span>Maintenance</button>
+    <button data-portal-nav="utilities"><span class="ic">⚡</span>Utility bills</button>
+    <button data-portal-nav="documents"><span class="ic">📄</span>My documents</button>
+  </nav>
 </div>
 
 <div class="toast" id="portalToast"></div>
@@ -5642,6 +5690,15 @@ document.getElementById('portalLogoutBtn').addEventListener('click', async () =>
   if (!confirm('Sign out of your tenant portal?')) return;
   await portal.auth.signOut();
 });
+document.querySelectorAll('.portal-sidenav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    portal.view = btn.dataset.portalNav;
+    portalRender();
+    if (portal.view === 'dashboard') portalRefreshBalanceData();
+    else if (portal.view === 'messages') portalRefreshMessages();
+    else if (portal.view === 'maintenance') portalRefreshMaintenanceRequests();
+  });
+});
 
 let portalToastTimer;
 function portalShowToast(msg) {
@@ -5845,6 +5902,14 @@ function portalActiveSettlement() {
 
 function portalRender() {
   document.getElementById('portalBackBtn').classList.toggle('show', portal.view !== 'login' && portal.view !== 'signup');
+  // Sidebar only makes sense once a tenant is signed in — hide it on the
+  // login/signup screens (mirrors the back-button toggle above). Setting
+  // an empty string (rather than 'flex') lets the CSS decide: hidden on
+  // mobile, sidebar on desktop — see .portal-sidenav in <style>.
+  document.getElementById('portalNav').style.display = (portal.view === 'login' || portal.view === 'signup') ? 'none' : '';
+  document.querySelectorAll('.portal-sidenav button').forEach(b => {
+    b.classList.toggle('active', b.dataset.portalNav === portal.view);
+  });
   const titles = { login: 'Tenant Portal', signup: 'Create your account', dashboard: 'My rent', history: 'Payment history', utilities: 'Utility bills', documents: 'My documents', messages: 'Messages', settlement: 'Move-out settlement' };
   document.getElementById('portalPageTitle').textContent = titles[portal.view] || 'Tenant Portal';
   if (portal.view === 'login') return portalRenderLogin();
