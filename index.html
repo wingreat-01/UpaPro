@@ -3774,7 +3774,8 @@ function openLeaseContractForm(tenant, unit, loc) {
   const durationFrom = existing.durationFrom || tenant.moveInDate || todayISO();
   const durationUntil = existing.durationUntil || nextYearISO(durationFrom);
   openSheet(`
-    <h2>Lease contract — ${escapeHTML(tenant.fullName)}</h2>
+    <button class="sheet-max-btn" id="lcMaxBtn" aria-label="Maximize" title="Maximize">⤢</button>
+    <h2 style="padding-right:96px;">Lease contract — ${escapeHTML(tenant.fullName)}</h2>
     <div class="section-label" style="margin-top:0;">Lessor</div>
     <div class="field"><label>Lessor full name</label><input id="lc-lessorname" value="${escapeAttr(existing.lessorName || '')}" placeholder="e.g. Juan D. Santos"></div>
     <div class="field-row">
@@ -3822,6 +3823,18 @@ function openLeaseContractForm(tenant, unit, loc) {
       <button class="btn btn-primary" id="btnGenerateContract">Generate contract</button>
     </div>
   `, () => {
+    // Desktop-only maximize/minimize toggle (button hidden on phones via
+    // CSS) — this form has a lot of fields, so letting the admin expand it
+    // into a larger, centered dialog keeps it from feeling cramped. Same
+    // pattern as the AI Assistant chat sheet.
+    const sheetBody = document.getElementById('sheetBody');
+    const maxBtn = document.getElementById('lcMaxBtn');
+    maxBtn.addEventListener('click', () => {
+      const maximized = sheetBody.classList.toggle('sheet-maximized');
+      maxBtn.textContent = maximized ? '⤡' : '⤢';
+      maxBtn.title = maximized ? 'Minimize' : 'Maximize';
+      maxBtn.setAttribute('aria-label', maximized ? 'Minimize' : 'Maximize');
+    });
     document.getElementById('btnGenerateContract').addEventListener('click', async () => {
       const lessorName = document.getElementById('lc-lessorname').value.trim();
       const lessorAddress = document.getElementById('lc-lessoraddr').value.trim();
