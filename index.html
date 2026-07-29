@@ -116,6 +116,17 @@
 
   /* ---------- LIST CARDS ---------- */
   .card-list{display:flex; flex-direction:column; gap:10px;}
+  .ou-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;}
+  .ou-col .section-label{margin-bottom:10px;}
+  /* Narrow columns (mobile, two-up) need a tighter row-card: icon dropped
+     to make room, amount wraps under the title instead of sitting beside it. */
+  @media (max-width:640px){
+    .ou-col .row-card{flex-wrap:wrap; padding:12px;}
+    .ou-col .stamp.small{width:30px; height:30px; font-size:.42rem;}
+    .ou-col .rc-title{font-size:.86rem;}
+    .ou-col .rc-sub{font-size:.72rem;}
+    .ou-col .rc-amt{width:100%; text-align:left; margin-top:4px; font-size:.82rem;}
+  }
   .row-card{
     background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
     padding:16px 18px; display:flex; align-items:center; gap:15px; cursor:pointer;
@@ -1073,10 +1084,18 @@
       <div class="card-list" id="locList"></div>
     </section>
 
-    <!-- OCCUPIED UNITS (flat roster across all locations) -->
+    <!-- OCCUPIED UNITS (flat roster across all locations, split by status) -->
     <section class="view" id="view-occupied-units">
-      <div class="section-label">Occupied units</div>
-      <div class="card-list" id="occupiedUnitsList"></div>
+      <div class="ou-cols">
+        <div class="ou-col">
+          <div class="section-label" id="ouOccupiedLabel">Occupied</div>
+          <div class="card-list" id="occupiedUnitsList"></div>
+        </div>
+        <div class="ou-col">
+          <div class="section-label" id="ouVacantLabel">Vacant</div>
+          <div class="card-list" id="vacantUnitsList"></div>
+        </div>
+      </div>
     </section>
 
     <!-- LOCATION DETAIL (units) -->
@@ -3518,11 +3537,11 @@ function renderLocations() {
 }
 
 /* --------------------------- OCCUPIED UNITS (roster) -------------------------- */
-// Flat, cross-location list of every currently-occupied unit — tenant name,
-// which property it's under, and the same rent-status stamp/balance the
-// location-detail unit list uses. Distinct from "Total Units" (all units,
-// grouped by property) — this is a tenant-first "who's renting and are
-// they current" view.
+// Flat, cross-location roster split into two columns: occupied units (with
+// tenant name, property, and the same rent-status stamp/balance the
+// location-detail unit list uses) on the left, vacant/maintenance units on
+// the right. Distinct from "Total Units" (all units, grouped by property) —
+// this is a tenant-first "who's renting, who's open" view.
 function renderOccupiedUnits() {
   const { locations, units } = state.cache;
   const locById = {};
@@ -3531,6 +3550,10 @@ function renderOccupiedUnits() {
   computeRentStatus().forEach(r => { statusByUnit[r.unit.id] = r; });
 
   const occupiedUnits = units.filter(u => effectiveUnitStatus(u) === 'occupied');
+  const vacantUnits = units.filter(u => effectiveUnitStatus(u) !== 'occupied');
+
+  document.getElementById('ouOccupiedLabel').textContent = `Occupied (${occupiedUnits.length})`;
+  document.getElementById('ouVacantLabel').textContent = `Vacant (${vacantUnits.length})`;
 
   document.getElementById('occupiedUnitsList').innerHTML = occupiedUnits.length
     ? occupiedUnits.map(u => {
@@ -3564,7 +3587,25 @@ function renderOccupiedUnits() {
       }).join('')
     : emptyHTML('👥', 'No occupied units', 'Once you move a tenant in, they\'ll show up here.');
 
-  document.querySelectorAll('#occupiedUnitsList .row-card').forEach(el => {
+  document.getElementById('vacantUnitsList').innerHTML = vacantUnits.length
+    ? vacantUnits.map(u => {
+        const loc = locById[u.locationId];
+        const effStatus = effectiveUnitStatus(u);
+        const stamp = effStatus === 'maintenance'
+          ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
+          : { cls: '', color: 'var(--slate)', text: 'OPEN' };
+        return `<div class="row-card" data-unit-id="${u.id}">
+          <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
+          <div class="rc-main">
+            <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
+            <div class="rc-sub">${loc ? escapeHTML(loc.name) : 'No property'}</div>
+          </div>
+          <div class="rc-amt muted">${peso(u.monthlyRent)}</div>
+        </div>`;
+      }).join('')
+    : emptyHTML('🔑', 'No vacant units', 'Every unit is currently occupied.');
+
+  document.querySelectorAll('#occupiedUnitsList .row-card, #vacantUnitsList .row-card').forEach(el => {
     el.addEventListener('click', () => navigateTo('unit-detail', { unitId: el.dataset.unitId }));
   });
 }
