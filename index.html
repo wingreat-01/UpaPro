@@ -8099,6 +8099,18 @@ async function cleanupPhantomSeed() {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
     try {
+      // Snapshot this BEFORE registering: if the page is already controlled
+      // at this point, any later controllerchange is a genuine version
+      // swap worth reloading for. On a first-ever visit there's no
+      // controller yet — the fresh worker's very first "claim" of this
+      // page still fires controllerchange even though nothing the person
+      // is looking at has actually changed. Without this guard that fired
+      // a reload() moments after page load, landing right as someone
+      // tapped into the admin sign-in email field — the page would
+      // flicker and the field would lose focus, forcing a second tap
+      // (July 2026 report).
+      let hadController = !!navigator.serviceWorker.controller;
+
       const reg = await navigator.serviceWorker.register('sw.js');
 
       const showUpdateBanner = (worker) => {
@@ -8127,9 +8139,12 @@ if ('serviceWorker' in navigator) {
       });
 
       // Once the new worker takes control, reload so the person actually
-      // gets the new version instead of just dismissing the banner.
+      // gets the new version instead of just dismissing the banner. Skip
+      // the very first controllerchange when there was no prior controller
+      // — see hadController above.
       let refreshing = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController) { hadController = true; return; }
         if (refreshing) return;
         refreshing = true;
         window.location.reload();
