@@ -859,14 +859,6 @@
     .dm-col-left #dashOverdue .row-card:last-child{ border-bottom:none; padding-bottom:0; }
     .dm-col-left #dashOverdue .empty{ padding:10px 0; }
 
-    /* quick actions */
-    .dm-quick-actions{ display:flex; flex-direction:column; gap:9px; }
-    .dm-quick-actions button{ display:flex; align-items:center; gap:8px; text-align:left;
-      background:var(--md-blue-soft); color:var(--md-blue); border:none; border-radius:10px;
-      padding:12px 14px; font-size:.82rem; font-weight:600; cursor:pointer; }
-    .dm-quick-actions button:hover{ filter:brightness(.97); }
-    .dm-quick-actions button.dm-qa-primary{ background:var(--amber); color:#1B2430; }
-
     /* recent activity */
     .dm-activity-row{ display:flex; align-items:flex-start; gap:10px; padding:9px 0; }
     .dm-activity-row .ar-icon{ width:30px; height:30px; border-radius:8px; flex:none; display:flex;
@@ -878,8 +870,8 @@
     /* collection chart (plain inline SVG, no chart lib dependency) */
     .dm-chart-bars{ display:flex; align-items:flex-end; gap:6px; height:150px; }
     .dm-chart-bars .cb-col{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:6px; }
-    .dm-chart-bars .cb-barwrap{ width:100%; display:flex; align-items:flex-end; justify-content:center; gap:3px; flex:1; }
-    .dm-chart-bars .cb-bar{ width:9px; border-radius:3px 3px 0 0; background:var(--md-line); }
+    .dm-chart-bars .cb-barwrap{ width:100%; display:flex; align-items:flex-end; justify-content:center; gap:5px; flex:1; }
+    .dm-chart-bars .cb-bar{ width:18px; border-radius:4px 4px 0 0; background:var(--md-line); }
     .dm-chart-bars .cb-bar.collected{ background:var(--md-green); }
     .dm-chart-bars .cb-lbl{ font-size:.62rem; color:var(--md-sub); }
     .dm-chart-legend{ display:flex; gap:16px; margin-top:14px; font-size:.72rem; color:var(--md-sub); }
@@ -1048,16 +1040,6 @@
         </div>
 
         <div class="dm-col-right">
-          <div class="dm-panel">
-            <div class="dm-panel-head"><h3>Quick Actions</h3></div>
-            <div class="dm-quick-actions" id="dashQuickActions">
-              <button type="button" data-qa="property">+ Add Property</button>
-              <button type="button" data-qa="unit">+ Add Unit</button>
-              <button type="button" data-qa="tenant">+ Add Tenant</button>
-              <button type="button" data-qa="payment" class="dm-qa-primary">+ Record Payment</button>
-            </div>
-          </div>
-
           <div class="dm-panel">
             <div class="dm-panel-head"><h3>Recent Activity</h3></div>
             <div id="dashRecentActivity"></div>
@@ -3303,7 +3285,6 @@ function renderDashboardDesktopExtras({ collected, expected, overdueCount, overd
 
   renderCollectionChart();
   renderRecentActivity();
-  wireQuickActions();
   refreshSidebarUser();
 }
 
@@ -3400,28 +3381,6 @@ function relativeTimeLabel(ts) {
   const days = Math.round(hrs / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(ts).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
-}
-
-/** Quick Actions panel. Add Property has no prerequisites, so it opens
- *  its form directly. Add Unit / Add Tenant / Record Payment all need a
- *  property/unit/tenant picked first in this data model, so — rather than
- *  guessing which one the admin means — these route to the list view
- *  where that selection normally happens, with a toast explaining why. */
-function wireQuickActions() {
-  const map = {
-    property: () => openLocationForm(null),
-    unit: () => {
-      const { locations } = state.cache;
-      if (locations.length === 1) return openUnitForm(null, locations[0].id);
-      navigateTo('locations');
-      showToast('Pick a property to add a unit to');
-    },
-    tenant: () => { navigateTo('locations'); showToast('Pick a vacant unit to add a tenant to'); },
-    payment: () => { navigateTo('overdue'); showToast('Pick a tenant to record a payment for'); },
-  };
-  document.querySelectorAll('#dashQuickActions [data-qa]').forEach(btn => {
-    btn.onclick = map[btn.dataset.qa];
-  });
 }
 
 /** Sidebar footer (desktop only): admin name/initial + cloud-sync status,
