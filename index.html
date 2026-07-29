@@ -867,14 +867,28 @@
     .dm-activity-row .ar-sub{ font-size:.72rem; color:var(--md-sub); }
     .dm-activity-row .ar-time{ font-size:.68rem; color:var(--md-sub); flex:none; margin-left:auto; white-space:nowrap; }
 
-    /* collection chart (plain inline SVG, no chart lib dependency) */
-    .dm-chart-bars{ display:flex; align-items:flex-end; gap:6px; height:150px; }
-    .dm-chart-bars .cb-col{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:6px; }
-    .dm-chart-bars .cb-barwrap{ width:100%; display:flex; align-items:flex-end; justify-content:center; gap:5px; flex:1; }
-    .dm-chart-bars .cb-bar{ width:18px; border-radius:4px 4px 0 0; background:var(--md-line); }
+    /* collection chart (plain inline HTML/CSS, no chart lib dependency) */
+    .dm-chart-period{ display:inline-flex; align-items:center; gap:6px; font-size:.74rem; font-weight:600;
+      color:var(--md-text); background:var(--md-card); border:1px solid var(--md-line); border-radius:8px;
+      padding:6px 10px; }
+    .dm-chart-period svg{ width:12px; height:12px; flex:none; }
+    .dm-chart-grid{ display:grid; grid-template-columns:auto 1fr; grid-template-rows:150px auto;
+      column-gap:10px; row-gap:6px; }
+    .dm-chart-axis{ grid-column:1; grid-row:1; display:flex; flex-direction:column; justify-content:space-between;
+      align-items:flex-end; height:150px; }
+    .dm-chart-axis span{ font-size:.62rem; color:var(--md-sub); line-height:1; }
+    .dm-chart-bars{ grid-column:2; grid-row:1; display:flex; align-items:flex-end; gap:6px; height:150px; position:relative; }
+    .dm-chart-bars .cb-col{ flex:1; display:flex; align-items:flex-end; justify-content:center; height:100%; position:relative; }
+    .dm-chart-bars .cb-barwrap{ width:100%; display:flex; align-items:flex-end; justify-content:center; gap:5px; height:100%; }
+    .dm-chart-bars .cb-bar{ width:18px; border-radius:4px 4px 0 0; background:var(--md-line); position:relative; }
     .dm-chart-bars .cb-bar.collected{ background:var(--md-green); }
-    .dm-chart-bars .cb-lbl{ font-size:.62rem; color:var(--md-sub); }
-    .dm-chart-legend{ display:flex; gap:16px; margin-top:14px; font-size:.72rem; color:var(--md-sub); }
+    .dm-chart-bars .cb-bar.collected.current::after{
+      content:attr(data-val); position:absolute; top:-30px; left:50%; transform:translateX(-50%);
+      background:var(--md-text); color:#fff; font-size:.68rem; font-weight:600; white-space:nowrap;
+      padding:4px 8px; border-radius:6px; }
+    .dm-chart-months{ grid-column:2; grid-row:2; display:flex; gap:6px; }
+    .dm-chart-months span{ flex:1; text-align:center; font-size:.62rem; color:var(--md-sub); }
+    .dm-chart-legend{ display:flex; justify-content:center; gap:16px; margin-top:14px; font-size:.72rem; color:var(--md-sub); }
     .dm-chart-legend span{ display:inline-flex; align-items:center; gap:6px; }
     .dm-chart-legend i{ width:8px; height:8px; border-radius:50%; display:inline-block; }
 
@@ -1021,7 +1035,11 @@
         <div class="dm-col-left">
           <div class="dm-row2">
             <div class="dm-panel">
-              <div class="dm-panel-head"><h3>Collection Overview</h3></div>
+              <div class="dm-panel-head"><h3>Collection Overview</h3>
+                <span class="dm-chart-period">This year
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </span>
+              </div>
               <div id="dashChart"></div>
             </div>
             <div class="dm-panel">
@@ -3308,26 +3326,62 @@ function renderCollectionChart() {
       .filter(p => p.tag !== 'deposit' && !isUnclearedCheck(p) && (p.datePaid || '').slice(0, 7) === m.key)
       .reduce((s, p) => s + (Number(p.amountPaid) || 0), 0)
   );
-  const maxVal = Math.max(expectedNow, ...collectedByMonth, 1);
+  const rawMax = Math.max(expectedNow, ...collectedByMonth, 1);
+  const axisMax = niceChartCeil(rawMax);
+  const axisTicks = [axisMax, axisMax * 2 / 3, axisMax / 3, 0];
+  const curKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   document.getElementById('dashChart').innerHTML = `
-    <div class="dm-chart-bars">
-      ${months.map((m, i) => {
-        const cH = Math.round(collectedByMonth[i] / maxVal * 100);
-        const eH = Math.round(expectedNow / maxVal * 100);
-        return `<div class="cb-col" title="${m.label}: ${peso(collectedByMonth[i])} collected">
-          <div class="cb-barwrap">
-            <div class="cb-bar collected" style="height:${cH}%;"></div>
-            <div class="cb-bar" style="height:${eH}%;"></div>
-          </div>
-          <div class="cb-lbl">${m.label}</div>
-        </div>`;
-      }).join('')}
+    <div class="dm-chart-grid">
+      <div class="dm-chart-axis">
+        ${axisTicks.map(t => `<span>${formatPesoCompact(t)}</span>`).join('')}
+      </div>
+      <div class="dm-chart-bars">
+        ${months.map((m, i) => {
+          const cH = Math.round(collectedByMonth[i] / axisMax * 100);
+          const eH = Math.round(expectedNow / axisMax * 100);
+          const isCur = m.key === curKey;
+          return `<div class="cb-col" title="${m.label}: ${peso(collectedByMonth[i])} collected">
+            <div class="cb-barwrap">
+              <div class="cb-bar collected${isCur ? ' current' : ''}" data-val="${peso(collectedByMonth[i])}" style="height:${cH}%;"></div>
+              <div class="cb-bar" style="height:${eH}%;"></div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="dm-chart-months">
+        ${months.map(m => `<span>${m.label}</span>`).join('')}
+      </div>
     </div>
     <div class="dm-chart-legend">
       <span><i style="background:var(--md-green);"></i>Collected</span>
-      <span><i style="background:var(--md-line);"></i>Expected (current)</span>
+      <span><i style="background:var(--md-line);"></i>Expected</span>
     </div>
   `;
+}
+
+/** Rounds a chart's max value up to a "nice" number (1/2/5 × 10^n) so the
+ *  y-axis prints clean ticks like ₱10K/₱20K/₱30K instead of jagged values. */
+function niceChartCeil(v) {
+  if (!(v > 0)) return 10;
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const frac = v / base;
+  let nice;
+  if (frac <= 1) nice = 1;
+  else if (frac <= 2) nice = 2;
+  else if (frac <= 5) nice = 5;
+  else nice = 10;
+  return nice * base;
+}
+
+/** Compact peso axis label — ₱30K, ₱1.5M, ₱0 — for tight chart gutters
+ *  where the full peso() formatting would be too wide. */
+function formatPesoCompact(v) {
+  v = Math.round(v);
+  if (v === 0) return '₱0';
+  if (v >= 1000000) return `₱${(v / 1000000).toFixed(v % 1000000 === 0 ? 0 : 1)}M`;
+  if (v >= 1000) return `₱${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K`;
+  return `₱${v}`;
 }
 
 /** Derived from real records only (payments, tenants, maintenance
