@@ -227,6 +227,7 @@
   .pm-chip.paid{background:var(--peso-soft); color:var(--peso);}
   .pm-chip.late{background:var(--rust-soft); color:var(--rust);}
   .pm-chip.partial{background:var(--amber-soft); color:var(--amber);}
+  .pm-break{display:none;}
 
   .chip{
     display:inline-block; font-size:.66rem; font-weight:700; text-transform:uppercase;
@@ -985,6 +986,31 @@
      viewport) so the mobile view just needs to not show them. */
   @media (max-width:859.98px){
     .dm-greet-row, .dm-overdue-banner, .dm-cols{ display:none !important; }
+
+    /* Payments table → compact 2-line rows on phones, no horizontal
+       scroll/clipping. The grid columns from desktop don't fit a phone
+       screen, so rows switch to a wrapping flex layout instead: line 1 is
+       status + tenant + amount, line 2 is unit/property · charge/period ·
+       method · date paid, all packed together and wrapping naturally.
+       Same DOM/JS output as desktop — only the visual order (via `order`)
+       and layout mode change here, so there's one render path for both. */
+    .pm-table{ overflow-x:hidden; overflow-y:visible; }
+    .pm-row.pm-head{ display:none; } /* column headers don't fit a phone row */
+    .pm-row{
+      display:flex; flex-wrap:wrap; align-items:center; min-width:0;
+      column-gap:8px; row-gap:2px; padding:10px 14px;
+    }
+    .pm-cell{ font-size:.74rem; color:var(--slate); white-space:normal; overflow:visible; text-overflow:clip; }
+    .pm-status{ order:1; flex:none; }
+    .pm-tenant{ order:2; flex:1 1 auto; min-width:0; font-size:.86rem; font-weight:600; color:var(--ink);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .pm-amount{ order:3; flex:none; font-size:.82rem; }
+    .pm-break{ display:block; flex:1 1 100%; height:0; order:4; }
+    .pm-unit{ order:5; }
+    .pm-charge{ order:6; }
+    .pm-method{ order:7; }
+    .pm-date{ order:8; }
+    .pm-charge::before, .pm-method::before, .pm-date::before{ content:"·"; margin-right:8px; }
   }
 
   @media print{
@@ -3775,12 +3801,12 @@ function renderPayments() {
 
   const headRow = `
     <div class="pm-row pm-head">
-      <div class="pm-cell">Status</div>
-      <div class="pm-cell">Tenant</div>
-      <div class="pm-cell">Unit / Property</div>
-      <div class="pm-cell">Charge · Period</div>
-      <div class="pm-cell">Method</div>
-      <div class="pm-cell">Date paid</div>
+      <div class="pm-cell pm-status">Status</div>
+      <div class="pm-cell pm-tenant">Tenant</div>
+      <div class="pm-cell pm-unit">Unit / Property</div>
+      <div class="pm-cell pm-charge">Charge · Period</div>
+      <div class="pm-cell pm-method">Method</div>
+      <div class="pm-cell pm-date">Date paid</div>
       <div class="pm-cell pm-amount">Amount</div>
     </div>`;
 
@@ -3792,13 +3818,14 @@ function renderPayments() {
         const chipCls = p.status === 'late' ? 'late' : (p.status === 'partial' ? 'partial' : 'paid');
         return `
         <div class="pm-row" data-payment-detail="${p.id}">
-          <div class="pm-cell"><span class="pm-chip ${chipCls}">${escapeHTML((p.status || 'paid').toUpperCase())}</span></div>
+          <div class="pm-cell pm-status"><span class="pm-chip ${chipCls}">${escapeHTML((p.status || 'paid').toUpperCase())}</span></div>
           <div class="pm-cell pm-tenant">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
-          <div class="pm-cell">${escapeHTML(unit ? unit.unitLabel : '—')}${loc ? ' · ' + escapeHTML(loc.name) : ''}</div>
-          <div class="pm-cell">${tagLabel[p.tag] || 'Rent'}${p.tag !== 'deposit' ? ' · ' + escapeHTML(p.coveredPeriod || '') : ''}</div>
-          <div class="pm-cell">${escapeHTML(p.method || '—')}</div>
-          <div class="pm-cell">${escapeHTML(p.datePaid || '—')}</div>
+          <div class="pm-cell pm-unit">${escapeHTML(unit ? unit.unitLabel : '—')}${loc ? ' · ' + escapeHTML(loc.name) : ''}</div>
+          <div class="pm-cell pm-charge">${tagLabel[p.tag] || 'Rent'}${p.tag !== 'deposit' ? ' · ' + escapeHTML(p.coveredPeriod || '') : ''}</div>
+          <div class="pm-cell pm-method">${escapeHTML(p.method || '—')}</div>
+          <div class="pm-cell pm-date">${escapeHTML(p.datePaid || '—')}</div>
           <div class="pm-cell pm-amount">${peso(p.amountPaid)}</div>
+          <div class="pm-break"></div>
         </div>`;
       }).join('')
     : emptyHTML('💳', 'No payments yet', 'Payments tenants make will show up here.');
