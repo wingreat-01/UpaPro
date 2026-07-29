@@ -672,6 +672,12 @@
       grid-area:main; padding:35px 40px 70px;
       max-width:820px; width:100%; margin:0 auto; overflow-y:auto;
     }
+    /* The dashboard is a wide multi-panel layout (chart + income summary +
+       quick actions + activity feed), not a reading column like
+       Settings/forms — the 820px cap above squeezed all of that into a
+       narrow centered strip. Widen it only while Dashboard is the active
+       view. */
+    main:has(#view-dashboard.active){ max-width:1400px; }
 
     /* more breathing room + columns now that width allows it */
     .stat-grid{ grid-template-columns:repeat(4,1fr); gap:15px; }
