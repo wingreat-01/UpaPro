@@ -134,20 +134,20 @@
   .ou-group-body.collapsed{display:none;}
   /* Roster cards run in two columns, so keep them tighter than the regular
      row-card used elsewhere (location detail, overdue list, etc). */
-  .ou-col .row-card{padding:11px 13px; gap:11px; border-radius:12px;}
-  .ou-col .stamp.small{width:32px; height:32px; font-size:.44rem;}
-  .ou-col .rc-title{font-size:.88rem;}
-  .ou-col .rc-sub{font-size:.74rem;}
-  .ou-col .rc-amt{font-size:.84rem;}
-  .ou-col .badge-months{font-size:.62rem; padding:2px 6px;}
+  .ou-col .row-card{padding:9px 12px; gap:9px; border-radius:12px;}
+  .ou-col .stamp.small{width:28px; height:28px; font-size:.38rem;}
+  .ou-col .rc-title{font-size:.82rem;}
+  .ou-col .rc-sub{font-size:.7rem; margin-top:1px;}
+  .ou-col .rc-amt{font-size:.78rem;}
+  .ou-col .badge-months{font-size:.58rem; padding:1px 6px; margin-top:3px;}
   /* Narrow columns (mobile, two-up) need an even tighter row-card: amount
      wraps under the title instead of sitting beside it. */
   @media (max-width:640px){
-    .ou-col .row-card{flex-wrap:wrap; padding:10px 12px;}
-    .ou-col .stamp.small{width:28px; height:28px; font-size:.4rem;}
-    .ou-col .rc-title{font-size:.82rem;}
-    .ou-col .rc-sub{font-size:.7rem;}
-    .ou-col .rc-amt{width:100%; text-align:left; margin-top:4px; font-size:.8rem;}
+    .ou-col .row-card{flex-wrap:wrap; padding:8px 10px;}
+    .ou-col .stamp.small{width:24px; height:24px; font-size:.34rem;}
+    .ou-col .rc-title{font-size:.78rem;}
+    .ou-col .rc-sub{font-size:.66rem;}
+    .ou-col .rc-amt{width:100%; text-align:left; margin-top:3px; font-size:.76rem;}
   }
   .row-card{
     background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
