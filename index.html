@@ -119,8 +119,13 @@
   .ou-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;}
   .ou-col .section-label{margin-bottom:10px;}
   .ou-group-label{font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em;
-    color:var(--slate); margin:14px 2px 6px;}
+    color:var(--slate); margin:14px 2px 6px; display:flex; align-items:center; justify-content:space-between;
+    cursor:pointer; user-select:none; padding:4px 2px;}
   .ou-group-label:first-child{margin-top:0;}
+  .ou-group-label .ou-chevron{transition:transform .15s ease; font-size:.9rem;}
+  .ou-group-label.collapsed .ou-chevron{transform:rotate(-90deg);}
+  .ou-group-body{display:flex; flex-direction:column; gap:10px;}
+  .ou-group-body.collapsed{display:none;}
   /* Narrow columns (mobile, two-up) need a tighter row-card: icon dropped
      to make room, amount wraps under the title instead of sitting beside it. */
   @media (max-width:640px){
@@ -2168,6 +2173,10 @@ function authLoadingEnd(barEl, btnEl, success) {
 const state = {
   navStack: [{ view: 'dashboard' }],
   cache: { locations: [], units: [], tenants: [], payments: [], pendingPayments: [], utilityBills: [], messages: [], moveoutSettlements: [] },
+  // Which property groups are collapsed on the Occupied Units roster, keyed
+  // "occ:<locationId>" / "vac:<locationId>" — survives re-renders within the
+  // session (e.g. after a payment updates the cache) but not a hard reload.
+  ouCollapsed: {},
 };
 
 function currentRoute() { return state.navStack[state.navStack.length - 1]; }
@@ -3578,8 +3587,15 @@ function renderOccupiedUnits() {
 
   const occGroups = groupUnitsByLocation(occupiedUnits, locById);
   document.getElementById('occupiedUnitsList').innerHTML = occupiedUnits.length
-    ? occGroups.map(g => `
-        <div class="ou-group-label">${g.loc ? escapeHTML(g.loc.name) : 'No property'}</div>
+    ? occGroups.map(g => {
+        const key = 'occ:' + (g.loc ? g.loc.id : '__none__');
+        const collapsed = !!state.ouCollapsed[key];
+        return `
+        <div class="ou-group-label ${collapsed ? 'collapsed' : ''}" data-group-key="${escapeAttr(key)}">
+          <span>${g.loc ? escapeHTML(g.loc.name) : 'No property'} (${g.units.length})</span>
+          <span class="ou-chevron">▾</span>
+        </div>
+        <div class="ou-group-body ${collapsed ? 'collapsed' : ''}" data-group-body="${escapeAttr(key)}">
         ${g.units.map(u => {
           const tenant = activeTenantForUnit(u.id);
           const row = statusByUnit[u.id];
@@ -3608,13 +3624,21 @@ function renderOccupiedUnits() {
             ${amountHTML}
           </div>`;
         }).join('')}
-      `).join('')
+        </div>`;
+      }).join('')
     : emptyHTML('👥', 'No occupied units', 'Once you move a tenant in, they\'ll show up here.');
 
   const vacGroups = groupUnitsByLocation(vacantUnits, locById);
   document.getElementById('vacantUnitsList').innerHTML = vacantUnits.length
-    ? vacGroups.map(g => `
-        <div class="ou-group-label">${g.loc ? escapeHTML(g.loc.name) : 'No property'}</div>
+    ? vacGroups.map(g => {
+        const key = 'vac:' + (g.loc ? g.loc.id : '__none__');
+        const collapsed = !!state.ouCollapsed[key];
+        return `
+        <div class="ou-group-label ${collapsed ? 'collapsed' : ''}" data-group-key="${escapeAttr(key)}">
+          <span>${g.loc ? escapeHTML(g.loc.name) : 'No property'} (${g.units.length})</span>
+          <span class="ou-chevron">▾</span>
+        </div>
+        <div class="ou-group-body ${collapsed ? 'collapsed' : ''}" data-group-body="${escapeAttr(key)}">
         ${g.units.map(u => {
           const effStatus = effectiveUnitStatus(u);
           const stamp = effStatus === 'maintenance'
@@ -3629,11 +3653,22 @@ function renderOccupiedUnits() {
             <div class="rc-amt muted">${peso(u.monthlyRent)}</div>
           </div>`;
         }).join('')}
-      `).join('')
+        </div>`;
+      }).join('')
     : emptyHTML('🔑', 'No vacant units', 'Every unit is currently occupied.');
 
   document.querySelectorAll('#occupiedUnitsList .row-card, #vacantUnitsList .row-card').forEach(el => {
     el.addEventListener('click', () => navigateTo('unit-detail', { unitId: el.dataset.unitId }));
+  });
+
+  document.querySelectorAll('#occupiedUnitsList .ou-group-label, #vacantUnitsList .ou-group-label').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.groupKey;
+      state.ouCollapsed[key] = !state.ouCollapsed[key];
+      el.classList.toggle('collapsed', state.ouCollapsed[key]);
+      const body = document.querySelector(`[data-group-body="${CSS.escape(key)}"]`);
+      if (body) body.classList.toggle('collapsed', state.ouCollapsed[key]);
+    });
   });
 }
 
