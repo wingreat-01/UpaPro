@@ -1073,6 +1073,12 @@
       <div class="card-list" id="locList"></div>
     </section>
 
+    <!-- OCCUPIED UNITS (flat roster across all locations) -->
+    <section class="view" id="view-occupied-units">
+      <div class="section-label">Occupied units</div>
+      <div class="card-list" id="occupiedUnitsList"></div>
+    </section>
+
     <!-- LOCATION DETAIL (units) -->
     <section class="view" id="view-location-detail">
       <div class="detail-hero" id="locHero"></div>
@@ -3127,6 +3133,7 @@ window.addEventListener('popstate', () => {
 /* --------------------------------- ROUTER ---------------------------------- */
 const TITLES = {
   dashboard: 'UpaPro', locations: 'Properties', 'location-detail': 'Location',
+  'occupied-units': 'Occupied units',
   'unit-detail': 'Unit', overdue: 'Overdue &amp; due soon', settings: 'Settings'
 };
 function navigateTo(view, params = {}, replace = false) {
@@ -3185,10 +3192,11 @@ function render() {
   if (activeTab) activeTab.classList.add('active');
 
   const fab = document.getElementById('fabAdd');
-  fab.style.display = ['dashboard', 'overdue', 'settings', 'unit-detail'].includes(view) ? 'none' : 'flex';
+  fab.style.display = ['dashboard', 'overdue', 'settings', 'unit-detail', 'occupied-units'].includes(view) ? 'none' : 'flex';
 
   if (view === 'dashboard') renderDashboard();
   else if (view === 'locations') renderLocations();
+  else if (view === 'occupied-units') renderOccupiedUnits();
   else if (view === 'location-detail') renderLocationDetail(params.locationId);
   else if (view === 'unit-detail') renderUnitDetail(params.unitId);
   else if (view === 'overdue') renderOverdueFull();
@@ -3217,11 +3225,11 @@ function renderDashboard() {
       <div class="lbl" style="margin-top:-2px;">Across ${locations.length} location${locations.length === 1 ? '' : 's'}</div>
       <a class="sc-link" data-goto="locations" href="javascript:void(0)">View all units →</a>
     </div>
-    <div class="stat-card ${vacant ? '' : 'ok'}" data-goto="locations">
+    <div class="stat-card ${vacant ? '' : 'ok'}" data-goto="occupied-units">
       <div class="sc-icon green">👥</div>
       <div class="val">${occupied}/${units.length}</div><div class="lbl">Occupied</div>
       <div class="lbl" style="margin-top:-2px;">${occPct}% occupancy rate</div>
-      <a class="sc-link" data-goto="locations" href="javascript:void(0)">View occupancy →</a>
+      <a class="sc-link" data-goto="occupied-units" href="javascript:void(0)">View occupancy →</a>
     </div>
     <div class="stat-card ok" data-goto="overdue">
       <div class="sc-icon green">₱</div>
@@ -3507,6 +3515,58 @@ function renderLocations() {
     el.addEventListener('click', () => navigateTo('location-detail', { locationId: el.dataset.locId }));
   });
   document.getElementById('fabAdd').onclick = () => openLocationForm(null);
+}
+
+/* --------------------------- OCCUPIED UNITS (roster) -------------------------- */
+// Flat, cross-location list of every currently-occupied unit — tenant name,
+// which property it's under, and the same rent-status stamp/balance the
+// location-detail unit list uses. Distinct from "Total Units" (all units,
+// grouped by property) — this is a tenant-first "who's renting and are
+// they current" view.
+function renderOccupiedUnits() {
+  const { locations, units } = state.cache;
+  const locById = {};
+  locations.forEach(l => { locById[l.id] = l; });
+  const statusByUnit = {};
+  computeRentStatus().forEach(r => { statusByUnit[r.unit.id] = r; });
+
+  const occupiedUnits = units.filter(u => effectiveUnitStatus(u) === 'occupied');
+
+  document.getElementById('occupiedUnitsList').innerHTML = occupiedUnits.length
+    ? occupiedUnits.map(u => {
+        const tenant = activeTenantForUnit(u.id);
+        const row = statusByUnit[u.id];
+        const loc = locById[u.locationId];
+        let stamp, amountHTML, tier = null;
+        if (row) {
+          if (row.status === 'overdue') tier = tenant ? overdueTier(computeOverdueHistory(tenant.id).months) : null;
+          stamp = row.status === 'overdue'
+            ? { cls: tier ? `filled ${tier.cls}` : 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
+            : row.status === 'due-soon'
+              ? { cls: 'due', color: 'var(--rust)', text: 'DUE SOON' }
+              : { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
+          amountHTML = row.balance > 0
+            ? `<div class="rc-amt" style="color:var(--rust); font-weight:700;">${peso(row.balance)}</div>`
+            : `<div class="rc-amt" style="color:var(--peso);">Paid</div>`;
+        } else {
+          stamp = { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
+          amountHTML = `<div class="rc-amt muted">${peso(u.monthlyRent)}</div>`;
+        }
+        return `<div class="row-card" data-unit-id="${u.id}">
+          <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
+          <div class="rc-main">
+            <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
+            <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Tenant'}${loc ? ' · ' + escapeHTML(loc.name) : ''}</div>
+            ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
+          </div>
+          ${amountHTML}
+        </div>`;
+      }).join('')
+    : emptyHTML('👥', 'No occupied units', 'Once you move a tenant in, they\'ll show up here.');
+
+  document.querySelectorAll('#occupiedUnitsList .row-card').forEach(el => {
+    el.addEventListener('click', () => navigateTo('unit-detail', { unitId: el.dataset.unitId }));
+  });
 }
 
 function openLocationForm(existing) {
