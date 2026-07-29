@@ -119,12 +119,12 @@
   .ou-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;}
   .ou-col .section-label{margin-bottom:10px;}
   .ou-group-label{
-    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    background:var(--paper-2); border:1px solid var(--line); border-radius:12px;
     padding:11px 14px; margin:14px 0 8px; display:flex; align-items:center; justify-content:space-between;
     cursor:pointer; user-select:none; transition:transform .1s ease, background .15s ease;
   }
   .ou-group-label:active{transform:scale(.985);}
-  .ou-group-label:hover{background:var(--bg);}
+  .ou-group-label:hover{background:var(--line);}
   .ou-group-label .ou-group-name{font-size:.86rem; font-weight:700; color:var(--ink);}
   .ou-group-label .ou-count{font-size:.76rem; font-weight:600; color:var(--slate); margin-left:6px;}
   .ou-group-label:first-child{margin-top:0;}
@@ -2183,6 +2183,7 @@ const state = {
   // "occ:<locationId>" / "vac:<locationId>" — survives re-renders within the
   // session (e.g. after a payment updates the cache) but not a hard reload.
   ouCollapsed: {},
+  ouFirstVisitDone: false,
 };
 
 function currentRoute() { return state.navStack[state.navStack.length - 1]; }
@@ -3592,6 +3593,24 @@ function renderOccupiedUnits() {
   document.getElementById('ouVacantLabel').textContent = `Vacant (${vacantUnits.length})`;
 
   const occGroups = groupUnitsByLocation(occupiedUnits, locById);
+  const vacGroups = groupUnitsByLocation(vacantUnits, locById);
+
+  // First time this view is opened this session, start every property group
+  // collapsed so the admin sees a clean overview instead of a long dump of
+  // rows. Once they've expanded/collapsed anything, their choices persist
+  // across re-renders instead of being reset back to collapsed.
+  if (!state.ouFirstVisitDone) {
+    occGroups.forEach(g => {
+      const key = 'occ:' + (g.loc ? g.loc.id : '__none__');
+      if (!(key in state.ouCollapsed)) state.ouCollapsed[key] = true;
+    });
+    vacGroups.forEach(g => {
+      const key = 'vac:' + (g.loc ? g.loc.id : '__none__');
+      if (!(key in state.ouCollapsed)) state.ouCollapsed[key] = true;
+    });
+    state.ouFirstVisitDone = true;
+  }
+
   document.getElementById('occupiedUnitsList').innerHTML = occupiedUnits.length
     ? occGroups.map(g => {
         const key = 'occ:' + (g.loc ? g.loc.id : '__none__');
@@ -3634,7 +3653,6 @@ function renderOccupiedUnits() {
       }).join('')
     : emptyHTML('👥', 'No occupied units', 'Once you move a tenant in, they\'ll show up here.');
 
-  const vacGroups = groupUnitsByLocation(vacantUnits, locById);
   document.getElementById('vacantUnitsList').innerHTML = vacantUnits.length
     ? vacGroups.map(g => {
         const key = 'vac:' + (g.loc ? g.loc.id : '__none__');
