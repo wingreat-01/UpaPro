@@ -118,6 +118,9 @@
   .card-list{display:flex; flex-direction:column; gap:10px;}
   .ou-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;}
   .ou-col .section-label{margin-bottom:10px;}
+  .ou-group-label{font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--slate); margin:14px 2px 6px;}
+  .ou-group-label:first-child{margin-top:0;}
   /* Narrow columns (mobile, two-up) need a tighter row-card: icon dropped
      to make room, amount wraps under the title instead of sitting beside it. */
   @media (max-width:640px){
@@ -3542,6 +3545,24 @@ function renderLocations() {
 // location-detail unit list uses) on the left, vacant/maintenance units on
 // the right. Distinct from "Total Units" (all units, grouped by property) —
 // this is a tenant-first "who's renting, who's open" view.
+// Groups units by property, sorted lowest→highest unit number within each
+// group (unitLabel's leading digits, e.g. "101 Q" sorts as 101), and orders
+// the property groups themselves by property name.
+function groupUnitsByLocation(unitsArr, locById) {
+  const groups = {};
+  unitsArr.forEach(u => {
+    const key = u.locationId || '__none__';
+    (groups[key] = groups[key] || []).push(u);
+  });
+  const unitNum = (u) => { const n = parseInt(u.unitLabel, 10); return isNaN(n) ? Infinity : n; };
+  return Object.keys(groups)
+    .map(key => ({
+      loc: locById[key] || null,
+      units: groups[key].sort((a, b) => unitNum(a) - unitNum(b) || a.unitLabel.localeCompare(b.unitLabel, undefined, { numeric: true }))
+    }))
+    .sort((a, b) => (a.loc ? a.loc.name : '\uffff').localeCompare(b.loc ? b.loc.name : '\uffff'));
+}
+
 function renderOccupiedUnits() {
   const { locations, units } = state.cache;
   const locById = {};
@@ -3555,54 +3576,60 @@ function renderOccupiedUnits() {
   document.getElementById('ouOccupiedLabel').textContent = `Occupied (${occupiedUnits.length})`;
   document.getElementById('ouVacantLabel').textContent = `Vacant (${vacantUnits.length})`;
 
+  const occGroups = groupUnitsByLocation(occupiedUnits, locById);
   document.getElementById('occupiedUnitsList').innerHTML = occupiedUnits.length
-    ? occupiedUnits.map(u => {
-        const tenant = activeTenantForUnit(u.id);
-        const row = statusByUnit[u.id];
-        const loc = locById[u.locationId];
-        let stamp, amountHTML, tier = null;
-        if (row) {
-          if (row.status === 'overdue') tier = tenant ? overdueTier(computeOverdueHistory(tenant.id).months) : null;
-          stamp = row.status === 'overdue'
-            ? { cls: tier ? `filled ${tier.cls}` : 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
-            : row.status === 'due-soon'
-              ? { cls: 'due', color: 'var(--rust)', text: 'DUE SOON' }
-              : { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
-          amountHTML = row.balance > 0
-            ? `<div class="rc-amt" style="color:var(--rust); font-weight:700;">${peso(row.balance)}</div>`
-            : `<div class="rc-amt" style="color:var(--peso);">Paid</div>`;
-        } else {
-          stamp = { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
-          amountHTML = `<div class="rc-amt muted">${peso(u.monthlyRent)}</div>`;
-        }
-        return `<div class="row-card" data-unit-id="${u.id}">
-          <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
-          <div class="rc-main">
-            <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
-            <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Tenant'}${loc ? ' · ' + escapeHTML(loc.name) : ''}</div>
-            ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
-          </div>
-          ${amountHTML}
-        </div>`;
-      }).join('')
+    ? occGroups.map(g => `
+        <div class="ou-group-label">${g.loc ? escapeHTML(g.loc.name) : 'No property'}</div>
+        ${g.units.map(u => {
+          const tenant = activeTenantForUnit(u.id);
+          const row = statusByUnit[u.id];
+          let stamp, amountHTML, tier = null;
+          if (row) {
+            if (row.status === 'overdue') tier = tenant ? overdueTier(computeOverdueHistory(tenant.id).months) : null;
+            stamp = row.status === 'overdue'
+              ? { cls: tier ? `filled ${tier.cls}` : 'filled overdue', color: 'var(--rust)', text: 'OVERDUE' }
+              : row.status === 'due-soon'
+                ? { cls: 'due', color: 'var(--rust)', text: 'DUE SOON' }
+                : { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
+            amountHTML = row.balance > 0
+              ? `<div class="rc-amt" style="color:var(--rust); font-weight:700;">${peso(row.balance)}</div>`
+              : `<div class="rc-amt" style="color:var(--peso);">Paid</div>`;
+          } else {
+            stamp = { cls: 'filled', color: 'var(--peso)', text: 'RENTED' };
+            amountHTML = `<div class="rc-amt muted">${peso(u.monthlyRent)}</div>`;
+          }
+          return `<div class="row-card" data-unit-id="${u.id}">
+            <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
+            <div class="rc-main">
+              <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
+              <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Tenant'}</div>
+              ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
+            </div>
+            ${amountHTML}
+          </div>`;
+        }).join('')}
+      `).join('')
     : emptyHTML('👥', 'No occupied units', 'Once you move a tenant in, they\'ll show up here.');
 
+  const vacGroups = groupUnitsByLocation(vacantUnits, locById);
   document.getElementById('vacantUnitsList').innerHTML = vacantUnits.length
-    ? vacantUnits.map(u => {
-        const loc = locById[u.locationId];
-        const effStatus = effectiveUnitStatus(u);
-        const stamp = effStatus === 'maintenance'
-          ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
-          : { cls: '', color: 'var(--slate)', text: 'OPEN' };
-        return `<div class="row-card" data-unit-id="${u.id}">
-          <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
-          <div class="rc-main">
-            <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
-            <div class="rc-sub">${loc ? escapeHTML(loc.name) : 'No property'}</div>
-          </div>
-          <div class="rc-amt muted">${peso(u.monthlyRent)}</div>
-        </div>`;
-      }).join('')
+    ? vacGroups.map(g => `
+        <div class="ou-group-label">${g.loc ? escapeHTML(g.loc.name) : 'No property'}</div>
+        ${g.units.map(u => {
+          const effStatus = effectiveUnitStatus(u);
+          const stamp = effStatus === 'maintenance'
+            ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
+            : { cls: '', color: 'var(--slate)', text: 'OPEN' };
+          return `<div class="row-card" data-unit-id="${u.id}">
+            <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
+            <div class="rc-main">
+              <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
+              <div class="rc-sub">${effStatus === 'maintenance' ? 'Under maintenance' : 'Available'}</div>
+            </div>
+            <div class="rc-amt muted">${peso(u.monthlyRent)}</div>
+          </div>`;
+        }).join('')}
+      `).join('')
     : emptyHTML('🔑', 'No vacant units', 'Every unit is currently occupied.');
 
   document.querySelectorAll('#occupiedUnitsList .row-card, #vacantUnitsList .row-card').forEach(el => {
