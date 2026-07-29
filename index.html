@@ -1000,13 +1000,13 @@
   @media (max-width:859.98px){
     .dm-greet-row, .dm-overdue-banner, .dm-cols{ display:none !important; }
 
-    /* Payments table → compact 2-line rows on phones, no horizontal
-       scroll/clipping. The grid columns from desktop don't fit a phone
-       screen, so rows switch to a wrapping flex layout instead: line 1 is
-       status + tenant + amount, line 2 is unit/property · charge/period ·
-       method · date paid, all packed together and wrapping naturally.
-       Same DOM/JS output as desktop — only the visual order (via `order`)
-       and layout mode change here, so there's one render path for both. */
+    /* Payments table → compact rows on phones, no horizontal scroll/clipping.
+       The grid columns from desktop don't fit a phone screen, so rows switch
+       to a wrapping flex layout instead: line 1 is status + tenant + method
+       + amount, line 2 is the date paid (right-aligned under the amount),
+       line 3 is unit/property · charge/period. Same DOM/JS output as
+       desktop — only the visual order (via `order`) and layout mode change
+       here, so there's one render path for both. */
     .pm-table{ overflow-x:hidden; overflow-y:visible; }
     .pm-row.pm-head{ display:none; } /* column headers don't fit a phone row */
     .pm-row{
@@ -1017,13 +1017,13 @@
     .pm-status{ order:1; flex:none; }
     .pm-tenant{ order:2; flex:1 1 auto; min-width:0; font-size:.86rem; font-weight:600; color:var(--ink);
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .pm-amount{ order:3; flex:none; font-size:.82rem; }
-    .pm-break{ display:block; flex:1 1 100%; height:0; order:4; }
-    .pm-unit{ order:5; }
-    .pm-charge{ order:6; }
-    .pm-method{ order:7; }
-    .pm-date{ order:8; }
-    .pm-charge::before, .pm-method::before, .pm-date::before{ content:"·"; margin-right:8px; }
+    .pm-method{ order:3; flex:none; }
+    .pm-amount{ order:4; flex:none; font-size:.82rem; }
+    .pm-date{ order:5; flex:1 1 100%; text-align:right; }
+    .pm-break{ display:block; flex:1 1 100%; height:0; order:6; }
+    .pm-unit{ order:7; color:var(--ink); font-weight:600; }
+    .pm-charge{ order:8; }
+    .pm-charge::before{ content:"·"; margin-right:8px; }
   }
 
   @media print{
