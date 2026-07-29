@@ -118,11 +118,17 @@
   .card-list{display:flex; flex-direction:column; gap:10px;}
   .ou-cols{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;}
   .ou-col .section-label{margin-bottom:10px;}
-  .ou-group-label{font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em;
-    color:var(--slate); margin:14px 2px 6px; display:flex; align-items:center; justify-content:space-between;
-    cursor:pointer; user-select:none; padding:4px 2px;}
+  .ou-group-label{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:11px 14px; margin:14px 0 8px; display:flex; align-items:center; justify-content:space-between;
+    cursor:pointer; user-select:none; transition:transform .1s ease, background .15s ease;
+  }
+  .ou-group-label:active{transform:scale(.985);}
+  .ou-group-label:hover{background:var(--bg);}
+  .ou-group-label .ou-group-name{font-size:.86rem; font-weight:700; color:var(--ink);}
+  .ou-group-label .ou-count{font-size:.76rem; font-weight:600; color:var(--slate); margin-left:6px;}
   .ou-group-label:first-child{margin-top:0;}
-  .ou-group-label .ou-chevron{transition:transform .15s ease; font-size:.9rem;}
+  .ou-group-label .ou-chevron{color:var(--slate); font-size:.8rem; transition:transform .15s ease;}
   .ou-group-label.collapsed .ou-chevron{transform:rotate(-90deg);}
   .ou-group-body{display:flex; flex-direction:column; gap:10px;}
   .ou-group-body.collapsed{display:none;}
@@ -3592,7 +3598,7 @@ function renderOccupiedUnits() {
         const collapsed = !!state.ouCollapsed[key];
         return `
         <div class="ou-group-label ${collapsed ? 'collapsed' : ''}" data-group-key="${escapeAttr(key)}">
-          <span>${g.loc ? escapeHTML(g.loc.name) : 'No property'} (${g.units.length})</span>
+          <span><span class="ou-group-name">${g.loc ? escapeHTML(g.loc.name) : 'No property'}</span><span class="ou-count">(${g.units.length})</span></span>
           <span class="ou-chevron">▾</span>
         </div>
         <div class="ou-group-body ${collapsed ? 'collapsed' : ''}" data-group-body="${escapeAttr(key)}">
@@ -3635,7 +3641,7 @@ function renderOccupiedUnits() {
         const collapsed = !!state.ouCollapsed[key];
         return `
         <div class="ou-group-label ${collapsed ? 'collapsed' : ''}" data-group-key="${escapeAttr(key)}">
-          <span>${g.loc ? escapeHTML(g.loc.name) : 'No property'} (${g.units.length})</span>
+          <span><span class="ou-group-name">${g.loc ? escapeHTML(g.loc.name) : 'No property'}</span><span class="ou-count">(${g.units.length})</span></span>
           <span class="ou-chevron">▾</span>
         </div>
         <div class="ou-group-body ${collapsed ? 'collapsed' : ''}" data-group-body="${escapeAttr(key)}">
