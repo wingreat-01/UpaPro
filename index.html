@@ -186,6 +186,48 @@
   .row-card .rc-amt{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.9rem; text-align:right; white-space:nowrap;}
   .row-card .rc-chevron{color:var(--slate); font-size:1.1rem;}
 
+  /* ---------- PAYMENTS LIST — dense bordered table, not cards ----------
+     Deliberately its own thing rather than reusing .row-card: a table
+     needs consistent columns across rows (status/tenant/unit/charge/
+     method/date/amount) so everything lines up, and a much shorter row
+     height than the card list gives elsewhere so an admin scanning many
+     payments can see more of them at once without scrolling. Horizontal
+     scroll (min-width on rows, overflow-x on the container) keeps the
+     columns from getting unreadably squished on narrow screens instead
+     of wrapping/stacking. */
+  .pm-table{
+    border:1px solid var(--line); border-radius:var(--radius);
+    overflow-x:auto; overflow-y:hidden; background:var(--card);
+  }
+  .pm-row{
+    display:grid; grid-template-columns:72px 1.3fr 1.2fr 1.3fr 96px 100px 100px;
+    align-items:center; gap:10px; min-width:720px;
+    padding:8px 16px; border-bottom:1px solid var(--line);
+    cursor:pointer; transition:background .1s ease;
+  }
+  .pm-row:last-child{border-bottom:none;}
+  .pm-row:hover{background:var(--paper-2);}
+  .pm-row.pm-head{
+    cursor:default; background:var(--paper-2); padding:9px 16px;
+    font-size:.66rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--slate);
+  }
+  .pm-row.pm-head:hover{background:var(--paper-2);}
+  .pm-cell{
+    font-size:.82rem; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .pm-row.pm-head .pm-cell{overflow:visible;}
+  .pm-cell.pm-tenant{font-weight:600;}
+  .pm-cell.pm-amount{
+    font-family:'JetBrains Mono',monospace; font-weight:600; text-align:right;
+  }
+  .pm-chip{
+    display:inline-block; font-size:.6rem; font-weight:700; text-transform:uppercase;
+    letter-spacing:.03em; padding:3px 8px; border-radius:99px; white-space:nowrap;
+  }
+  .pm-chip.paid{background:var(--peso-soft); color:var(--peso);}
+  .pm-chip.late{background:var(--rust-soft); color:var(--rust);}
+  .pm-chip.partial{background:var(--amber-soft); color:var(--amber);}
+
   .chip{
     display:inline-block; font-size:.66rem; font-weight:700; text-transform:uppercase;
     letter-spacing:.04em; padding:4px 10px; border-radius:99px; white-space:nowrap;
@@ -712,6 +754,7 @@
        narrow centered strip. Widen it only while Dashboard is the active
        view. */
     main:has(#view-dashboard.active){ max-width:1400px; }
+    main:has(#view-payments.active){ max-width:1100px; }
 
     /* more breathing room + columns now that width allows it */
     .stat-grid{ grid-template-columns:repeat(4,1fr); gap:15px; }
@@ -1124,7 +1167,7 @@
     <!-- PAYMENTS (all payments made by tenants, across all properties) -->
     <section class="view" id="view-payments">
       <div class="section-label" id="paymentsCountLabel">All payments</div>
-      <div class="card-list" id="paymentsList"></div>
+      <div class="pm-table" id="paymentsList"></div>
     </section>
 
     <!-- LOCATION DETAIL (units) -->
@@ -3730,21 +3773,32 @@ function renderPayments() {
 
   document.getElementById('paymentsCountLabel').textContent = `All payments (${payments.length})`;
 
+  const headRow = `
+    <div class="pm-row pm-head">
+      <div class="pm-cell">Status</div>
+      <div class="pm-cell">Tenant</div>
+      <div class="pm-cell">Unit / Property</div>
+      <div class="pm-cell">Charge · Period</div>
+      <div class="pm-cell">Method</div>
+      <div class="pm-cell">Date paid</div>
+      <div class="pm-cell pm-amount">Amount</div>
+    </div>`;
+
   document.getElementById('paymentsList').innerHTML = payments.length
-    ? payments.map(p => {
+    ? headRow + payments.map(p => {
         const tenant = tenantById[p.tenantId];
         const unit = tenant ? unitById[tenant.unitId] : null;
         const loc = unit ? locById[unit.locationId] : null;
-        const stampCls = p.status === 'late' ? 'overdue' : (p.status === 'partial' ? 'due' : '');
+        const chipCls = p.status === 'late' ? 'late' : (p.status === 'partial' ? 'partial' : 'paid');
         return `
-        <div class="row-card" data-payment-detail="${p.id}">
-          <div class="stamp small ${stampCls}">${(p.status || 'paid').toUpperCase()}</div>
-          <div class="rc-main">
-            <div class="rc-title">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
-            <div class="rc-sub">${escapeHTML(unit ? unit.unitLabel : '—')}${loc ? ' · ' + escapeHTML(loc.name) : ''}</div>
-            <div class="rc-sub">${tagLabel[p.tag] || 'Rent'}${p.tag !== 'deposit' ? ' · ' + escapeHTML(p.coveredPeriod || '') : ''} · ${escapeHTML(p.method || '')} · Paid ${p.datePaid || '—'}</div>
-          </div>
-          <div class="rc-amt">${peso(p.amountPaid)}</div>
+        <div class="pm-row" data-payment-detail="${p.id}">
+          <div class="pm-cell"><span class="pm-chip ${chipCls}">${escapeHTML((p.status || 'paid').toUpperCase())}</span></div>
+          <div class="pm-cell pm-tenant">${escapeHTML(tenant ? tenant.fullName : 'Unknown tenant')}</div>
+          <div class="pm-cell">${escapeHTML(unit ? unit.unitLabel : '—')}${loc ? ' · ' + escapeHTML(loc.name) : ''}</div>
+          <div class="pm-cell">${tagLabel[p.tag] || 'Rent'}${p.tag !== 'deposit' ? ' · ' + escapeHTML(p.coveredPeriod || '') : ''}</div>
+          <div class="pm-cell">${escapeHTML(p.method || '—')}</div>
+          <div class="pm-cell">${escapeHTML(p.datePaid || '—')}</div>
+          <div class="pm-cell pm-amount">${peso(p.amountPaid)}</div>
         </div>`;
       }).join('')
     : emptyHTML('💳', 'No payments yet', 'Payments tenants make will show up here.');
