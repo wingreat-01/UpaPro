@@ -483,6 +483,8 @@
   /* Desktop-only sidebar (see @media min-width:860px below for the actual
      layout) — hidden on mobile, where navigation stays card-based. */
   .portal-sidenav{ display:none; }
+  .sidebar-brand, .sidebar-foot, .sidebar-user, .sidebar-sync, .sidebar-help{ display:none; }
+  .stat-card .sc-icon, .stat-card .sc-link{ display:none; }
   .portal-balance-card{
     background:var(--ink); color:var(--paper); border-radius:var(--radius);
     padding:25px; margin-bottom:20px;
@@ -743,6 +745,157 @@
     .portal-sidenav button.active{ background:var(--amber); color:var(--ink); }
     .portal-sidenav button.active .ic{ color:var(--ink); }
     .portal-sidenav button .ic{ font-size:1.1rem; }
+
+    /* ================= MODERN DESKTOP ADMIN THEME =================
+       Scoped entirely to this ≥860px block and to new classes/ids —
+       nothing here touches mobile layout or the tenant portal. Colors
+       are local custom properties (--md-*) instead of overwriting
+       :root, so the cream/amber mobile theme is untouched. */
+    body{ --md-bg:#F5F6FA; --md-card:#FFFFFF; --md-line:#EBEDF3; --md-text:#1B2430;
+      --md-sub:#8A93A6; --md-blue:#4F6EF7; --md-blue-soft:#E9EDFF; --md-green:#1FAA59;
+      --md-green-soft:#E4F7EC; --md-purple:#7B61FF; --md-purple-soft:#EFEAFF;
+      --md-sidebar:#101A26; background:var(--md-bg);
+    }
+    main{ background:var(--md-bg); }
+    header.topbar{ background:var(--md-card); color:var(--md-text); border-bottom:1px solid var(--md-line); }
+    header.topbar h1{ color:var(--md-text); }
+    header.topbar .back-btn{ color:var(--md-text); }
+    header.topbar .icon-btn{ color:var(--md-text); border-color:var(--md-line); }
+
+    /* ---- sidebar: dark navy, real brand block, user card ---- */
+    nav.bottomnav{ background:var(--md-sidebar); padding:22px 14px; gap:3px; }
+    nav.bottomnav::before{ content:none; }
+    .sidebar-brand{ display:flex; align-items:center; gap:10px; padding:2px 10px 24px; }
+    .sidebar-brand .sb-mark{ width:34px; height:34px; border-radius:9px; background:var(--amber);
+      display:flex; align-items:center; justify-content:center; flex:none; }
+    .sidebar-brand .sb-word{ font-family:'Space Grotesk',system-ui,sans-serif; font-weight:700;
+      font-size:1.05rem; color:#fff; }
+    .sidebar-brand .sb-word b{ color:var(--amber); font-weight:700; }
+    nav.bottomnav button{ color:rgba(255,255,255,.6); }
+    nav.bottomnav button:hover{ background:rgba(255,255,255,.06); color:#fff; }
+    nav.bottomnav button.active{ background:var(--amber); color:#1B2430; }
+    nav.bottomnav button.active .ic{ color:#1B2430; }
+    .sidebar-foot{ display:flex; flex-direction:column; margin-top:auto; padding-top:14px; }
+    .sidebar-user{ display:flex; align-items:center; gap:10px; padding:12px 10px;
+      border-top:1px solid rgba(255,255,255,.1); }
+    .sidebar-user .su-avatar{ width:34px; height:34px; border-radius:50%; background:var(--md-blue);
+      color:#fff; font-weight:700; font-size:.85rem; display:flex; align-items:center;
+      justify-content:center; flex:none; }
+    .sidebar-user .su-name{ font-size:.82rem; font-weight:600; color:#fff; }
+    .sidebar-user .su-role{ font-size:.7rem; color:rgba(255,255,255,.5); }
+    .sidebar-sync{ display:flex; align-items:center; gap:8px; padding:10px 10px 16px;
+      font-size:.72rem; color:rgba(255,255,255,.5); }
+    .sidebar-sync .ss-dot{ width:7px; height:7px; border-radius:50%; background:var(--slate); flex:none; }
+    .sidebar-sync.on .ss-dot{ background:var(--md-green); }
+    nav.bottomnav button.sidebar-help{ display:flex; align-items:center; gap:10px; padding:12px 10px;
+      font-size:.8rem; color:rgba(255,255,255,.55); text-decoration:none; cursor:pointer;
+      border-top:1px solid rgba(255,255,255,.1); background:none; border-left:none; border-right:none; border-bottom:none; width:100%; text-align:left; font-family:inherit; flex:none; }
+    nav.bottomnav button.sidebar-help:hover{ background:rgba(255,255,255,.06); color:#fff; }
+
+    /* ---- greeting header ---- */
+    #dashOverviewLabel{ display:none; }
+    .dm-greet-row{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:26px; }
+    .dm-greet-title{ margin:0 0 4px; font-size:1.6rem; color:var(--md-text); }
+    .dm-greet-sub{ margin:0; color:var(--md-sub); font-size:.88rem; }
+    .dm-greet-actions{ display:flex; align-items:center; gap:12px; flex:none; }
+    .dm-bell{ position:relative; width:40px; height:40px; border-radius:10px; border:1px solid var(--md-line);
+      background:var(--md-card); color:var(--md-text); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+    .dm-bell-badge{ position:absolute; top:-5px; right:-5px; background:var(--rust); color:#fff;
+      font-size:.62rem; font-weight:700; min-width:16px; height:16px; border-radius:8px;
+      display:flex; align-items:center; justify-content:center; padding:0 3px; }
+    .dm-date-pill{ background:var(--md-card); border:1px solid var(--md-line); border-radius:10px;
+      padding:9px 14px; font-size:.8rem; font-weight:600; color:var(--md-text); }
+
+    /* ---- modern stat cards ---- */
+    .stat-grid{ grid-template-columns:repeat(4,1fr); }
+    .stat-card{ background:var(--md-card); border-color:var(--md-line); padding:18px; border-radius:16px; }
+    .stat-card .sc-icon{ width:38px; height:38px; border-radius:10px; display:flex; align-items:center;
+      justify-content:center; margin-bottom:14px; font-size:1.05rem; }
+    .stat-card .sc-icon.blue{ background:var(--md-blue-soft); color:var(--md-blue); }
+    .stat-card .sc-icon.green{ background:var(--md-green-soft); color:var(--md-green); }
+    .stat-card .sc-icon.purple{ background:var(--md-purple-soft); color:var(--md-purple); }
+    .stat-card .val{ color:var(--md-text); font-size:1.4rem; }
+    .stat-card .lbl{ color:var(--md-sub); }
+    .stat-card .sc-link{ display:block; margin-top:12px; font-size:.76rem; font-weight:600;
+      color:var(--md-blue); text-decoration:none; }
+    .stat-card.ok .sc-link{ color:var(--md-green); }
+    .stat-card.wide{ display:none; } /* superseded by .dm-overdue-banner on desktop */
+
+    /* ---- overdue banner ---- */
+    .dm-overdue-banner{ display:flex !important; align-items:center; justify-content:space-between;
+      background:var(--rust-soft); border:1px solid #F3C9C3; border-radius:16px; padding:18px 22px; margin:16px 0 22px; }
+    .dm-overdue-banner.clear{ background:var(--md-green-soft); border-color:#BFE7CE; }
+    .dm-ob-left{ display:flex; align-items:center; gap:14px; }
+    .dm-ob-icon{ width:42px; height:42px; border-radius:50%; background:#fff; color:var(--rust);
+      display:flex; align-items:center; justify-content:center; flex:none; }
+    .dm-overdue-banner.clear .dm-ob-icon{ color:var(--md-green); }
+    .dm-ob-label{ font-size:.78rem; color:var(--md-sub); }
+    .dm-ob-val{ font-size:1.15rem; font-weight:700; color:var(--rust); }
+    .dm-overdue-banner.clear .dm-ob-val{ color:var(--md-green); }
+    .dm-ob-btn{ background:#fff; border:1px solid var(--md-line); color:var(--rust); font-weight:600;
+      font-size:.8rem; padding:10px 16px; border-radius:10px; cursor:pointer; }
+
+    /* ---- two-column body ---- */
+    .dm-cols{ display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; align-items:start; }
+    .dm-row2{ display:grid; grid-template-columns:1.5fr 1fr; gap:18px; margin-bottom:18px; }
+    .dm-panel{ background:var(--md-card); border:1px solid var(--md-line); border-radius:16px;
+      padding:20px; margin-bottom:18px; }
+    .dm-col-right .dm-panel:last-child, .dm-col-left .dm-panel:last-child{ margin-bottom:0; }
+    .dm-panel-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+    .dm-panel-head h3{ margin:0; font-size:.92rem; color:var(--md-text); }
+    .dm-view-all-link{ font-size:.76rem; font-weight:600; color:var(--md-blue); text-decoration:none; }
+    .dm-block-link{ display:block; text-align:center; margin-top:12px; padding-top:12px; border-top:1px solid var(--md-line); }
+
+    /* due-soon list, restyled as flat rows instead of grid tiles */
+    .dm-col-left #dashOverdue{ display:flex; flex-direction:column; gap:0; }
+    .dm-col-left #dashOverdue .row-card{ border:none; border-radius:0; border-bottom:1px solid var(--md-line);
+      padding:14px 0; background:none; }
+    .dm-col-left #dashOverdue .row-card:last-child{ border-bottom:none; padding-bottom:0; }
+    .dm-col-left #dashOverdue .empty{ padding:10px 0; }
+
+    /* quick actions */
+    .dm-quick-actions{ display:flex; flex-direction:column; gap:9px; }
+    .dm-quick-actions button{ display:flex; align-items:center; gap:8px; text-align:left;
+      background:var(--md-blue-soft); color:var(--md-blue); border:none; border-radius:10px;
+      padding:12px 14px; font-size:.82rem; font-weight:600; cursor:pointer; }
+    .dm-quick-actions button:hover{ filter:brightness(.97); }
+    .dm-quick-actions button.dm-qa-primary{ background:var(--amber); color:#1B2430; }
+
+    /* recent activity */
+    .dm-activity-row{ display:flex; align-items:flex-start; gap:10px; padding:9px 0; }
+    .dm-activity-row .ar-icon{ width:30px; height:30px; border-radius:8px; flex:none; display:flex;
+      align-items:center; justify-content:center; font-size:.85rem; background:var(--md-blue-soft); }
+    .dm-activity-row .ar-title{ font-size:.8rem; font-weight:600; color:var(--md-text); }
+    .dm-activity-row .ar-sub{ font-size:.72rem; color:var(--md-sub); }
+    .dm-activity-row .ar-time{ font-size:.68rem; color:var(--md-sub); flex:none; margin-left:auto; white-space:nowrap; }
+
+    /* collection chart (plain inline SVG, no chart lib dependency) */
+    .dm-chart-bars{ display:flex; align-items:flex-end; gap:6px; height:150px; }
+    .dm-chart-bars .cb-col{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:6px; }
+    .dm-chart-bars .cb-barwrap{ width:100%; display:flex; align-items:flex-end; justify-content:center; gap:3px; flex:1; }
+    .dm-chart-bars .cb-bar{ width:9px; border-radius:3px 3px 0 0; background:var(--md-line); }
+    .dm-chart-bars .cb-bar.collected{ background:var(--md-green); }
+    .dm-chart-bars .cb-lbl{ font-size:.62rem; color:var(--md-sub); }
+    .dm-chart-legend{ display:flex; gap:16px; margin-top:14px; font-size:.72rem; color:var(--md-sub); }
+    .dm-chart-legend span{ display:inline-flex; align-items:center; gap:6px; }
+    .dm-chart-legend i{ width:8px; height:8px; border-radius:50%; display:inline-block; }
+
+    /* income summary */
+    .dm-income-row{ display:flex; align-items:center; justify-content:space-between; padding:9px 0;
+      border-bottom:1px solid var(--md-line); font-size:.82rem; }
+    .dm-income-row:last-of-type{ border-bottom:none; }
+    .dm-income-row .ir-lbl{ display:flex; align-items:center; gap:8px; color:var(--md-sub); }
+    .dm-income-row .ir-lbl i{ width:8px; height:8px; border-radius:50%; display:inline-block; }
+    .dm-income-row .ir-val{ font-weight:700; color:var(--md-text); font-family:'JetBrains Mono',monospace; }
+    .dm-income-note{ background:var(--md-green-soft); color:#1c7a41; border-radius:10px; padding:10px 12px;
+      font-size:.76rem; margin-top:12px; }
+  }
+
+  /* Hide desktop-only dashboard elements on mobile (below 860px) — they're
+     always in the DOM (renderDashboard populates them regardless of
+     viewport) so the mobile view just needs to not show them. */
+  @media (max-width:859.98px){
+    .dm-greet-row, .dm-overdue-banner, .dm-cols{ display:none !important; }
   }
 
   @media print{
@@ -820,21 +973,92 @@
 
     <!-- DASHBOARD -->
     <section class="view active" id="view-dashboard">
-      <div class="section-label">Overview</div>
+
+      <!-- Desktop-only greeting header. Hidden on mobile (see CSS); mobile
+           keeps the plain "Overview" section-label above the stat grid. -->
+      <div class="dm-greet-row" id="dashGreeting">
+        <div>
+          <h1 class="dm-greet-title" id="dashGreetTitle">Good morning! 👋</h1>
+          <p class="dm-greet-sub">Here's what's happening with your properties today.</p>
+        </div>
+        <div class="dm-greet-actions">
+          <button class="dm-bell" id="dashBellBtn" type="button" aria-label="Notifications">
+            <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+            <span class="dm-bell-badge" id="dashBellBadge" style="display:none;">0</span>
+          </button>
+          <div class="dm-date-pill" id="dashDatePill">—</div>
+        </div>
+      </div>
+
+      <div class="section-label" id="dashOverviewLabel">Overview</div>
       <div class="stat-grid" id="dashStats">
     <div class="stat-card"><div class="val">1</div><div class="lbl">Total units · 1 locations</div></div>
     <div class="stat-card "><div class="val">0/1</div><div class="lbl">Occupied</div></div>
     <div class="stat-card ok"><div class="val">₱0</div><div class="lbl">Collected · Jul 2026</div></div>
     <div class="stat-card"><div class="val">₱0</div><div class="lbl">Expected this month</div></div>
-    <div class="stat-card wide ok">
-      <div><div class="lbl" style="margin-bottom:2px;">Overdue right now</div><div class="val">0 tenants</div></div>
-      <div class="stamp  small">CLEAR</div>
-    </div>
     
   </div>
 
-      <div class="section-label">Due soon &amp; overdue</div>
-      <div class="card-list" id="dashOverdue"><div class="empty"><div class="e-icon">✅</div><p><strong>Nothing due soon</strong></p><p>Every occupied unit is settled for now.</p></div></div>
+      <!-- Desktop-only overdue banner; the mobile "Overdue right now" stat
+           card is still generated inside #dashStats above for mobile. -->
+      <div class="dm-overdue-banner" id="dashOverdueBanner" style="display:none;">
+        <div class="dm-ob-left">
+          <div class="dm-ob-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+          </div>
+          <div>
+            <div class="dm-ob-label">Overdue right now</div>
+            <div class="dm-ob-val" id="dashOverdueVal">0 tenants</div>
+          </div>
+        </div>
+        <button class="dm-ob-btn" id="dashOverdueBtn" type="button">View overdue <span aria-hidden="true">›</span></button>
+      </div>
+
+      <!-- Desktop-only two-column body: chart+income+due-soon on the left,
+           quick actions + recent activity on the right. On mobile this
+           whole wrapper is unstyled (block), so it just stacks in source
+           order — the chart/income/quick-actions panels are hidden via
+           CSS on mobile since they need real screen width to be useful. -->
+      <div class="dm-cols">
+        <div class="dm-col-left">
+          <div class="dm-row2">
+            <div class="dm-panel">
+              <div class="dm-panel-head"><h3>Collection Overview</h3></div>
+              <div id="dashChart"></div>
+            </div>
+            <div class="dm-panel">
+              <div class="dm-panel-head"><h3>Income Summary</h3></div>
+              <div id="dashIncomeSummary"></div>
+            </div>
+          </div>
+
+          <div class="dm-panel">
+            <div class="dm-panel-head">
+              <h3>Due Soon &amp; Overdue</h3>
+              <a href="javascript:void(0)" id="dashDueSoonViewAll" class="dm-view-all-link">View all</a>
+            </div>
+            <div class="card-list" id="dashOverdue"><div class="empty"><div class="e-icon">✅</div><p><strong>Nothing due soon</strong></p><p>Every occupied unit is settled for now.</p></div></div>
+          </div>
+        </div>
+
+        <div class="dm-col-right">
+          <div class="dm-panel">
+            <div class="dm-panel-head"><h3>Quick Actions</h3></div>
+            <div class="dm-quick-actions" id="dashQuickActions">
+              <button type="button" data-qa="property">+ Add Property</button>
+              <button type="button" data-qa="unit">+ Add Unit</button>
+              <button type="button" data-qa="tenant">+ Add Tenant</button>
+              <button type="button" data-qa="payment" class="dm-qa-primary">+ Record Payment</button>
+            </div>
+          </div>
+
+          <div class="dm-panel">
+            <div class="dm-panel-head"><h3>Recent Activity</h3></div>
+            <div id="dashRecentActivity"></div>
+            <a href="javascript:void(0)" id="dashActivityViewAll" class="dm-view-all-link dm-block-link">View all activity <span aria-hidden="true">›</span></a>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- LOCATIONS LIST -->
@@ -901,10 +1125,22 @@
   <button class="fab" id="fabAdd" title="Quick add" style="display: none;">+</button>
 
   <nav class="bottomnav">
+    <div class="sidebar-brand"><span class="sb-mark">🏠</span><span class="sb-word">Upa<b>Pro</b></span></div>
     <button data-nav="dashboard" class="active"><span class="ic">🏠</span>Dashboard</button>
     <button data-nav="locations"><span class="ic">🏘️</span>Properties</button>
     <button data-nav="overdue"><span class="ic">⏰</span>Overdue</button>
     <button data-nav="settings"><span class="ic">⚙️</span>Settings</button>
+    <div class="sidebar-foot">
+      <div class="sidebar-user">
+        <div class="su-avatar" id="sidebarUserAvatar">O</div>
+        <div>
+          <div class="su-name" id="sidebarUserName">Owner</div>
+          <div class="su-role">Administrator</div>
+        </div>
+      </div>
+      <div class="sidebar-sync" id="sidebarSync"><span class="ss-dot"></span><span id="sidebarSyncText">Not signed in</span></div>
+      <button type="button" class="sidebar-help" id="sidebarHelpBtn">❓ Help &amp; Support</button>
+    </div>
   </nav>
 </div>
 
@@ -2904,7 +3140,7 @@ function goBack() {
 }
 document.getElementById('backBtn').addEventListener('click', goBack);
 
-document.querySelectorAll('.bottomnav button').forEach(btn => {
+document.querySelectorAll('.bottomnav > button[data-nav]').forEach(btn => {
   btn.addEventListener('click', () => {
     state.navStack = [{ view: btn.dataset.nav }];
     render();
@@ -2933,13 +3169,13 @@ function render() {
   document.getElementById('pageTitle').innerHTML = TITLES[view] || 'UpaPro';
   document.getElementById('backBtn').classList.toggle('show', state.navStack.length > 1);
 
-  document.querySelectorAll('.bottomnav button').forEach(b => {
+  document.querySelectorAll('.bottomnav > button[data-nav]').forEach(b => {
     b.classList.toggle('active', b.dataset.nav === view || (view.startsWith(b.dataset.nav) ));
   });
   // top-level tabs stay highlighted correctly even on drill-down views
-  document.querySelectorAll('.bottomnav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.bottomnav > button[data-nav]').forEach(b => b.classList.remove('active'));
   const topView = state.navStack[0].view;
-  const activeTab = document.querySelector(`.bottomnav button[data-nav="${topView}"]`);
+  const activeTab = document.querySelector(`.bottomnav > button[data-nav="${topView}"]`);
   if (activeTab) activeTab.classList.add('active');
 
   const fab = document.getElementById('fabAdd');
@@ -2962,13 +3198,37 @@ function renderDashboard() {
   const collected = collectedThisMonth();
   const expected = rows.reduce((s, r) => s + r.expected, 0);
   const overdueCount = rows.filter(r => r.status === 'overdue').length;
+  const overdueTotal = rows.filter(r => r.status === 'overdue').reduce((s, r) => s + computeOutstandingBalance(r.tenant.id).total, 0);
   const readyChecks = checksReadyToDeposit();
+  const occPct = units.length ? Math.round(occupied / units.length * 100) : 0;
 
+  // sc-icon/sc-link only render visibly on desktop (≥860px, see CSS) —
+  // harmless extra markup on mobile since those classes are display:none there.
   document.getElementById('dashStats').innerHTML = `
-    <div class="stat-card"><div class="val">${units.length}</div><div class="lbl">Total units · ${locations.length} locations</div></div>
-    <div class="stat-card ${vacant ? '' : 'ok'}"><div class="val">${occupied}/${units.length}</div><div class="lbl">Occupied</div></div>
-    <div class="stat-card ok"><div class="val">${peso(collected)}</div><div class="lbl">Collected · ${monthLabel(monthKey())}</div></div>
-    <div class="stat-card"><div class="val">${peso(expected)}</div><div class="lbl">Expected this month</div></div>
+    <div class="stat-card" data-goto="locations">
+      <div class="sc-icon blue">🏢</div>
+      <div class="val">${units.length}</div><div class="lbl">Total Units</div>
+      <div class="lbl" style="margin-top:-2px;">Across ${locations.length} location${locations.length === 1 ? '' : 's'}</div>
+      <a class="sc-link" data-goto="locations" href="javascript:void(0)">View all units →</a>
+    </div>
+    <div class="stat-card ${vacant ? '' : 'ok'}" data-goto="locations">
+      <div class="sc-icon green">👥</div>
+      <div class="val">${occupied}/${units.length}</div><div class="lbl">Occupied</div>
+      <div class="lbl" style="margin-top:-2px;">${occPct}% occupancy rate</div>
+      <a class="sc-link" data-goto="locations" href="javascript:void(0)">View occupancy →</a>
+    </div>
+    <div class="stat-card ok" data-goto="overdue">
+      <div class="sc-icon green">₱</div>
+      <div class="val">${peso(collected)}</div><div class="lbl">Collected · ${monthLabel(monthKey())}</div>
+      <div class="lbl" style="margin-top:-2px;">This month's collection</div>
+      <a class="sc-link" data-goto="overdue" href="javascript:void(0)">View collections →</a>
+    </div>
+    <div class="stat-card" data-goto="overdue">
+      <div class="sc-icon purple">📈</div>
+      <div class="val">${peso(expected)}</div><div class="lbl">Expected this month</div>
+      <div class="lbl" style="margin-top:-2px;">From all active tenants</div>
+      <a class="sc-link" data-goto="overdue" href="javascript:void(0)">View forecast →</a>
+    </div>
     <div class="stat-card wide ${overdueCount ? 'warn' : 'ok'}">
       <div><div class="lbl" style="margin-bottom:2px;">Overdue right now</div><div class="val">${overdueCount} tenant${overdueCount === 1 ? '' : 's'}</div></div>
       <div class="stamp ${overdueCount ? 'overdue' : ''} small">${overdueCount ? 'ALERT' : 'CLEAR'}</div>
@@ -2979,6 +3239,9 @@ function renderDashboard() {
       <div class="stamp overdue small">DEPOSIT</div>
     </div>` : ''}
   `;
+  document.querySelectorAll('#dashStats [data-goto]').forEach(el => {
+    el.addEventListener('click', (e) => { e.stopPropagation(); navigateTo(el.dataset.goto); });
+  });
   const readyCard = document.getElementById('dashChecksReadyCard');
   if (readyCard) readyCard.addEventListener('click', openPendingChecksSheet);
 
@@ -2987,6 +3250,190 @@ function renderDashboard() {
     ? flagged.map(rentRowHTML).join('')
     : emptyHTML('✅', 'Nothing due soon', 'Every occupied unit is settled for now.');
   bindRentRowClicks('#dashOverdue');
+
+  renderDashboardDesktopExtras({ collected, expected, overdueCount, overdueTotal });
+}
+
+/** Everything below only paints elements that are visible at the ≥860px
+ *  desktop breakpoint (see CSS) — greeting header, overdue banner, the
+ *  collection chart, income summary, quick actions, recent activity, and
+ *  the sidebar's user/sync footer. Cheap to run on mobile too (just fills
+ *  hidden DOM), which keeps this one code path instead of branching on
+ *  viewport width. */
+function renderDashboardDesktopExtras({ collected, expected, overdueCount, overdueTotal }) {
+  // Greeting
+  const hour = new Date().getHours();
+  const timeGreet = hour < 12 ? 'Good morning' : (hour < 18 ? 'Good afternoon' : 'Good evening');
+  const adminNameEl = document.getElementById('adminNameDisplay');
+  const adminName = (adminNameEl && adminNameEl.textContent.trim()) || 'Owner';
+  document.getElementById('dashGreetTitle').textContent = `${timeGreet}, ${adminName}! 👋`;
+  document.getElementById('dashDatePill').textContent = new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
+  const notifCount = openMaintenanceRequestCount() + state.cache.pendingPayments.length;
+  const bellBadge = document.getElementById('dashBellBadge');
+  bellBadge.textContent = notifCount;
+  bellBadge.style.display = notifCount ? 'flex' : 'none';
+  document.getElementById('dashBellBtn').onclick = () => navigateTo('settings');
+
+  // Overdue banner
+  const banner = document.getElementById('dashOverdueBanner');
+  banner.classList.toggle('clear', !overdueCount);
+  document.getElementById('dashOverdueVal').textContent = `${overdueCount} tenant${overdueCount === 1 ? '' : 's'}`;
+  document.getElementById('dashOverdueBtn').onclick = () => navigateTo('overdue');
+
+  // Due-soon "View all" link
+  document.getElementById('dashDueSoonViewAll').onclick = () => navigateTo('overdue');
+
+  // Income summary
+  const collectionRate = expected > 0 ? Math.round(collected / expected * 100) : 0;
+  document.getElementById('dashIncomeSummary').innerHTML = `
+    <div class="dm-income-row"><span class="ir-lbl"><i style="background:var(--md-green);"></i>Collected</span><span class="ir-val">${peso(collected)}</span></div>
+    <div class="dm-income-row"><span class="ir-lbl"><i style="background:var(--md-purple);"></i>Expected</span><span class="ir-val">${peso(expected)}</span></div>
+    <div class="dm-income-row"><span class="ir-lbl"><i style="background:var(--rust);"></i>Overdue</span><span class="ir-val">${peso(overdueTotal)}</span></div>
+    <div class="dm-income-row"><span class="ir-lbl">Collection Rate</span><span class="ir-val">${collectionRate}%</span></div>
+    ${collectionRate >= 90
+      ? `<div class="dm-income-note">✓ Great job! You're on track this month.</div>`
+      : (expected > 0 ? `<div class="dm-income-note" style="background:var(--rust-soft); color:var(--rust);">${100 - collectionRate}% of this month's rent is still outstanding.</div>` : '')}
+  `;
+
+  renderCollectionChart();
+  renderRecentActivity();
+  wireQuickActions();
+  refreshSidebarUser();
+}
+
+/** Last 6 months of real cash collected (from payments.datePaid), plotted
+ *  against the *current* month's expected-rent total as a flat reference
+ *  line — history of what was actually expected per past month isn't
+ *  tracked anywhere in the data model, so this is deliberately an
+ *  approximation rather than inventing numbers. Plain inline SVG, no
+ *  charting library dependency. */
+function renderCollectionChart() {
+  const rows = computeRentStatus();
+  const expectedNow = rows.reduce((s, r) => s + r.expected, 0);
+  const months = [];
+  const now = new Date();
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, label: d.toLocaleDateString('en-PH', { month: 'short' }) });
+  }
+  const collectedByMonth = months.map(m =>
+    state.cache.payments
+      .filter(p => p.tag !== 'deposit' && !isUnclearedCheck(p) && (p.datePaid || '').slice(0, 7) === m.key)
+      .reduce((s, p) => s + (Number(p.amountPaid) || 0), 0)
+  );
+  const maxVal = Math.max(expectedNow, ...collectedByMonth, 1);
+  document.getElementById('dashChart').innerHTML = `
+    <div class="dm-chart-bars">
+      ${months.map((m, i) => {
+        const cH = Math.round(collectedByMonth[i] / maxVal * 100);
+        const eH = Math.round(expectedNow / maxVal * 100);
+        return `<div class="cb-col" title="${m.label}: ${peso(collectedByMonth[i])} collected">
+          <div class="cb-barwrap">
+            <div class="cb-bar collected" style="height:${cH}%;"></div>
+            <div class="cb-bar" style="height:${eH}%;"></div>
+          </div>
+          <div class="cb-lbl">${m.label}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="dm-chart-legend">
+      <span><i style="background:var(--md-green);"></i>Collected</span>
+      <span><i style="background:var(--md-line);"></i>Expected (current)</span>
+    </div>
+  `;
+}
+
+/** Derived from real records only (payments, tenants, maintenance
+ *  requests, utility bills) sorted by timestamp — there's no dedicated
+ *  activity-log table in the data model, so this reads the last few
+ *  events out of the stores that already exist rather than a synthetic
+ *  feed. */
+function renderRecentActivity() {
+  const events = [];
+  state.cache.payments.filter(p => p.tag !== 'deposit').forEach(p => {
+    const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+    const unit = tenant ? state.cache.units.find(u => u.id === tenant.unitId) : null;
+    const loc = unit ? state.cache.locations.find(l => l.id === unit.locationId) : null;
+    events.push({
+      at: p.createdAt || Date.parse(p.datePaid) || 0, icon: '💵', iconClass: 'green',
+      title: 'Payment received',
+      sub: `${loc ? loc.name + ' - ' : ''}${unit ? unit.unitLabel : (tenant ? tenant.fullName : '')}`
+    });
+  });
+  state.cache.tenants.forEach(t => {
+    events.push({ at: t.updatedAt || 0, icon: '👤', iconClass: 'blue', title: 'New tenant added', sub: t.fullName });
+  });
+  state.cache.maintenanceRequests.forEach(m => {
+    const tenant = state.cache.tenants.find(t => t.id === m.tenantId);
+    const unit = tenant ? state.cache.units.find(u => u.id === tenant.unitId) : null;
+    events.push({ at: m.createdAt || 0, icon: '🔧', iconClass: 'purple', title: 'Maintenance request', sub: unit ? unit.unitLabel : (m.title || '') });
+  });
+  state.cache.utilityBills.forEach(b => {
+    events.push({ at: b.createdAt || b.updatedAt || 0, icon: '⚡', iconClass: 'blue', title: 'Utility bill added', sub: b.label || `${b.type || 'Bill'} · ${monthLabel(b.period || monthKey())}` });
+  });
+  events.sort((a, b) => b.at - a.at);
+  const top = events.slice(0, 5);
+  document.getElementById('dashRecentActivity').innerHTML = top.length
+    ? top.map(e => `
+      <div class="dm-activity-row">
+        <div class="ar-icon">${e.icon}</div>
+        <div><div class="ar-title">${escapeHTML(e.title)}</div><div class="ar-sub">${escapeHTML(e.sub || '')}</div></div>
+        <div class="ar-time">${e.at ? relativeTimeLabel(e.at) : ''}</div>
+      </div>`).join('')
+    : `<div class="muted" style="font-size:.8rem; padding:6px 0;">Nothing yet — activity shows up here as you record payments, add tenants, and more.</div>`;
+  document.getElementById('dashActivityViewAll').onclick = () => navigateTo('settings');
+}
+
+function relativeTimeLabel(ts) {
+  const diffMs = Date.now() - ts;
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+}
+
+/** Quick Actions panel. Add Property has no prerequisites, so it opens
+ *  its form directly. Add Unit / Add Tenant / Record Payment all need a
+ *  property/unit/tenant picked first in this data model, so — rather than
+ *  guessing which one the admin means — these route to the list view
+ *  where that selection normally happens, with a toast explaining why. */
+function wireQuickActions() {
+  const map = {
+    property: () => openLocationForm(null),
+    unit: () => {
+      const { locations } = state.cache;
+      if (locations.length === 1) return openUnitForm(null, locations[0].id);
+      navigateTo('locations');
+      showToast('Pick a property to add a unit to');
+    },
+    tenant: () => { navigateTo('locations'); showToast('Pick a vacant unit to add a tenant to'); },
+    payment: () => { navigateTo('overdue'); showToast('Pick a tenant to record a payment for'); },
+  };
+  document.querySelectorAll('#dashQuickActions [data-qa]').forEach(btn => {
+    btn.onclick = map[btn.dataset.qa];
+  });
+}
+
+/** Sidebar footer (desktop only): admin name/initial + cloud-sync status,
+ *  both reusing the exact same data Settings already shows (adminName in
+ *  IndexedDB meta, and #firebaseStatus/#firebaseDot's sync state) rather
+ *  than tracking a second copy of that state. */
+async function refreshSidebarUser() {
+  const meta = await dbGet('meta', 'adminName');
+  const name = (meta && meta.value) || 'Owner';
+  document.getElementById('sidebarUserName').textContent = name;
+  document.getElementById('sidebarUserAvatar').textContent = name.trim().charAt(0).toUpperCase() || 'O';
+  const statusEl = document.getElementById('firebaseStatus');
+  const dotEl = document.getElementById('firebaseDot');
+  const signedIn = !!(dotEl && dotEl.classList.contains('on'));
+  const sync = document.getElementById('sidebarSync');
+  sync.classList.toggle('on', signedIn);
+  document.getElementById('sidebarSyncText').textContent = statusEl ? statusEl.textContent : (signedIn ? 'Synced' : 'Not signed in');
+  document.getElementById('sidebarHelpBtn').onclick = () => navigateTo('settings');
 }
 
 function rentRowHTML(r) {
