@@ -392,14 +392,14 @@
     background:var(--paper-2); color:var(--ink); font-size:16px; cursor:pointer;
     display:flex; align-items:center; justify-content:center; flex:none;
   }
-  .ria-panel-body{flex:1; overflow-y:auto; padding:18px 20px;}
+  .ria-panel-body{flex:1; min-height:0; padding:18px 20px 0;}
   .ria-panel-footer{padding:14px 20px 16px; border-top:1px solid var(--line); flex:none;}
   /* The mobile sheet's #aiChatLog-specific gap/padding rules (above, near
      .ai-msg-bubble) don't reach this panel — different id — so it was
      falling back to the plain .card-list gap and reading cramped. Give it
      its own spacing: a bit more room between bubbles, and slightly smaller
      type since the panel itself is narrower than the phone sheet. */
-  #riaChatLog.card-list{gap:10px;}
+  #riaChatLog.card-list{gap:10px; height:100%; overflow-y:auto; padding-bottom:18px;}
   #riaChatLog .ai-msg-bubble{font-size:.74rem; line-height:1.5; padding:13px 16px;}
   /* Admin's typing box in the desktop panel specifically — no border/focus
      ring, just the background fill, so it reads as part of the panel
@@ -6259,6 +6259,10 @@ function openRiaPanel() {
   aiChatContext = { log: 'riaChatLog', input: 'riaChatInput', send: 'riaChatSend' };
   panel.classList.add('show');
   renderAiChatLog();
+  requestAnimationFrame(() => {
+    const log = document.getElementById('riaChatLog');
+    if (log) log.scrollTop = log.scrollHeight;
+  });
   const input = document.getElementById('riaChatInput');
   // Wire the panel's own controls once — it stays in the DOM across opens,
   // unlike the sheet's markup which openSheet() rebuilds fresh every time.
