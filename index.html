@@ -461,6 +461,16 @@
   .kv{background:var(--paper-2); border-radius:9px; padding:10px 12px;}
   .kv .k{font-size:.66rem; text-transform:uppercase; color:var(--slate); letter-spacing:.03em;}
   .kv .v{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.86rem; margin-top:2px;}
+  /* Tenant header row: name/phone on the left, the total-owed card (with
+     its months-overdue badge inline next to the amount) on the right, so
+     they share one row instead of the badge and the owed card each taking
+     their own full-width line underneath the name. */
+  .th-header{display:flex; align-items:flex-start; justify-content:space-between; gap:12px;}
+  .th-header .kv.owed-card{background:var(--rust-soft); flex-shrink:0; min-width:180px; cursor:pointer;}
+  .th-header .kv.owed-card .v-row{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:2px;}
+  .th-header .kv.owed-card .v-row .v{margin-top:0; font-size:.92rem;}
+  .th-header .kv.owed-card .v-row .badge-months{margin-top:0;}
+  .th-header .badge-months{margin-top:0; flex-shrink:0;}
 
   /* ---------- Compact data table (e.g. Payment summary's recent list) ---------- */
   .table-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:12px;}
@@ -4115,13 +4125,20 @@ function renderUnitDetail(unitId) {
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
-        <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
-        <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
-        ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
-        ${showTotalOwed ? `
-        <div class="kv" id="totalOwedRow" style="margin-top:10px; padding:10px 12px; background:var(--rust-soft); border-radius:10px; cursor:pointer;">
-          <div class="k">Total owed (tap for breakdown)</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(owed.total)}</div>
-        </div>` : ''}
+        <div class="th-header">
+          <div>
+            <div class="dh-title">${escapeHTML(tenant.fullName)}</div>
+            <div class="dh-sub">${escapeHTML(tenant.contactNumber || 'No contact on file')}</div>
+          </div>
+          ${showTotalOwed ? `
+          <div class="kv owed-card" id="totalOwedRow">
+            <div class="k">Total owed (tap for breakdown)</div>
+            <div class="v-row">
+              <span class="v" style="color:var(--rust);">${peso(owed.total)}</span>
+              ${tier ? `<span class="badge-months ${tier.cls}">${tier.label}</span>` : ''}
+            </div>
+          </div>` : (tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : '')}
+        </div>
         ${bouncedFeesTotal > 0 ? `
         <div class="kv" id="bouncedFeesRow" style="margin-top:10px; padding:10px 12px; background:var(--rust-soft); border-radius:10px; cursor:pointer;">
           <div class="k">⚠️ Bounced-check fees (tap to manage)</div><div class="v" style="color:var(--rust); font-weight:700;">${peso(bouncedFeesTotal)}</div>
