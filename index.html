@@ -4122,6 +4122,11 @@ function renderUnitDetail(unitId) {
     const showTotalOwed = owed && owed.total > row.balance;
     const advanceCredit = computeAdvanceCredit(tenant.id);
     const bouncedFeesTotal = totalBouncedFees(tenant);
+    // Only pair "Invite to tenant portal" with Log Payment up top when
+    // that's actually the next step — once an invite is pending or the
+    // portal is already active, that richer state (code, share row, revoke)
+    // still renders in its own block below instead of a plain button.
+    const canInvite = firebaseEnabled && !tenant.portalUid && !(tenant.portalInvite && !tenant.portalInvite.used);
     document.getElementById('unitTenantBlock').innerHTML = `
       <div class="section-label">Current tenant</div>
       <div class="detail-hero">
@@ -4157,7 +4162,10 @@ function renderUnitDetail(unitId) {
         </div>
         <div class="section-label" style="margin-top:14px;">Tenant portal access</div>
         <div id="tenantPortalAccessBlock"></div>
-        <button class="btn btn-accent" id="logPaymentBtn" style="width:100%; margin-top:14px;">💰 Log Payment</button>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px;">
+          <button class="btn btn-accent" id="logPaymentBtn" style="${canInvite ? '' : 'grid-column:1/-1;'}">💰 Log Payment</button>
+          ${canInvite ? `<button class="btn btn-primary" id="invitePortalBtnTop">Invite to tenant portal</button>` : ''}
+        </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
           <button class="btn btn-outline btn-sm" id="paymentSummaryBtn">📄 Summary</button>
           <button class="btn btn-outline btn-sm" id="viewTenantDocsBtn">📁 Documents</button>
@@ -4172,6 +4180,7 @@ function renderUnitDetail(unitId) {
     if (showTotalOwed) document.getElementById('totalOwedRow').addEventListener('click', () => openOutstandingBreakdownSheet(tenant.id));
     if (bouncedFeesTotal > 0) document.getElementById('bouncedFeesRow').addEventListener('click', () => openBouncedFeesSheet(tenant));
     document.getElementById('logPaymentBtn').addEventListener('click', () => openPaymentForm(tenant, unit));
+    if (canInvite) document.getElementById('invitePortalBtnTop').addEventListener('click', () => generatePortalInvite(tenant));
     document.getElementById('paymentSummaryBtn').addEventListener('click', () => openPaymentSummarySheet(tenant));
     document.getElementById('editTenantBtn').addEventListener('click', () => openTenantForm(tenant, unit.id));
     document.getElementById('moveOutBtn').addEventListener('click', () => moveOutFlow(tenant, unit));
@@ -5063,9 +5072,7 @@ function renderPortalAccessBlock(tenant) {
     document.getElementById('regenInviteBtn').addEventListener('click', () => generatePortalInvite(tenant));
   } else {
     wrap.innerHTML = `
-      <div class="muted" style="font-size:.78rem; margin-bottom:8px;">Give this tenant a login so they can submit payment proof, view their history, and upload move-in documents.</div>
-      <button class="btn btn-primary btn-sm" style="width:100%;" id="invitePortalBtn">Invite to tenant portal</button>`;
-    document.getElementById('invitePortalBtn').addEventListener('click', () => generatePortalInvite(tenant));
+      <div class="muted" style="font-size:.78rem;">Give this tenant a login so they can submit payment proof, view their history, and upload move-in documents.</div>`;
   }
 }
 
