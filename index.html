@@ -2944,9 +2944,9 @@ function computeOutstandingBalance(tenantId) {
  *  treatment (filled/solid stamp) instead of just the dashed outline used
  *  for 1-2 months. */
 function overdueTier(months) {
-  if (months >= 3) return { cls: 'critical', label: `${months} mo overdue` };
-  if (months === 2) return { cls: 'overdue', label: `${months} mo overdue` };
-  if (months === 1) return { cls: 'due', label: `${months} mo overdue` };
+  if (months >= 3) return { cls: 'critical', label: `${months} months` };
+  if (months === 2) return { cls: 'overdue', label: `${months} months` };
+  if (months === 1) return { cls: 'due', label: `${months} month` };
   return null;
 }
 /** Bottom sheet listing every line that makes up computeOutstandingBalance's
