@@ -401,6 +401,11 @@
      type since the panel itself is narrower than the phone sheet. */
   #riaChatLog.card-list{gap:10px;}
   #riaChatLog .ai-msg-bubble{font-size:.74rem; line-height:1.5; padding:13px 16px;}
+  /* Admin's typing box in the desktop panel specifically — no border/focus
+     ring, just the background fill, so it reads as part of the panel
+     rather than a separate boxed field. Scoped to this id only; the
+     mobile sheet's textarea keeps its usual bordered look. */
+  #riaChatInput{border:none; outline:none;}
   /* Safety net: if the window is resized down past the breakpoint while
      the panel happens to be open, don't leave a floating box stranded on
      a phone-width layout. */
