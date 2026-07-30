@@ -206,6 +206,17 @@
   .row-card .rc-sub{font-size:.78rem; color:var(--slate); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .row-card .rc-amt{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.9rem; text-align:right; white-space:nowrap;}
   .row-card .rc-chevron{color:var(--slate); font-size:1.1rem;}
+  /* Two-line unit card (location detail's unit list): line 1 is the unit
+     label with its overdue badge at the right edge, line 2 is the tenant
+     name with the amount at the right edge — so the whole card reads in
+     exactly two lines next to the stamp, instead of title/sub/badge each
+     getting their own line with the amount floating separately. */
+  .row-card .rc-line{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+  .row-card .rc-line + .rc-line{margin-top:3px;}
+  .row-card .rc-line .rc-title{flex:1; min-width:0;}
+  .row-card .rc-line .rc-sub{flex:1; min-width:0; margin-top:0;}
+  .row-card .rc-line .badge-months{margin-top:0; flex-shrink:0;}
+  .row-card .rc-line .rc-amt{flex-shrink:0;}
 
   /* ---------- PAYMENTS LIST — dense bordered table, not cards ----------
      Deliberately its own thing rather than reusing .row-card: a table
@@ -3949,11 +3960,15 @@ function renderLocationDetail(locationId) {
         return `<div class="row-card" data-unit-id="${u.id}">
           <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
           <div class="rc-main">
-            <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
-            <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Vacant'}</div>
-            ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
+            <div class="rc-line">
+              <span class="rc-title">${escapeHTML(u.unitLabel)}</span>
+              ${tier ? `<span class="badge-months ${tier.cls}">${tier.label}</span>` : ''}
+            </div>
+            <div class="rc-line">
+              <span class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Vacant'}</span>
+              ${amountHTML}
+            </div>
           </div>
-          ${amountHTML}
         </div>`;
       }).join('')
     : emptyHTML('🚪', 'No units yet', 'Tap + to add the first unit for this location.');
