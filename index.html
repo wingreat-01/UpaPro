@@ -135,33 +135,41 @@
   .ou-group-body.collapsed{display:none;}
   /* Roster cards run in two columns, so keep them tighter than the regular
      row-card used elsewhere (location detail, overdue list, etc). */
-  /* Roster cards: the stamp sits as a small corner badge instead of taking
-     up its own flex slot, and the amount moves up onto the same line as
-     the overdue badge (or sits alone, right-aligned, when there's no
-     badge). That lets the card read title → tenant → one compact status
-     line, so it can be noticeably shorter than the inline-stamp layout
-     used elsewhere. */
+  /* Roster cards: everything sits on ONE line — unit + tenant/status on the
+     left, badge + amount + stamp on the right — so a property with many
+     units reads as a dense single-line-per-unit list instead of a stack of
+     tall multi-line cards. */
   .ou-col .row-card{
-    position:relative; flex-direction:column; align-items:stretch;
-    padding:10px 34px 10px 12px; gap:2px; border-radius:12px;
+    flex-direction:row; align-items:center;
+    padding:9px 12px; gap:8px; border-radius:12px;
   }
-  .ou-col .rc-main{width:100%;}
-  .ou-col .stamp.small{
-    position:absolute; top:8px; right:8px; margin:0;
-    width:26px; height:26px; font-size:.34rem;
+  .ou-col .rc-main{
+    display:flex; align-items:baseline; gap:6px;
+    flex:1; min-width:0;
   }
-  .ou-col .rc-title{font-size:.82rem;}
-  .ou-col .rc-sub{font-size:.7rem; margin-top:1px;}
-  .ou-col .rc-bottom{display:flex; align-items:center; justify-content:space-between; margin-top:4px; gap:8px;}
-  .ou-col .rc-amt{font-size:.8rem; margin-left:auto;}
+  .ou-col .rc-title{font-size:.84rem; flex-shrink:0;}
+  .ou-col .rc-sub{
+    font-size:.76rem; margin-top:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .ou-col .rc-right{
+    display:flex; align-items:center; gap:7px; flex-shrink:0; margin-left:auto;
+  }
+  .ou-col .rc-amt{font-size:.8rem; margin-left:0;}
   .ou-col .badge-months{font-size:.58rem; padding:1px 6px; margin:0;}
+  .ou-col .stamp.small{
+    width:24px; height:24px; font-size:.3rem; margin:0; flex-shrink:0;
+  }
   /* Narrow columns (mobile, two-up) need an even tighter row-card still. */
   @media (max-width:640px){
-    .ou-col .row-card{padding:9px 30px 9px 10px;}
-    .ou-col .stamp.small{width:22px; height:22px; font-size:.3rem; top:7px; right:7px;}
-    .ou-col .rc-title{font-size:.78rem;}
+    .ou-col .row-card{padding:8px 9px; gap:6px;}
+    .ou-col .rc-main{gap:4px;}
+    .ou-col .rc-right{gap:5px;}
+    .ou-col .stamp.small{width:20px; height:20px; font-size:.26rem;}
+    .ou-col .rc-title{font-size:.76rem;}
     .ou-col .rc-sub{font-size:.66rem;}
-    .ou-col .rc-amt{font-size:.76rem;}
+    .ou-col .rc-amt{font-size:.72rem;}
+    .ou-col .badge-months{font-size:.52rem; padding:1px 5px;}
   }
   .row-card{
     background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
@@ -3739,14 +3747,14 @@ function renderOccupiedUnits() {
             amountHTML = `<div class="rc-amt muted">${peso(u.monthlyRent)}</div>`;
           }
           return `<div class="row-card" data-unit-id="${u.id}">
-            <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
             <div class="rc-main">
-              <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
-              <div class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Tenant'}</div>
-              <div class="rc-bottom">
-                ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : '<span></span>'}
-                ${amountHTML}
-              </div>
+              <span class="rc-title">${escapeHTML(u.unitLabel)}</span>
+              <span class="rc-sub">${tenant ? escapeHTML(tenant.fullName) : 'Tenant'}</span>
+            </div>
+            <div class="rc-right">
+              ${tier ? `<div class="badge-months ${tier.cls}">${tier.label}</div>` : ''}
+              ${amountHTML}
+              <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
             </div>
           </div>`;
         }).join('')}
@@ -3770,14 +3778,13 @@ function renderOccupiedUnits() {
             ? { cls: 'due', color: 'var(--amber)', text: 'FIX' }
             : { cls: '', color: 'var(--slate)', text: 'OPEN' };
           return `<div class="row-card" data-unit-id="${u.id}">
-            <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
             <div class="rc-main">
-              <div class="rc-title">${escapeHTML(u.unitLabel)}</div>
-              <div class="rc-sub">${effStatus === 'maintenance' ? 'Under maintenance' : 'Available'}</div>
-              <div class="rc-bottom">
-                <span></span>
-                <div class="rc-amt muted">${peso(u.monthlyRent)}</div>
-              </div>
+              <span class="rc-title">${escapeHTML(u.unitLabel)}</span>
+              <span class="rc-sub">${effStatus === 'maintenance' ? 'Under maintenance' : 'Available'}</span>
+            </div>
+            <div class="rc-right">
+              <div class="rc-amt muted">${peso(u.monthlyRent)}</div>
+              <div class="stamp small ${stamp.cls}" style="--c:${stamp.color};">${stamp.text}</div>
             </div>
           </div>`;
         }).join('')}
