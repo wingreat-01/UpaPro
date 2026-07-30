@@ -1723,8 +1723,8 @@ const SYNCED_STORES = ['locations', 'units', 'tenants', 'payments', 'pendingPaym
    (since they're absent from admin B's empty cloud data) and pushes
    them straight into admin B's own users/{uid}/... — silently copying
    one client's properties/tenants into another client's account. Real
-   incident: TONDO A + tenants leaked from chad.yunitrade@gmail.com
-   into chadeugenio4@gmail.com this way, July 2026.
+   incident: TONDO A + tenants leaked from one admin account into
+   another this way, July 2026.
 
    Fix: remember which uid was last synced on this device (in the
    'meta' store). If a different uid signs in, wipe every synced store
@@ -3385,11 +3385,27 @@ const TITLES = {
   'occupied-units': 'Occupied units', payments: 'Payments',
   'unit-detail': 'Unit', overdue: 'Overdue &amp; due soon', settings: 'Settings'
 };
+// Real navigation (drilling into a tenant/unit, going back, switching tabs)
+// should always land at the top of the new view. Without this, the desktop
+// layout's scrollable <main> (and the mobile window scroll) simply kept
+// whatever scrollTop it had on the PREVIOUS view — so clicking a tenant row
+// in the dashboard's "Due Soon & Overdue" list (which sits low enough that
+// you've scrolled the dashboard down to reach it) opened unit-detail already
+// scrolled to roughly that same position, i.e. its bottom half, instead of
+// the top of the tenant's own view. render() itself is also called for
+// in-place refreshes of the CURRENT view (e.g. unread badge updates), so the
+// reset lives here at the navigation entry points, not inside render().
+function resetScrollTop() {
+  const mainEl = document.querySelector('main');
+  if (mainEl) mainEl.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
 function navigateTo(view, params = {}, replace = false) {
   const entry = { view, params };
   if (replace) state.navStack[state.navStack.length - 1] = entry;
   else state.navStack.push(entry);
   render();
+  resetScrollTop();
   // See refreshBalanceDataOnOpen — catches a just-approved payment or a
   // just-submitted one that hasn't reached this device's local cache yet.
   if (view === 'dashboard' || view === 'unit-detail') refreshBalanceDataOnOpen();
@@ -3398,6 +3414,7 @@ function goBack() {
   if (state.navStack.length > 1) {
     state.navStack.pop();
     render();
+    resetScrollTop();
   }
 }
 document.getElementById('backBtn').addEventListener('click', goBack);
@@ -3406,6 +3423,7 @@ document.querySelectorAll('.bottomnav > button[data-nav]').forEach(btn => {
   btn.addEventListener('click', () => {
     state.navStack = [{ view: btn.dataset.nav }];
     render();
+    resetScrollTop();
     if (btn.dataset.nav === 'dashboard') refreshBalanceDataOnOpen();
     else if (btn.dataset.nav === 'settings') refreshSettingsDataOnOpen();
   });
