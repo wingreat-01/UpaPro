@@ -3,7 +3,9 @@
 What's already done, in `index.html`, on this pass:
 - `billingPlan` local state (defaults to unlimited — safe for every existing user until you actually assign plans)
 - `loadBillingPlan()` — reads `users/{uid}/billing/plan`, called right after `loadRemindersSetting()` on sign-in
-- Unit creation blocked client-side once `state.cache.units.length >= billingPlan.unitLimit`
+- New property (location) creation blocked once `state.cache.locations.length >= billingPlan.propertyLimit`
+- Unit creation blocked once `state.cache.units.length >= billingPlan.unitLimit`
+- Editing an existing property or unit is never blocked — only creating new ones
 - Agent Ria chat blocked client-side once `agentCreditsRemaining <= 0`, with a friendly upgrade message instead of a dead-end error
 - After every `askAgent` call, the local credit count is overwritten by whatever the server hands back — the client never decrements its own number
 
@@ -16,9 +18,10 @@ What's **not** done, because it lives outside this file — the Cloud Function (
 ```
 users/{uid}/billing/plan   (single doc)
 {
-  tier: "free" | "starter" | "pro" | "business",
-  unitLimit: number | null,            // null = unlimited
-  agentCreditsPerCycle: number | null, // credits granted each reset
+  tier: "free" | "starter" | "basic" | "pro" | "business",
+  propertyLimit: number | null,        // null = unlimited (Business)
+  unitLimit: number | null,
+  agentCreditsPerCycle: number | null,
   agentCreditsRemaining: number | null,
   cycleStart: Timestamp,
   cycleEnd: Timestamp,
@@ -33,6 +36,29 @@ users/{uid}/billing/plan/creditLog/{entryId}   (subcollection, append-only audit
   balanceAfter: number,
   createdAt: Timestamp
 }
+```
+
+### Plan tier values (from the pricing table)
+
+| Tier | Monthly price | propertyLimit | unitLimit | agentCreditsPerCycle |
+|---|---|---|---|---|
+| Free | ₱0 | 1 | 3 | 15 |
+| Starter | ₱399 | 2 | 10 | 50 |
+| Basic | ₱699 | 5 | 30 | 100 |
+| Pro | ₱999 | 10 | 100 | 200 |
+| Business | ₱1,599 | null (unlimited) | 300 | 500 |
+
+Monthly price isn't a field on the plan doc itself — it's whatever your subscription/billing flow charges to land someone on a given tier. The plan doc only stores the *resulting* limits, not the price that produced them, so this table is really just the reference you (or a Cloud Function that provisions a plan on successful payment) read from when deciding what `propertyLimit`/`unitLimit`/`agentCreditsPerCycle` to write for a given tier.
+
+A small constant map like this in the provisioning Cloud Function keeps the five tiers in one place instead of scattered magic numbers:
+```js
+const PLAN_CATALOG = {
+  free:     { propertyLimit: 1,    unitLimit: 3,   agentCreditsPerCycle: 15  },
+  starter:  { propertyLimit: 2,    unitLimit: 10,  agentCreditsPerCycle: 50  },
+  basic:    { propertyLimit: 5,    unitLimit: 30,  agentCreditsPerCycle: 100 },
+  pro:      { propertyLimit: 10,   unitLimit: 100, agentCreditsPerCycle: 200 },
+  business: { propertyLimit: null, unitLimit: 300, agentCreditsPerCycle: 500 },
+};
 ```
 
 Why a doc rather than counting the `units` collection live: reading a cached `unitLimit`/count pair is one document read instead of a full collection scan on every check, and it's the same pattern this app already uses for `settings/reminders`.
@@ -109,7 +135,7 @@ match /users/{uid}/units/{unitId} {
     );
 }
 ```
-Note: Firestore rules can't cheaply count a collection's documents. The common workaround is to keep a maintained `unitsUsed` counter *on the plan doc itself* (incremented/decremented in the same transaction as unit create/delete, similar to the credit pattern above) and compare against that counter instead of trying to count the collection in the rule.
+Note: Firestore rules can't cheaply count a collection's documents. The common workaround is to keep maintained `unitsUsed`/`propertiesUsed` counters *on the plan doc itself* (incremented/decremented in the same transaction as create/delete, similar to the credit pattern above) and compare against those counters instead of trying to count the collections in the rule. The client-side checks added to `index.html` (`unitLimitReached()` / `propertyLimitReached()`) cover the normal app UI today; this rules-layer version is the harder-to-bypass follow-up, for both units and properties.
 
 ---
 
