@@ -2725,6 +2725,30 @@ function totalUnreadMessagesCount() {
   return state.cache.messages.filter(m => m.sender === 'tenant' && !m.readByAdmin).length;
 }
 
+/* ---------------------------- LEASE SIGNATURES ----------------------------
+   tenant.leaseSignature carries { storagePath, signedAt, ackByAdmin } once a
+   tenant e-signs (see portalOpenContractSign). ackByAdmin starts false at
+   signing time and flips true once the admin opens "View signed contract"
+   (markContractAcknowledged below) — same read/unread shape as messages,
+   just stored on the tenant record instead of a separate collection.
+   Signatures saved before this field existed have no `ackByAdmin` key at
+   all; treated as already-acknowledged (not `=== false`) so old signings
+   don't retroactively light up the bell. */
+function unacknowledgedSignedContractsCount() {
+  return state.cache.tenants.filter(t => t.leaseSignature && t.leaseSignature.ackByAdmin === false).length;
+}
+// Marks a tenant's signed contract as seen by the admin, both locally and
+// pushed to Firestore, so the notification bell clears and stays clear
+// across devices — mirrors markTenantMessagesRead().
+async function markContractAcknowledged(tenant) {
+  if (!tenant.leaseSignature || tenant.leaseSignature.ackByAdmin !== false) return;
+  const updated = { ...tenant, leaseSignature: { ...tenant.leaseSignature, ackByAdmin: true } };
+  await dbPut('tenants', updated);
+  queueRecordSync('tenants', updated);
+  await refreshCache();
+  render();
+}
+
 /* ------------------------------ UTILITY BILLS ------------------------------
    One doc per tenant per period. Each of electricity/water independently
    carries either a flat `amount` (typed straight off the physical bill) or
@@ -3626,7 +3650,11 @@ function renderDashboardDesktopExtras({ collected, expected, overdueCount, overd
   const adminName = (adminNameEl && adminNameEl.textContent.trim()) || 'Owner';
   document.getElementById('dashGreetTitle').textContent = `${timeGreet}, ${adminName}! 👋`;
   document.getElementById('dashDatePill').textContent = new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
-  const notifCount = openMaintenanceRequestCount() + state.cache.pendingPayments.length;
+  // Bell lights up for exactly four things: an open maintenance request, a
+  // payment awaiting review, an unread message from a tenant, or a tenant's
+  // signed contract the admin hasn't opened yet.
+  const notifCount = openMaintenanceRequestCount() + state.cache.pendingPayments.length
+    + totalUnreadMessagesCount() + unacknowledgedSignedContractsCount();
   const bellBadge = document.getElementById('dashBellBadge');
   bellBadge.textContent = notifCount;
   bellBadge.style.display = notifCount ? 'flex' : 'none';
@@ -4834,6 +4862,7 @@ function openTenantDocumentsSheet(tenant) {
     if (viewBtn) viewBtn.addEventListener('click', () => {
       closeSheet();
       renderContractDoc(tenant, tenant.leaseContract);
+      markContractAcknowledged(tenant);
     });
   });
 }
@@ -8471,7 +8500,7 @@ function portalOpenContractSign(tenant, isEdit) {
         if (!blob) throw new Error('SIGNATURE_BLOB_FAILED');
         const path = `portalUploads/${portal.user.uid}/signature-${Date.now()}.png`;
         await storageProxyUpload(path, blob, 'image/png');
-        const leaseSignature = { storagePath: path, signedAt: Date.now() };
+        const leaseSignature = { storagePath: path, signedAt: Date.now(), ackByAdmin: false };
         await portal.store.collection('users').doc(portal.adminUid).collection('tenants').doc(portal.tenantId)
           .update({ leaseSignature, updatedAt: Date.now() });
         portal.tenant = { ...portal.tenant, leaseSignature };
