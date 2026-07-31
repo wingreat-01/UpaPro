@@ -989,11 +989,30 @@
     .dm-greet-title{ margin:0 0 4px; font-size:1.6rem; color:var(--md-text); }
     .dm-greet-sub{ margin:0; color:var(--md-sub); font-size:.88rem; }
     .dm-greet-actions{ display:flex; align-items:center; gap:12px; flex:none; }
+    .dm-bell-wrap{ position:relative; }
     .dm-bell{ position:relative; width:40px; height:40px; border-radius:10px; border:1px solid var(--md-line);
       background:var(--md-card); color:var(--md-text); display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .dm-bell-badge{ position:absolute; top:-5px; right:-5px; background:var(--rust); color:#fff;
       font-size:.62rem; font-weight:700; min-width:16px; height:16px; border-radius:8px;
       display:flex; align-items:center; justify-content:center; padding:0 3px; }
+    .dm-notif-panel{ position:absolute; top:48px; right:0; width:340px; max-width:88vw; background:#fff;
+      border:1px solid var(--md-line); border-radius:14px; box-shadow:0 14px 34px rgba(0,0,0,.16); z-index:60;
+      display:none; overflow:hidden; }
+    .dm-notif-panel.open{ display:block; }
+    .dm-notif-head{ display:flex; align-items:center; justify-content:space-between; padding:12px 14px;
+      border-bottom:1px solid var(--md-line); }
+    .dm-notif-head span{ font-weight:700; font-size:.86rem; color:var(--md-text); }
+    .dm-notif-list{ max-height:360px; overflow-y:auto; }
+    .dm-notif-item{ display:flex; gap:10px; padding:11px 14px; border-bottom:1px solid var(--md-line);
+      cursor:pointer; align-items:flex-start; }
+    .dm-notif-item:last-child{ border-bottom:none; }
+    .dm-notif-item:hover{ background:var(--md-card); }
+    .dm-notif-icon{ width:34px; height:34px; border-radius:50%; background:var(--md-card); display:flex;
+      align-items:center; justify-content:center; flex:none; font-size:1rem; }
+    .dm-notif-title{ font-size:.82rem; font-weight:600; color:var(--md-text); }
+    .dm-notif-sub{ font-size:.74rem; color:var(--md-sub); margin-top:1px; }
+    .dm-notif-time{ font-size:.68rem; color:var(--md-sub); white-space:nowrap; margin-left:auto; flex:none; padding-top:2px; }
+    .dm-notif-empty{ padding:28px 14px; text-align:center; color:var(--md-sub); font-size:.82rem; }
     .dm-date-pill{ background:var(--md-card); border:1px solid var(--md-line); border-radius:10px;
       padding:9px 14px; font-size:.8rem; font-weight:600; color:var(--md-text); }
 
@@ -1204,10 +1223,18 @@
           <p class="dm-greet-sub">Here's what's happening with your properties today.</p>
         </div>
         <div class="dm-greet-actions">
-          <button class="dm-bell" id="dashBellBtn" type="button" aria-label="Notifications">
-            <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-            <span class="dm-bell-badge" id="dashBellBadge" style="display:none;">0</span>
-          </button>
+          <div class="dm-bell-wrap" id="dashBellWrap">
+            <button class="dm-bell" id="dashBellBtn" type="button" aria-label="Notifications">
+              <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+              <span class="dm-bell-badge" id="dashBellBadge" style="display:none;">0</span>
+            </button>
+            <div class="dm-notif-panel" id="dashNotifPanel">
+              <div class="dm-notif-head">
+                <span>Notifications</span>
+              </div>
+              <div class="dm-notif-list" id="dashNotifList"></div>
+            </div>
+          </div>
           <div class="dm-date-pill" id="dashDatePill">—</div>
         </div>
       </div>
@@ -2733,10 +2760,8 @@ function totalUnreadMessagesCount() {
    just stored on the tenant record instead of a separate collection.
    Signatures saved before this field existed have no `ackByAdmin` key at
    all; treated as already-acknowledged (not `=== false`) so old signings
-   don't retroactively light up the bell. */
-function unacknowledgedSignedContractsCount() {
-  return state.cache.tenants.filter(t => t.leaseSignature && t.leaseSignature.ackByAdmin === false).length;
-}
+   don't retroactively light up the bell. Counted for the bell/dropdown via
+   getDashboardNotifications() below. */
 // Marks a tenant's signed contract as seen by the admin, both locally and
 // pushed to Firestore, so the notification bell clears and stays clear
 // across devices — mirrors markTenantMessagesRead().
@@ -2747,6 +2772,160 @@ async function markContractAcknowledged(tenant) {
   queueRecordSync('tenants', updated);
   await refreshCache();
   render();
+}
+
+/* ------------------------------ NOTIFICATIONS ------------------------------
+   Facebook-style dropdown fed by the bell: the same four categories that
+   drive the badge count, but as individual, clickable items. Opening the
+   panel marks everything currently in it as seen — same as Facebook, the
+   bell count clears the moment you open it, not only when you click into
+   each item. The list itself is a snapshot taken at open time, so items
+   don't vanish out from under the admin mid-session; they're just gone the
+   next time the panel is opened. Clicking an item still also navigates to
+   the relevant screen. Messages and signed contracts already had a
+   read/ack flag; pendingPayments and maintenanceRequests get a matching
+   `seenByAdmin` flag here — separate from their real `status`
+   (pending/open), which still drives the counts used elsewhere in
+   Settings, untouched by this. */
+function getDashboardNotifications() {
+  const items = [];
+
+  const unreadByTenant = {};
+  state.cache.messages.filter(m => m.sender === 'tenant' && !m.readByAdmin).forEach(m => {
+    const g = unreadByTenant[m.tenantId] || (unreadByTenant[m.tenantId] = { tenantId: m.tenantId, count: 0, latest: 0 });
+    g.count++;
+    g.latest = Math.max(g.latest, m.createdAt || 0);
+  });
+  Object.values(unreadByTenant).forEach(g => {
+    const tenant = state.cache.tenants.find(t => t.id === g.tenantId);
+    items.push({
+      kind: 'message', tenantId: g.tenantId, time: g.latest, icon: '💬',
+      title: tenant ? tenant.fullName : 'Tenant',
+      sub: g.count > 1 ? `${g.count} new messages` : 'New message',
+    });
+  });
+
+  state.cache.pendingPayments.filter(p => p.status === 'pending' && !p.seenByAdmin).forEach(p => {
+    const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+    items.push({
+      kind: 'payment', recordId: p.id, tenantId: p.tenantId, time: p.submittedAt || 0, icon: '🧾',
+      title: tenant ? tenant.fullName : 'Tenant',
+      sub: `Payment submitted for review · ${peso(p.amountClaimed)}`,
+    });
+  });
+
+  state.cache.maintenanceRequests.filter(m => m.status === 'open' && !m.seenByAdmin).forEach(m => {
+    const tenant = state.cache.tenants.find(t => t.id === m.tenantId);
+    items.push({
+      kind: 'maintenance', recordId: m.id, tenantId: m.tenantId, time: m.createdAt || 0, icon: '🔧',
+      title: tenant ? tenant.fullName : 'Tenant',
+      sub: `Maintenance request: ${m.title || 'Untitled'}`,
+    });
+  });
+
+  state.cache.tenants.filter(t => t.leaseSignature && t.leaseSignature.ackByAdmin === false).forEach(t => {
+    items.push({
+      kind: 'contract', tenantId: t.id, time: t.leaseSignature.signedAt || 0, icon: '✍️',
+      title: t.fullName,
+      sub: 'Signed their lease contract',
+    });
+  });
+
+  return items.sort((a, b) => b.time - a.time);
+}
+
+function toggleNotifPanel() {
+  const panel = document.getElementById('dashNotifPanel');
+  if (panel.classList.contains('open')) { closeNotifPanel(); return; }
+  const items = getDashboardNotifications();
+  renderNotifPanel(items); // snapshot — stays on screen for this open session
+  panel.classList.add('open');
+  document.addEventListener('click', notifOutsideClickHandler);
+  markAllNotificationsSeen(items); // bell count clears the moment it's opened
+}
+function closeNotifPanel() {
+  const panel = document.getElementById('dashNotifPanel');
+  if (panel) panel.classList.remove('open');
+  document.removeEventListener('click', notifOutsideClickHandler);
+}
+function notifOutsideClickHandler(e) {
+  const wrap = document.getElementById('dashBellWrap');
+  if (wrap && !wrap.contains(e.target)) closeNotifPanel();
+}
+
+function renderNotifPanel(items) {
+  const list = document.getElementById('dashNotifList');
+  if (!list) return;
+  list.innerHTML = items.length
+    ? items.map((n, i) => `
+      <div class="dm-notif-item" data-notif-idx="${i}">
+        <div class="dm-notif-icon">${n.icon}</div>
+        <div style="min-width:0; flex:1;">
+          <div class="dm-notif-title">${escapeHTML(n.title)}</div>
+          <div class="dm-notif-sub">${escapeHTML(n.sub)}</div>
+        </div>
+        <div class="dm-notif-time">${n.time ? relativeTimeLabel(n.time) : ''}</div>
+      </div>`).join('')
+    : `<div class="dm-notif-empty">You're all caught up 🎉</div>`;
+  list.querySelectorAll('[data-notif-idx]').forEach(el => {
+    el.addEventListener('click', () => openNotification(items[Number(el.dataset.notifIdx)]));
+  });
+}
+
+async function openNotification(n) {
+  closeNotifPanel();
+  const tenant = state.cache.tenants.find(t => t.id === n.tenantId);
+  if (n.kind === 'message') {
+    if (tenant) openMessageThreadSheet(tenant); // marks read internally
+  } else if (n.kind === 'payment') {
+    await markPendingPaymentSeen(n.recordId);
+    openPendingReviewsSheet();
+  } else if (n.kind === 'maintenance') {
+    await markMaintenanceRequestSeen(n.recordId);
+    openMaintenanceRequestsSheet();
+  } else if (n.kind === 'contract' && tenant) {
+    renderContractDoc(tenant, tenant.leaseContract);
+    markContractAcknowledged(tenant);
+  }
+}
+
+// Marks every item in the just-opened snapshot as seen — mirrors Facebook,
+// where opening the dropdown itself clears the badge. Runs quietly in the
+// background; the panel keeps showing the snapshot already rendered by
+// toggleNotifPanel(), only the bell badge (via the render() calls inside
+// each mark-seen function) updates to reflect the new, lower count.
+async function markAllNotificationsSeen(items) {
+  for (const n of items) {
+    if (n.kind === 'message') await markTenantMessagesRead(n.tenantId);
+    else if (n.kind === 'payment') await markPendingPaymentSeen(n.recordId);
+    else if (n.kind === 'maintenance') await markMaintenanceRequestSeen(n.recordId);
+    else if (n.kind === 'contract') {
+      const tenant = state.cache.tenants.find(t => t.id === n.tenantId);
+      if (tenant) await markContractAcknowledged(tenant);
+    }
+  }
+  render();
+}
+
+// seenByAdmin is purely a notification-bell flag, independent of `status` —
+// a pending payment stays in Pending payment reviews / an open maintenance
+// request stays in Maintenance requests until the admin actually resolves
+// it there; this only stops it from re-appearing in the bell dropdown.
+async function markPendingPaymentSeen(id) {
+  const p = state.cache.pendingPayments.find(x => x.id === id);
+  if (!p || p.seenByAdmin) return;
+  const updated = { ...p, seenByAdmin: true };
+  await dbPut('pendingPayments', updated);
+  queueRecordSync('pendingPayments', updated);
+  await refreshCache();
+}
+async function markMaintenanceRequestSeen(id) {
+  const m = state.cache.maintenanceRequests.find(x => x.id === id);
+  if (!m || m.seenByAdmin) return;
+  const updated = { ...m, seenByAdmin: true };
+  await dbPut('maintenanceRequests', updated);
+  queueRecordSync('maintenanceRequests', updated);
+  await refreshCache();
 }
 
 /* ------------------------------ UTILITY BILLS ------------------------------
@@ -3652,13 +3831,17 @@ function renderDashboardDesktopExtras({ collected, expected, overdueCount, overd
   document.getElementById('dashDatePill').textContent = new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
   // Bell lights up for exactly four things: an open maintenance request, a
   // payment awaiting review, an unread message from a tenant, or a tenant's
-  // signed contract the admin hasn't opened yet.
-  const notifCount = openMaintenanceRequestCount() + state.cache.pendingPayments.length
-    + totalUnreadMessagesCount() + unacknowledgedSignedContractsCount();
+  // signed contract the admin hasn't opened yet — see getDashboardNotifications().
+  const notifItems = getDashboardNotifications();
   const bellBadge = document.getElementById('dashBellBadge');
-  bellBadge.textContent = notifCount;
-  bellBadge.style.display = notifCount ? 'flex' : 'none';
-  document.getElementById('dashBellBtn').onclick = () => navigateTo('settings');
+  bellBadge.textContent = notifItems.length;
+  bellBadge.style.display = notifItems.length ? 'flex' : 'none';
+  document.getElementById('dashBellBtn').onclick = (e) => { e.stopPropagation(); toggleNotifPanel(); };
+  // Note: the open panel's list is a snapshot taken at open time (see
+  // toggleNotifPanel/markAllNotificationsSeen) and is deliberately NOT
+  // recomputed here — only the badge count above updates live. Otherwise,
+  // marking items seen right after opening would rewrite the list back to
+  // empty while the admin is still looking at it.
 
   // Overdue banner
   const banner = document.getElementById('dashOverdueBanner');
