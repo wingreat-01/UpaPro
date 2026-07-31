@@ -17,6 +17,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-functions-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- firebase-storage-compat REMOVED — file storage (ID photos, signed contracts)
      now lives on Supabase Storage instead of Firebase Storage.
      supabase.min.js REMOVED — the browser no longer talks to Supabase
@@ -1495,6 +1496,7 @@
     <button class="back-btn show" id="reportBackBtn" aria-label="Close">←</button>
     <h1 id="reportViewTitle">Report</h1>
     <button class="icon-btn" id="reportCsvBtn" aria-label="Export CSV">⬇️</button>
+    <button class="icon-btn" id="reportXlsxBtn" aria-label="Export Excel">📊</button>
     <button class="icon-btn" id="reportPrintBtn" aria-label="Print / Save as PDF">🖨️</button>
   </header>
   <div id="reportDoc" class="report-doc"></div>
@@ -6073,6 +6075,107 @@ document.getElementById('reportCsvBtn').addEventListener('click', () => {
   a.download = `upapro-report-${type}-${period}${locationId ? '-' + locationId : ''}.csv`;
   a.click();
   showToast('CSV downloaded');
+});
+
+/** Excel export — same underlying computeReport() data as the print view and
+ *  CSV, but laid out as a proper workbook: a Summary sheet (matches the
+ *  on-screen cards + by-property/by-method breakdowns, plus a by-month
+ *  breakdown for annual reports) and a Payments sheet with one row per
+ *  payment. Amount cells are written as real numbers (not strings) with a
+ *  currency number format, so totals are usable directly in Excel/Sheets. */
+document.getElementById('reportXlsxBtn').addEventListener('click', () => {
+  if (typeof XLSX === 'undefined') {
+    showToast("Couldn't load the Excel exporter — check your connection and try again");
+    return;
+  }
+
+  const doc = document.getElementById('reportDoc');
+  const type = doc.dataset.reportType, period = doc.dataset.reportPeriod, locationId = doc.dataset.reportLocation || null;
+  const report = computeReport(type, period, locationId);
+  const loc = locationId ? state.cache.locations.find(l => l.id === locationId) : null;
+  const periodLabel = reportPeriodLabel(type, period);
+  const scopeLabel = loc ? loc.name : 'All properties';
+  const methodLabel = { cash: 'Cash', gcash: 'GCash', bank: 'Bank transfer', check: 'Check / PDC', other: 'Other' };
+  const PESO_FMT = '"₱"#,##0.00';
+
+  // ---- Summary sheet ----
+  const summary = [
+    [`${type === 'monthly' ? 'Monthly' : 'Annual'} Income Report`],
+    [periodLabel, scopeLabel, `Generated ${todayISO()}`],
+    [],
+    ['Total collected', report.grandTotal],
+    ['Rent', report.totalsByTag.rent],
+    ['Electricity', report.totalsByTag.electricity],
+    ['Water', report.totalsByTag.water],
+    ['Deposits', report.totalsByTag.deposit],
+    ['Payments logged', report.payments.length],
+    ['Occupancy (today)', `${report.occupied}/${report.unitCount}`],
+    [],
+  ];
+  const summaryMoneyRows = [3, 4, 5, 6, 7]; // 0-indexed rows above holding peso amounts
+
+  if (!locationId) {
+    const locationRows = Object.keys(report.totalsByLocation).map(locId => {
+      const l = state.cache.locations.find(x => x.id === locId);
+      return { label: l ? l.name : 'Unassigned', amount: report.totalsByLocation[locId] };
+    }).sort((a, b) => b.amount - a.amount);
+    if (locationRows.length) {
+      summary.push(['By property']);
+      const startRow = summary.length;
+      locationRows.forEach((r, i) => { summary.push([r.label, r.amount]); summaryMoneyRows.push(startRow + i); });
+      summary.push([]);
+    }
+  }
+
+  const methodRows = Object.keys(report.totalsByMethod).map(m => ({ label: methodLabel[m] || m, amount: report.totalsByMethod[m] }))
+    .sort((a, b) => b.amount - a.amount);
+  if (methodRows.length) {
+    summary.push(['By payment method']);
+    const startRow = summary.length;
+    methodRows.forEach((r, i) => { summary.push([r.label, r.amount]); summaryMoneyRows.push(startRow + i); });
+    summary.push([]);
+  }
+
+  if (type === 'annual') {
+    const monthKeys = Object.keys(report.totalsByMonth).sort();
+    if (monthKeys.length) {
+      summary.push(['By month']);
+      const startRow = summary.length;
+      monthKeys.forEach((mk, i) => { summary.push([monthLabel(mk), report.totalsByMonth[mk]]); summaryMoneyRows.push(startRow + i); });
+    }
+  }
+
+  const summarySheet = XLSX.utils.aoa_to_sheet(summary);
+  summaryMoneyRows.forEach(r => {
+    const cell = summarySheet[XLSX.utils.encode_cell({ r, c: 1 })];
+    if (cell && typeof cell.v === 'number') cell.z = PESO_FMT;
+  });
+  summarySheet['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 18 }];
+
+  // ---- Payments sheet ----
+  const paymentRows = [['Date', 'Tenant', 'Property', 'Unit', 'Charge', 'Method', 'Amount']];
+  report.payments.forEach(p => {
+    const tenant = state.cache.tenants.find(t => t.id === p.tenantId);
+    const unit = state.cache.units.find(u => u.id === p.unitId);
+    const loc2 = unit ? state.cache.locations.find(l => l.id === unit.locationId) : null;
+    paymentRows.push([
+      p.datePaid || '', tenant ? tenant.fullName : '', loc2 ? loc2.name : '', unit ? unit.unitLabel : '',
+      (REPORT_TAG_LABEL[p.tag] || 'Rent').replace(/^[^\w]+\s*/, ''), methodLabel[p.method] || p.method || '', Number(p.amountPaid) || 0
+    ]);
+  });
+  paymentRows.push(['', '', '', '', '', 'Total', report.grandTotal]);
+  const paymentsSheet = XLSX.utils.aoa_to_sheet(paymentRows);
+  for (let r = 1; r < paymentRows.length; r++) {
+    const cell = paymentsSheet[XLSX.utils.encode_cell({ r, c: 6 })];
+    if (cell && typeof cell.v === 'number') cell.z = PESO_FMT;
+  }
+  paymentsSheet['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 14 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+  XLSX.utils.book_append_sheet(wb, paymentsSheet, 'Payments');
+  XLSX.writeFile(wb, `upapro-report-${type}-${period}${locationId ? '-' + locationId : ''}.xlsx`);
+  showToast('Excel file downloaded');
 });
 
 /* ------------------------- PENDING CHECKS / PDC (admin) -------------------------
