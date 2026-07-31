@@ -1343,9 +1343,9 @@ async function executeTool(name, args, adminUid) {
 
 // ---------- The fallback chain itself ----------
 const PROVIDER_CHAIN = [
-  { name: "gemini", call: callGemini },
   { name: "groq", call: callGroq },
   { name: "mistral", call: callMistral },
+  { name: "gemini", call: callGemini },
 ];
 
 // Map for testAgentProvider() below — lets a single provider be called
