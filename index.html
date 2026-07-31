@@ -1743,6 +1743,20 @@ async function clearLocalDataForAccountSwitch() {
 }
 let fbAuth = null, fbStore = null, fbUser = null, cloudSyncBusy = false, cloudAutoTimer = null;
 let remindersEnabled = false; // rent-due email reminders (Settings -> Rent due reminders) — mirrors users/{uid}/settings/reminders.enabled in Firestore, since the sending itself happens server-side in a scheduled Cloud Function, not on this device.
+
+/* ------------------------------ BILLING PLAN ------------------------------
+   Mirrors users/{uid}/billing/plan in Firestore. `unitLimit` and
+   `agentCreditsRemaining` of `null` mean "unlimited" — that's the default
+   below, so accounts with no plan doc yet (i.e. everyone before this
+   feature shipped) behave exactly as before, unrestricted, until a plan is
+   actually assigned to them. agentCreditsRemaining is DISPLAY-ONLY on this
+   device — the authoritative decrement happens server-side inside the
+   askAgent Cloud Function (via a Firestore transaction on this same doc),
+   since a client-side-only decrement could trivially be bypassed by
+   editing local state. This local copy just drives the UI (remaining-
+   credits pill, the out-of-credits message) and is refreshed after every
+   askAgent call from the balance the function returns. */
+let billingPlan = { tier: 'free', unitLimit: null, agentCreditsRemaining: null, agentCreditsPerCycle: null };
 // Unsubscribe handle for the admin auth-state listener — detached during
 // signup so onCloudAuthStateChanged can't fire (and start pulling cloud
 // data) before the admins/{uid} link doc has actually been created. Same
@@ -1904,6 +1918,7 @@ async function onCloudAuthStateChanged(user) {
     await refreshCache();
     render();
     loadRemindersSetting();
+    loadBillingPlan();
     cloudAutoTimer = setInterval(() => runFullCloudSync(false), 3 * 60 * 1000);
   } else if (firebaseEnabled) {
     remindersEnabled = false;
@@ -2079,6 +2094,52 @@ async function loadRemindersSetting() {
     console.warn('loadRemindersSetting failed', err);
   }
   updateRemindersUI();
+}
+
+/* Reads users/{uid}/billing/plan. No plan doc (doc.exists === false) is
+   treated as unlimited on both fronts, not as zero credits/zero units —
+   see the comment on the `billingPlan` declaration above for why. */
+async function loadBillingPlan() {
+  if (!fbUser || !fbStore) {
+    billingPlan = { tier: 'free', unitLimit: null, agentCreditsRemaining: null, agentCreditsPerCycle: null };
+    updateBillingPlanUI();
+    return;
+  }
+  try {
+    const doc = await fbStore.collection('users').doc(fbUser.uid)
+      .collection('billing').doc('plan').get();
+    if (doc.exists) {
+      const d = doc.data();
+      billingPlan = {
+        tier: d.tier || 'free',
+        unitLimit: (typeof d.unitLimit === 'number') ? d.unitLimit : null,
+        agentCreditsRemaining: (typeof d.agentCreditsRemaining === 'number') ? d.agentCreditsRemaining : null,
+        agentCreditsPerCycle: (typeof d.agentCreditsPerCycle === 'number') ? d.agentCreditsPerCycle : null,
+      };
+    }
+  } catch (err) {
+    console.warn('loadBillingPlan failed', err);
+  }
+  updateBillingPlanUI();
+}
+
+// Best-effort UI hook — updates a credits pill if the markup for one exists
+// (id="aiCreditsPill"); harmless no-op otherwise so this doesn't require
+// any HTML changes to land safely.
+function updateBillingPlanUI() {
+  const pill = document.getElementById('aiCreditsPill');
+  if (!pill) return;
+  if (billingPlan.agentCreditsRemaining === null) { pill.style.display = 'none'; return; }
+  pill.style.display = '';
+  pill.textContent = `${billingPlan.agentCreditsRemaining} credit${billingPlan.agentCreditsRemaining === 1 ? '' : 's'} left`;
+  pill.classList.toggle('low', billingPlan.agentCreditsRemaining <= 3);
+}
+
+/** True once the current unit count has reached (or somehow passed) the
+ *  plan's unitLimit. A null limit (default / unlimited plans) never blocks. */
+function unitLimitReached() {
+  if (typeof billingPlan.unitLimit !== 'number') return false;
+  return state.cache.units.length >= billingPlan.unitLimit;
 }
 
 function updateRemindersUI() {
@@ -4147,6 +4208,9 @@ function openUnitForm(existing, locationId) {
       document.getElementById('f-waterrate-wrap').style.display = e.target.value === 'submeter' ? '' : 'none';
     });
     document.getElementById('btnSave').addEventListener('click', async () => {
+      if (!isEdit && unitLimitReached()) {
+        return showToast(`Your ${billingPlan.tier} plan allows up to ${billingPlan.unitLimit} units — upgrade to add more`);
+      }
       const label = document.getElementById('f-label').value.trim();
       if (!label) return showToast('Unit label is required');
       const obj = existing ? { ...existing } : { id: uid(), locationId };
@@ -6355,6 +6419,18 @@ async function sendAiChatMessage() {
   const input = document.getElementById(aiChatContext.input);
   const message = (input.value || '').trim();
   if (!message) return;
+
+  // Soft, local-only check purely for a fast/friendly message instead of a
+  // round trip that fails. NOT the real enforcement — the authoritative
+  // check-and-decrement happens inside askAgent server-side (it has to,
+  // since this local number can't be trusted). This just avoids sending a
+  // request we already know the server will reject.
+  if (billingPlan.agentCreditsRemaining !== null && billingPlan.agentCreditsRemaining <= 0) {
+    aiChatHistory.push({ role: 'assistant', content: `You're out of Agent Ria credits for this cycle — upgrade your plan to keep chatting.` });
+    renderAiChatLog();
+    return;
+  }
+
   input.value = '';
   autoGrowMsgInput(input, 72, 160);
   aiChatHistory.push({ role: 'user', content: message });
@@ -6373,9 +6449,25 @@ async function sendAiChatMessage() {
     const historyToSend = aiChatHistory.slice(0, -1).slice(-AI_CHAT_HISTORY_LIMIT);
     const result = await askAgent({ message, history: historyToSend });
     aiChatHistory.push({ role: 'assistant', content: result.data.reply || "Sorry, I didn't get a response." });
+    // Server is the source of truth on the balance — it decrements
+    // transactionally on its side and hands back whatever's left, so just
+    // adopt that number rather than decrementing locally ourselves.
+    if (typeof result.data.creditsRemaining === 'number') {
+      billingPlan.agentCreditsRemaining = result.data.creditsRemaining;
+      updateBillingPlanUI();
+    }
   } catch (err) {
     console.error('askAgent error:', err);
-    aiChatHistory.push({ role: 'assistant', content: "RIA's a bit busy — try again in a moment." });
+    // resource-exhausted is what the server throws once its own credit
+    // check fails — this is the real enforcement path, the local check
+    // above is just the common case that avoids reaching this at all.
+    if (err.code === 'functions/resource-exhausted') {
+      billingPlan.agentCreditsRemaining = 0;
+      updateBillingPlanUI();
+      aiChatHistory.push({ role: 'assistant', content: `You're out of Agent Ria credits for this cycle — upgrade your plan to keep chatting.` });
+    } else {
+      aiChatHistory.push({ role: 'assistant', content: "RIA's a bit busy — try again in a moment." });
+    }
   } finally {
     aiChatBusy = false;
     if (sendBtn) sendBtn.disabled = false;
